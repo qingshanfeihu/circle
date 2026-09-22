@@ -106,6 +106,16 @@ def assistant_block(rendered: str) -> str:
     )
 
 
+def indent_continuations(text: str, prefix: str = "   ") -> str:
+    """InfoTest ``indent_continuations`` — first line bare, rest prefixed."""
+    lines = str(text).split("\n")
+    if not lines:
+        return ""
+    return "\n".join(
+        [lines[0]] + [f"{prefix}{ln}" if ln else "" for ln in lines[1:]]
+    )
+
+
 def render_thinking_line(*, body: str, done: bool, expanded: bool = False) -> str:
     """InfoTest ``_render_main_thinking_line`` (collapsed by default)."""
     pal = palette()
@@ -118,10 +128,8 @@ def render_thinking_line(*, body: str, done: bool, expanded: bool = False) -> st
     faint = getattr(pal, "faint", "\x1b[2m")
     line = f" {header_sgr}{header}{reset}"
     if expanded and body:
-        indented = "\n".join(
-            f"   {ln}" if ln else "" for ln in body.splitlines()
-        )
-        line += f"\n   {faint}{indented}{reset}"
+        rendered_body = indent_continuations(body, "   ")
+        line += f"\n   {faint}{rendered_body}{reset}"
     elif not expanded:
         line += f" {faint}(ctrl+t to expand){reset}"
     return line

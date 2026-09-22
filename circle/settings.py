@@ -40,6 +40,8 @@ class CircleSettings:
     auth: ModelAuth = field(default_factory=ModelAuth)
     trusted_folders: list[str] = field(default_factory=list)
     theme: str = "terminal"
+    # MCP server stubs: [{name, command|url, ...}]
+    mcp_servers: list[dict[str, Any]] = field(default_factory=list)
 
     def is_ready(self) -> bool:
         if not self.initialized:
@@ -70,12 +72,17 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         oauth_provider=str(auth_raw.get("oauth_provider") or ""),
     )
     folders = [str(p) for p in (raw.get("trusted_folders") or []) if str(p).strip()]
+    mcp_raw = raw.get("mcp_servers") or []
+    mcp_servers: list[dict[str, Any]] = [
+        dict(item) for item in mcp_raw if isinstance(item, dict)
+    ]
     return CircleSettings(
         version=int(raw.get("version") or SETTINGS_VERSION),
         initialized=bool(raw.get("initialized")),
         auth=auth,
         trusted_folders=folders,
         theme=str(raw.get("theme") or "terminal"),
+        mcp_servers=mcp_servers,
     )
 
 
@@ -109,6 +116,26 @@ def save_credentials(creds: dict[str, str], home: Path | None = None) -> Path:
         os.chmod(path, 0o600)
     except OSError:
         pass
+    return path
+
+
+def clear_credentials(home: Path | None = None) -> Path:
+    """Wipe ~/.circle/credentials.json (logout)."""
+    root = ensure_home(home)
+    path = credentials_path(root)
+    path.write_text("{}\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    for key in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_BASE_URL",
+        "CIRCLE_MODEL",
+    ):
+        os.environ.pop(key, None)
     return path
 
 

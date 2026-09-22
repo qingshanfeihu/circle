@@ -144,6 +144,17 @@ class FooterPane:
             prefix = "\x1b[1;34myolo · \x1b[0m"
         return _FOOTER_INDENT + prefix + tail
 
+    def set_status(self, *, phase: str = "", model: str = "") -> None:
+        """Gate UI helper used by CircleApp._rebuild (init/trust screens)."""
+        status = phase or self.status or "ready"
+        # Gate phases are not "running" — keep footer calm.
+        if status not in {"ready", "error", "running"}:
+            status = "ready"
+        kwargs: dict = {"status": status}
+        if model:
+            kwargs["model"] = model
+        self.update(**kwargs)
+
     def update(
         self,
         *,
@@ -488,7 +499,10 @@ class FooterPane:
                     )
                     try:
                         _stall_s = float(
-                            os.environ.get("IST_LLM_STALL_TIMEOUT") or 180.0)
+                            os.environ.get("CIRCLE_LLM_STALL_TIMEOUT")
+                            or os.environ.get("IST_LLM_STALL_TIMEOUT")
+                            or 180.0
+                        )
                     except (TypeError, ValueError):
                         _stall_s = 180.0
                     _silent = _idle >= _stall_s and _stream_idle >= _stall_s

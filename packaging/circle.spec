@@ -29,6 +29,7 @@ hiddenimports += [
     "circle.harness",
     "circle.init_flow",
     "circle.main_session",
+    "circle.model",
     "circle.oauth",
     "circle.paths",
     "circle.probe",
@@ -39,6 +40,10 @@ hiddenimports += [
     "circle.tui.app",
     "circle.tui.controllers",
     "circle.tui.session",
+    "circle.tui.session_app",
+    "circle.tui.slash_commands",
+    "circle.tui.harness_bridge",
+    "circle.tui.content_blocks",
     "circle.ink",
     "circle.ink.app",
 ]

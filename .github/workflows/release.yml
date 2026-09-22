@@ -107,22 +107,19 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           NOTES="$(printf '%s\n' \
-            "Circle ${VERSION}" \
-            "" \
-            "免本机 Python 安装:" \
-            "" \
-            '```bash' \
-            "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | bash" \
-            '```' \
-            "" \
-            "钉版本:" \
+            "## 安装" \
             "" \
             '```bash' \
             "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | CIRCLE_VERSION=${VERSION} bash" \
             '```' \
             "" \
-            "首跑: \`circle\` → 初始化（URL+KEY / OAuth）→ trust 工作区 → 主界面。" \
-            "用户配置: ~/.circle/settings.json")"
+            "## 使用" \
+            "" \
+            '```bash' \
+            "circle" \
+            '```' \
+            "" \
+            "首次运行会初始化模型、trust 工作区，然后进入主界面。配置在 \`~/.circle/\`。")"
           shopt -s nullglob
           gh release create "$GITHUB_REF_NAME" \
             --title "Circle ${VERSION}" \

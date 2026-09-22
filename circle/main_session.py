@@ -7,6 +7,7 @@ from pathlib import Path
 from circle.harness import create_harness
 from circle.model import build_chat_model
 from circle.settings import CircleSettings, apply_auth_to_environ
+from circle.tui.slash_commands import help_text, parse_slash
 
 
 def run_main(
@@ -19,12 +20,15 @@ def run_main(
     model_name = settings.auth.model
     print(f"Circle · {workspace}")
     print(f"模型: {model_name} · 协议: {settings.auth.protocol}")
-    print("输入消息后回车；空行或 /exit 离开。")
+    print("输入消息后回车；/help 查看命令；空行或 /exit 离开。")
     print("（行模式；全屏 ink TUI 请直接运行 circle）")
 
     agent = create_harness(
         build_chat_model(settings, home=home),
         root_dir=workspace,
+        home=home,
+        model_id=settings.auth.model,
+        protocol=settings.auth.protocol,
     )
     while True:
         try:
@@ -32,12 +36,19 @@ def run_main(
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
-        if not line or line in {"/exit", "/quit"}:
+        if not line:
             return 0
-        if line == "/help":
-            print("命令: /exit 离开 · /help 本说明")
+        parsed = parse_slash(line)
+        if parsed is not None:
+            if parsed.name == "exit":
+                return 0
+            if parsed.name == "help":
+                print(help_text())
+                continue
+            print(
+                f"（行模式仅支持 /help /exit；/{parsed.raw_name} 请用全屏 TUI）"
+            )
             continue
-        # Single-turn invoke; interrupt_on may pause for approval in richer TUI
         try:
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": line}]},

@@ -21,6 +21,9 @@ where = ["."]
 include = ["circle*"]
 exclude = ["tests*", "packaging*"]
 
+[tool.setuptools.package-data]
+circle = ["prompts/**/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

@@ -1,48 +1,57 @@
 # Circle
 
-Compile harness with a **zero-Python** install path.
+终端里的 AI coding agent。接你自己的模型网关，在项目目录里读改跑。
 
-## Install (release)
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
 ```
 
-CI builds **PyInstaller onedir** assets per platform and attaches them to the GitHub Release. `install.sh` downloads the matching archive into `~/.local/share/circle` and links `~/.local/bin/circle`.
-
-## First run
+钉版本：
 
 ```bash
-.venv311/bin/circle                 # or: circle /path/to/project
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.1.0/install.sh | CIRCLE_VERSION=0.1.0 bash
 ```
 
-1. **User init** (once): API URL+KEY *or* OAuth → probe → model → `~/.circle/settings.json`
-2. **Trust workspace**: confirm → `.agent/`
-3. **Main session**: InfoTest-style ink shell（transcript + prompt + footer + 权限面板 + 流式刷新），沙箱根 = 已 trust 目录
-
-Headless selftest:
+## Quick start
 
 ```bash
-.venv311/bin/pytest -q
-CIRCLE_OAUTH_MOCK=1 .venv311/bin/python scripts/selftest_tui_demo.py
+circle
+# 或指定目录
+circle ~/code/my-project
 ```
+
+第一次会引导你接模型（URL + KEY 或 OAuth），再确认 trust 当前工作区，然后进入会话。之后在同一台机器上直接 `circle` 即可。
+
+配置与凭据在 `~/.circle/`（可用环境变量 `CIRCLE_HOME` 改路径）。
+
+## Commands
+
+会话里输入 `/` 查看全部命令，常用：
+
+| Command | 作用 |
+|---------|------|
+| `/help` | 命令列表 |
+| `/login` `/logout` | 登录 / 退出（`/connect` = `/login`） |
+| `/models` | 查看或切换模型 |
+| `/new` | 新会话（`/clear` 同义） |
+| `/resume` | 恢复会话（`/sessions` 同义） |
+| `/compact` | 压缩上下文（`/summarize` 同义） |
+| `/plan` | 开关 plan mode（优先探索与写 `/plan.md`；变更仍需确认） |
+| `/export` `/share` | 导出 / 本地分享副本 |
+| `/undo` `/redo` | 撤销 / 重做上一回合 |
+| `/hotkeys` | 快捷键说明 |
+| `/exit` | 退出（`/quit` `/q`） |
+
+快捷键：`ctrl+t` 展开思考 · `ctrl+o` 展开工具输出 · `ctrl+r` 历史搜索 · ↑↓ 提示历史。
 
 ## Dev
 
 ```bash
-python3.11 -m venv .venv311
-source .venv311/bin/activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
 pytest -q
-./install.sh --from-source   # editable entry on PATH
 ```
-
-## Layout
-
-| Path | Role |
-|------|------|
-| `~/.circle/settings.json` | User settings (model, trusted folders) |
-| `~/.circle/credentials.json` | Secrets (0600) |
-| `<project>/.agent/` | Project agent files (after trust) |
-| `CIRCLE_HOME` | Override user home (tests / custom) |
