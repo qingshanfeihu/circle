@@ -47,6 +47,7 @@ from circle.ink.parse_keypress import InputEvent, KeyPress, MouseEvent, PasteEve
 from circle.ink.theme import GLYPH_AGENT, init_palette_from_terminal, palette
 from circle.model import build_chat_model
 from circle.paths import circle_home, ensure_home, normalize_workspace
+from circle import secret_prompt
 from circle.settings import (
     CircleSettings,
     ModelAuth,
@@ -192,6 +193,11 @@ class CircleSessionApp:
             for c in discover_custom_commands(self.workspace, self.home)
         }
         self._mcp_tools: list[Any] = []
+        # 机密输入模式（question 工具 secret 类型）：buffer 只存在内存，
+        # 输入行只渲染掩码；值经 secret_prompt 直写目标文件，不进对话。
+        self._secret_entry: dict[str, Any] | None = None
+        self._secret_hint_shown = False
+        self._secret_last_check = 0.0
 
         model = build_chat_model(
             settings, home=self.home, model_override=model_override
@@ -252,6 +258,7 @@ class CircleSessionApp:
         try:
             self._show_welcome()
             while self._app._running:  # noqa: SLF001
+                self._maybe_update_secret_hint()
                 time.sleep(0.05)
         except KeyboardInterrupt:
             pass
@@ -309,6 +316,14 @@ class CircleSessionApp:
         if self._input_history.in_search_mode:
             if self._handle_search_key(kp):
                 return
+
+        if self._secret_entry is not None:
+            self._handle_secret_key(kp)
+            return
+
+        if kp.key == "ctrl+s":
+            self._start_secret_entry()
+            return
 
         if kp.key == "ctrl+c":
             now = time.time()
@@ -392,6 +407,90 @@ class CircleSessionApp:
             kp.key if kp.key else "char",
             kp.char if len(kp.char) == 1 else "",
         ):
+            self._app.render()
+
+    # ── secret entry（question 工具 secret 类型的 TUI 侧）──────────────
+
+    def _maybe_update_secret_hint(self) -> None:
+        """发现待答机密请求时提示 Ctrl+S；只在非忙碌时动 footer，避免覆盖状态。"""
+        now = time.monotonic()
+        if now - self._secret_last_check < 0.5:
+            return
+        self._secret_last_check = now
+        if self._secret_entry is not None or self._is_loading:
+            return
+        pending = secret_prompt.list_pending(self.home)
+        if pending:
+            if not self._secret_hint_shown:
+                self._secret_hint_shown = True
+                self._footer.update(
+                    status=f"ctrl+s 补录机密（{len(pending)} 项待输入）"
+                )
+                self._app.render()
+        elif self._secret_hint_shown:
+            self._secret_hint_shown = False
+            self._footer.update(status="ready")
+            self._app.render()
+
+    def _start_secret_entry(self) -> None:
+        if self._secret_entry is not None:
+            return
+        pending = secret_prompt.list_pending(self.home)
+        if not pending:
+            self._footer.update(status="没有待输入的机密")
+            self._app.render()
+            return
+        request = pending[0]
+        self._secret_entry = {"request": request, "buffer": ""}
+        self._prompt.clear()
+        self._secret_hint_shown = False
+        question = str(request.get("question") or "请输入机密")
+        self._footer.update(status=f"机密：{question}（回车确认 / Esc 取消）")
+        self._app.render()
+
+    def _sync_secret_display(self) -> None:
+        """输入行只显示掩码；真实值只在本方法外的 buffer 里。"""
+        buffer = self._secret_entry["buffer"] if self._secret_entry else ""
+        self._prompt.set_value("*" * len(buffer))
+
+    def _handle_secret_key(self, kp: KeyPress) -> None:
+        entry = self._secret_entry
+        if entry is None:
+            return
+        request = entry["request"]
+        if kp.key in {"enter", "return"}:
+            if not entry["buffer"]:
+                self._footer.update(status="机密不能为空（Esc 取消）")
+                self._app.render()
+                return
+            try:
+                secret_prompt.submit_answer(self.home, request["id"], entry["buffer"])
+            except secret_prompt.SecretPromptError as exc:
+                self._footer.update(status=f"提交失败：{exc}")
+            else:
+                self._footer.update(status="已收集（未显示）")
+            self._secret_entry = None
+            entry["buffer"] = ""
+            self._prompt.clear()
+            self._app.render()
+            return
+        if kp.key == "escape":
+            self._secret_entry = None
+            entry["buffer"] = ""
+            self._prompt.clear()
+            self._footer.update(status="已取消")
+            self._app.render()
+            return
+        if kp.key == "backspace":
+            entry["buffer"] = entry["buffer"][:-1]
+            self._sync_secret_display()
+            self._app.render()
+            return
+        if len(kp.char) == 1 and kp.char.isprintable():
+            if len(entry["buffer"]) >= 512:
+                return
+            entry["buffer"] += kp.char
+            self._sync_secret_display()
             self._app.render()
 
     def _handle_mouse(self, me: MouseEvent) -> None:

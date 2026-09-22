@@ -55,6 +55,72 @@ def test_extra_tools_webfetch_and_question():
     assert "REST" in q
 
 
+def test_question_secret_never_enters_result(tmp_path: Path):
+    """secret 提问：值写入目标文件，tool result 只有脱敏确认。"""
+    import threading
+    import time
+
+    from circle import secret_prompt
+
+    home = tmp_path / "home"
+    target = tmp_path / "env.d" / "env"
+    tools = {t.name: t for t in build_extra_tools(home=home)}
+    secret_value = "jump-root-pw-不许进对话"
+
+    def answer_later() -> None:
+        answered: set[str] = set()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and len(answered) < 2:
+            for req in secret_prompt.list_pending(home):
+                if req["id"] in answered:
+                    continue
+                value = (
+                    secret_value
+                    if req["key"] == "JUMPHOST_PASS"
+                    else "apv-secret-value"
+                )
+                secret_prompt.submit_answer(home, req["id"], value)
+                answered.add(req["id"])
+            time.sleep(0.05)
+
+    threading.Thread(target=answer_later, daemon=True).start()
+    result = tools["question"].invoke(
+        {
+            "questions": [
+                {
+                    "question": "跳接机密码？",
+                    "secret": True,
+                    "key": "JUMPHOST_PASS",
+                    "target_file": str(target),
+                }
+            ]
+        }
+    )
+    assert secret_value not in result
+    assert "JUMPHOST_PASS" in result
+    assert str(target) in result
+    assert f"JUMPHOST_PASS={secret_value}" in target.read_text(encoding="utf-8")
+    # 与明文 question 混用时普通问题照常列出、secret 值同样不落对话
+    mixed = tools["question"].invoke(
+        {
+            "questions": [
+                {"question": "Which API?", "secret": False},
+                {
+                    "question": "APV 密码？",
+                    "secret": True,
+                    "key": "APV_PASSWORD",
+                    "target_file": str(target),
+                },
+            ]
+        }
+    )
+    assert "USER_QUESTIONS" in mixed and "Which API?" in mixed
+    assert "apv-secret-value" not in mixed
+    assert "APV_PASSWORD" in mixed
+    content = target.read_text(encoding="utf-8")
+    assert f"APV_PASSWORD=apv-secret-value" in content
+
+
 def test_webfetch_blocks_localhost():
     tools = {t.name: t for t in build_extra_tools()}
     out = tools["webfetch"].invoke({"url": "http://127.0.0.1/secret"})

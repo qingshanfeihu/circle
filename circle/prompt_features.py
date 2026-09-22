@@ -210,13 +210,23 @@ class _QuestionInput(BaseModel):
     questions: list[dict[str, Any]] = Field(
         description=(
             "List of question objects. Each should include `question` (str) and "
-            "optional `options` (list of label strings) and `multiple` (bool)."
+            "optional `options` (list of label strings) and `multiple` (bool). "
+            "For secrets (passwords/tokens), add `secret: true` plus `key` "
+            "(ENV-style key name, e.g. JUMPHOST_PASS) and `target_file` "
+            "(env file the harness writes KEY=value into, mode 600). Secret "
+            "values are collected via masked TUI input and NEVER enter the "
+            "conversation; use for credentials only, never for ordinary choices."
         )
     )
 
 
-def build_question_tool() -> StructuredTool:
-    """Surface clarifying questions in the tool result for the TUI/user."""
+def build_question_tool(home: Path | None = None) -> StructuredTool:
+    """Surface clarifying questions in the tool result for the TUI/user.
+
+    Secret questions (``secret: true``) are answered through the harness-level
+    masked-input channel (see circle.secret_prompt): the tool result contains
+    only a redacted confirmation, never the value.
+    """
     description = load_tool_prompt("question") or (
         "Ask the user clarifying questions during execution."
     )
@@ -224,29 +234,61 @@ def build_question_tool() -> StructuredTool:
     def _run(questions: list[dict[str, Any]]) -> str:
         if not questions:
             return "Error: questions list is empty"
-        lines = [
-            "USER_QUESTIONS — present these to the user and wait for answers "
-            "before continuing irreversible work:",
-            "",
-        ]
-        for i, q in enumerate(questions, 1):
-            text = str(q.get("question") or q.get("prompt") or "").strip()
-            lines.append(f"{i}. {text or '(empty question)'}")
-            opts = q.get("options") or q.get("choices") or []
-            if isinstance(opts, list) and opts:
-                for opt in opts:
-                    if isinstance(opt, dict):
-                        label = opt.get("label") or opt.get("text") or str(opt)
-                    else:
-                        label = str(opt)
-                    lines.append(f"   - {label}")
-            if q.get("multiple"):
-                lines.append("   (multiple selections allowed)")
-            lines.append("")
-        lines.append(
-            "After the user answers in chat, continue with their choices. "
-            "Do not invent answers."
-        )
+
+        lines: list[str] = []
+        secret_questions = [q for q in questions if q.get("secret")]
+        plain_questions = [q for q in questions if not q.get("secret")]
+
+        if secret_questions:
+            if home is None:
+                lines.append(
+                    "SECRET_QUESTIONS unavailable: no circle home directory; "
+                    "ask the user to write the credentials into the env file "
+                    "themselves (never collect secrets in chat)."
+                )
+            else:
+                from circle import secret_prompt
+
+                try:
+                    collected = secret_prompt.collect(home, secret_questions)
+                except secret_prompt.SecretPromptError as exc:
+                    collected = [f"  - 机密收集失败：{exc}"]
+                lines.append(
+                    "SECRET_QUESTIONS — collected via masked input, values "
+                    "never entered this conversation:"
+                )
+                lines.extend(collected)
+                lines.append("")
+
+        if plain_questions:
+            lines.extend(
+                [
+                    "USER_QUESTIONS — present these to the user and wait for answers "
+                    "before continuing irreversible work:",
+                    "",
+                ]
+            )
+            for i, q in enumerate(plain_questions, 1):
+                text = str(q.get("question") or q.get("prompt") or "").strip()
+                lines.append(f"{i}. {text or '(empty question)'}")
+                opts = q.get("options") or q.get("choices") or []
+                if isinstance(opts, list) and opts:
+                    for opt in opts:
+                        if isinstance(opt, dict):
+                            label = opt.get("label") or opt.get("text") or str(opt)
+                        else:
+                            label = str(opt)
+                        lines.append(f"   - {label}")
+                if q.get("multiple"):
+                    lines.append("   (multiple selections allowed)")
+                lines.append("")
+            lines.append(
+                "After the user answers in chat, continue with their choices. "
+                "Do not invent answers."
+            )
+
+        if not lines:
+            return "Error: no questions to ask"
         return "\n".join(lines)
 
     return StructuredTool.from_function(
@@ -268,7 +310,7 @@ def build_extra_tools(
     from circle.lsp_tool import build_lsp_tool
     from circle.websearch import build_websearch_tool
 
-    tools: list[StructuredTool] = [build_webfetch_tool(), build_question_tool()]
+    tools: list[StructuredTool] = [build_webfetch_tool(), build_question_tool(home)]
     tools.append(build_skill_tool(workspace, home, user_home=user_home))
     tools.append(build_websearch_tool())
     tools.append(build_lsp_tool(workspace))
