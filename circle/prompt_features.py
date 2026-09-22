@@ -61,7 +61,7 @@ def skill_source_dirs(workspace: Path | None, home: Path | None) -> list[str]:
 
 
 def explore_subagent_spec() -> dict[str, Any]:
-    """Declarative explore subagent for the ``task`` tool (OpenCode-style)."""
+    """Declarative explore subagent for the ``task`` tool."""
     prompt = load_agent_prompt("explore") or (
         "You are a file search specialist. Explore the codebase with read-only tools."
     )
@@ -96,6 +96,40 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
+def _host_blocked(host: str | None) -> str | None:
+    h = (host or "").lower()
+    if not h:
+        return "missing host"
+    if h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or h.endswith(".local"):
+        return h
+    if h.startswith("169.254.") or h.startswith("10.") or h.startswith("192.168."):
+        return h
+    if h.startswith("172."):
+        try:
+            second = int(h.split(".")[1])
+            if 16 <= second <= 31:
+                return h
+        except (IndexError, ValueError):
+            pass
+    return None
+
+
+class _NoPrivateRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only when the next hop is not a private/local host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        parsed = urlparse(newurl)
+        blocked = _host_blocked(parsed.hostname)
+        if blocked:
+            raise urllib.error.URLError(
+                f"refusing redirect to local/private host {blocked!r}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_FETCH_OPENER = urllib.request.build_opener(_NoPrivateRedirect)
+
+
 def _fetch_url(url: str, fmt: str = "markdown") -> str:
     raw_url = (url or "").strip()
     if not raw_url:
@@ -107,22 +141,32 @@ def _fetch_url(url: str, fmt: str = "markdown") -> str:
     if parsed.scheme not in {"https", "http"} or not parsed.netloc:
         return f"Error: invalid URL {url!r}"
 
+    blocked = _host_blocked(parsed.hostname)
+    if blocked:
+        return f"Error: refusing to fetch local/private host {blocked!r}"
+
     req = urllib.request.Request(
         raw_url,
         headers={"User-Agent": _USER_AGENT, "Accept": "text/*,application/json"},
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        with _FETCH_OPENER.open(req, timeout=30) as resp:  # noqa: S310
             data = resp.read(_MAX_FETCH_BYTES + 1)
             content_type = (resp.headers.get("Content-Type") or "").lower()
             final_url = resp.geturl()
     except urllib.error.HTTPError as exc:
         return f"Error: HTTP {exc.code} fetching {raw_url}"
     except urllib.error.URLError as exc:
-        return f"Error: could not fetch {raw_url}: {exc.reason}"
+        reason = getattr(exc, "reason", exc)
+        return f"Error: could not fetch {raw_url}: {reason}"
     except TimeoutError:
         return f"Error: timeout fetching {raw_url}"
+
+    final_host = urlparse(final_url).hostname
+    blocked_final = _host_blocked(final_host)
+    if blocked_final:
+        return f"Error: refusing final URL host {blocked_final!r}"
 
     truncated = len(data) > _MAX_FETCH_BYTES
     data = data[:_MAX_FETCH_BYTES]

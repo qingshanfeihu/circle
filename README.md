@@ -38,9 +38,13 @@ circle ~/code/my-project
 | `/new` | 新会话（`/clear` 同义） |
 | `/resume` | 恢复会话（`/sessions` 同义） |
 | `/compact` | 压缩上下文（`/summarize` 同义） |
+| `/plan` | 开关 plan mode（优先探索与写 `/plan.md`；变更仍需确认） |
 | `/export` `/share` | 导出 / 本地分享副本 |
 | `/undo` `/redo` | 撤销 / 重做上一回合 |
+| `/hotkeys` | 快捷键说明 |
 | `/exit` | 退出（`/quit` `/q`） |
+
+快捷键：`ctrl+t` 展开思考 · `ctrl+o` 展开工具输出 · `ctrl+r` 历史搜索 · ↑↓ 提示历史。
 
 ## Dev
 

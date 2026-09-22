@@ -56,13 +56,7 @@ def select_session_prompt_name(model_id: str | None) -> str:
     mid = (model_id or "").lower()
     if "muse" in mid:
         return "meta"
-    if (
-        "gpt-4" in mid
-        or mid.startswith("o1")
-        or mid.startswith("o3")
-        or "/o1" in mid
-        or "/o3" in mid
-    ):
+    if "beast" in mid:
         return "beast"
     if "gpt" in mid:
         if "gpt-6" in mid:
@@ -71,6 +65,8 @@ def select_session_prompt_name(model_id: str | None) -> str:
             return "codex"
         if "copilot" in mid and "gpt-5" in mid:
             return "copilot-gpt-5"
+        return "gpt"
+    if mid.startswith("o1") or mid.startswith("o3") or "/o1" in mid or "/o3" in mid:
         return "gpt"
     if "gemini-" in mid or mid.startswith("gemini"):
         return "gemini"
@@ -97,7 +93,28 @@ def load_session_prompt(model_id: str | None = None) -> str:
         path = session_dir / "default.md"
     text = path.read_text(encoding="utf-8").strip()
     text = text.replace("You are circle,", "You are Circle,")
+    if model_id:
+        text = text.replace("{{MODEL_NAME}}", str(model_id))
+    else:
+        text = text.replace("{{MODEL_NAME}}", "the configured model")
+    text = text.replace("trained by Meta MSL", "used by Circle")
     text = _strip_foreign_docs_block(text)
+    # Normalize common third-party tool names to Circle/deepagents names.
+    replacements = (
+        ("TodoWrite", "write_todos"),
+        ("WebFetch", "webfetch"),
+        ("WebSearch", "webfetch"),
+        ("`Bash`", "`execute`"),
+        (" Bash ", " execute "),
+        ("using Bash", "using execute"),
+        ("`Read`", "`read_file`"),
+        ("`Write`", "`write_file`"),
+        ("`Edit`", "`edit_file`"),
+        ("`Glob`", "`glob`"),
+        ("`Grep`", "`grep`"),
+    )
+    for a, b in replacements:
+        text = text.replace(a, b)
     return text
 
 

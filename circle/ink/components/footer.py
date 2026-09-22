@@ -499,7 +499,10 @@ class FooterPane:
                     )
                     try:
                         _stall_s = float(
-                            os.environ.get("IST_LLM_STALL_TIMEOUT") or 180.0)
+                            os.environ.get("CIRCLE_LLM_STALL_TIMEOUT")
+                            or os.environ.get("IST_LLM_STALL_TIMEOUT")
+                            or 180.0
+                        )
                     except (TypeError, ValueError):
                         _stall_s = 180.0
                     _silent = _idle >= _stall_s and _stream_idle >= _stall_s

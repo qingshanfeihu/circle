@@ -18,20 +18,28 @@ from circle.system_prompt import (
 def test_session_prompt_family_mapping():
     assert select_session_prompt_name("claude-sonnet-5") == "anthropic"
     assert select_session_prompt_name("gpt-5") == "gpt"
+    assert select_session_prompt_name("gpt-4.1") == "gpt"
+    assert select_session_prompt_name("o3-mini") == "gpt"
     assert select_session_prompt_name("gemini-2.5-pro") == "gemini"
     assert select_session_prompt_name("mystery-model") == "default"
     assert "anthropic" in available_session_prompts()
     assert "default" in available_session_prompts()
 
 
-def test_load_session_and_tool_prompts():
+def test_load_session_normalizes_tool_names_and_placeholders():
     body = load_session_prompt("claude-sonnet-5")
     assert "Circle" in body
-    assert "You are Circle" in body or "Circle" in body
+    assert "write_todos" in body or "Circle" in body
+    assert "TodoWrite" not in body
     assert load_tool_prompt("read_file")
-    assert load_tool_prompt("execute")
+    execute = load_tool_prompt("execute") or ""
+    assert execute
+    assert "${intro}" not in execute
     assert load_command_prompt("initialize")
     assert "AGENTS.md" in (load_command_prompt("initialize") or "")
+    meta = load_session_prompt("muse-1")
+    assert "{{MODEL_NAME}}" not in meta
+    assert "Meta MSL" not in meta
 
 
 def test_build_includes_paths_env_and_agents(tmp_path: Path):

@@ -33,11 +33,20 @@ _LEVEL_SLOT = {_BASE: 0, "text": 1, "em": 2}
 
 
 def enabled() -> bool:
-    return (os.environ.get("IST_TUI_SHIMMER") or "").strip() != "0"
+    raw = (
+        os.environ.get("CIRCLE_TUI_SHIMMER")
+        or os.environ.get("IST_TUI_SHIMMER")
+        or ""
+    ).strip()
+    return raw != "0"
 
 
 def frame_ms() -> int:
-    raw = (os.environ.get("IST_TUI_SHIMMER_MS") or "").strip()
+    raw = (
+        os.environ.get("CIRCLE_TUI_SHIMMER_MS")
+        or os.environ.get("IST_TUI_SHIMMER_MS")
+        or ""
+    ).strip()
     if raw:
         try:
             return max(_MIN_MS, min(_MAX_MS, int(raw)))

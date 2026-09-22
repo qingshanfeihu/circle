@@ -56,7 +56,7 @@ class ExecApprovalSession:
         if self._stage == _STAGE_ALWAYS:
             tool = str(self._payload.get("tool") or "tool")
             lines.append(
-                f"   {D}This will allow {tool} until IST-Core is restarted.{R}"
+                f"   {D}This will allow {tool} until Circle is restarted.{R}"
             )
         else:
             icon = str(self._payload.get("icon") or GLYPH_MILESTONE)

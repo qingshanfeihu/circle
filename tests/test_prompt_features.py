@@ -55,6 +55,12 @@ def test_extra_tools_webfetch_and_question():
     assert "REST" in q
 
 
+def test_webfetch_blocks_localhost():
+    tools = {t.name: t for t in build_extra_tools()}
+    out = tools["webfetch"].invoke({"url": "http://127.0.0.1/secret"})
+    assert "refusing" in out.lower()
+
+
 def test_skill_source_dirs(tmp_path: Path):
     project = tmp_path / "ws"
     home = tmp_path / "home"

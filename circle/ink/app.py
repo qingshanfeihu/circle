@@ -223,7 +223,7 @@ class InkApp:
                 logger.debug("终端 passthrough 写入失败", exc_info=True)
 
     def render(self) -> None:
-        if not self._running:
+        if not self._running or getattr(self, "_suspended", False):
             return
         with self._render_lock:
             now = time.time()
@@ -238,7 +238,7 @@ class InkApp:
 
     def _do_render(self) -> None:
         with self._render_lock:
-            if not self._running:
+            if not self._running or getattr(self, "_suspended", False):
                 self._render_pending = False
                 return
             if self._render_pending:

@@ -915,7 +915,7 @@ class CircleSessionApp:
             self._toast(f"切换 plan mode 失败: {exc}")
             return
         if want:
-            self._toast("plan mode → 开（只读探索 + 写 /plan.md）")
+            self._toast("plan mode → 开（优先探索；变更仍需确认；计划写 /plan.md）")
         else:
             self._toast("plan mode → 关")
 
