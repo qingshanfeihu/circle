@@ -1,0 +1,6 @@
+# Python >=3.11. Pins are the newest mutually compatible releases on PyPI as of 2026-09-22.
+deepagents==0.7.17
+langchain==1.4.2
+langchain-core==1.6.4
+langgraph==1.2.12
+langsmith==0.14.0
