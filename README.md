@@ -1,33 +1,34 @@
 # Circle
 
-Compile harness with a **zero-Python** install path.
+终端里的编译 / 编码助手。
 
-## Install (release)
+## 安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
 ```
 
-CI builds **PyInstaller onedir** assets per platform and attaches them to the GitHub Release. `install.sh` downloads the matching archive into `~/.local/share/circle` and links `~/.local/bin/circle`.
-
-## First run
+钉版本：
 
 ```bash
-.venv311/bin/circle                 # or: circle /path/to/project
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.1.0/install.sh | CIRCLE_VERSION=0.1.0 bash
 ```
 
-1. **User init** (once): API URL+KEY *or* OAuth → probe → model → `~/.circle/settings.json`
-2. **Trust workspace**: confirm → `.agent/`
-3. **Main session**: InfoTest-style ink shell（transcript + prompt + footer + 权限面板 + 流式刷新），沙箱根 = 已 trust 目录
-
-Headless selftest:
+## 使用
 
 ```bash
-.venv311/bin/pytest -q
-CIRCLE_OAUTH_MOCK=1 .venv311/bin/python scripts/selftest_tui_demo.py
+circle
+# 或
+circle /path/to/project
 ```
 
-## Dev
+1. 首次初始化：API URL+KEY 或 OAuth → 选模型  
+2. Trust 当前工作区  
+3. 进入主界面对话（`/help` 查看命令）
+
+配置写在 `~/.circle/`（可用 `CIRCLE_HOME` 覆盖）。
+
+## 开发
 
 ```bash
 python3.11 -m venv .venv311
@@ -35,14 +36,4 @@ source .venv311/bin/activate
 pip install -r requirements.txt
 pip install -e .
 pytest -q
-./install.sh --from-source   # editable entry on PATH
 ```
-
-## Layout
-
-| Path | Role |
-|------|------|
-| `~/.circle/settings.json` | User settings (model, trusted folders) |
-| `~/.circle/credentials.json` | Secrets (0600) |
-| `<project>/.agent/` | Project agent files (after trust) |
-| `CIRCLE_HOME` | Override user home (tests / custom) |
