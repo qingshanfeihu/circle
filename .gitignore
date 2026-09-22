@@ -8,3 +8,9 @@ build/
 *.spec.bak
 .DS_Store
 .agent/
+
+# compile-excel 子仓与运行产物（独立仓库管理，不入 circle 库）
+compile-excel-skills/
+compile_outputs/
+.agents/
+.circle/
