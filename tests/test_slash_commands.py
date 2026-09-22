@@ -1,4 +1,4 @@
-"""Slash command registry — Pi + OpenCode aligned surface."""
+"""Slash command registry."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def test_help_lists_canonical_commands():
         assert f"/{cmd.name}" in text
 
 
-def test_alias_map_covers_pi_opencode_surface():
+def test_alias_map_covers_coding_agent_surface():
     expected = {
         "help",
         "hotkeys",
@@ -58,6 +58,8 @@ def test_alias_map_covers_pi_opencode_surface():
         "model",
         "compact",
         "summarize",
+        "plan",
+        "plan-mode",
         "undo",
         "redo",
         "thinking",
@@ -118,7 +120,17 @@ def test_slash_core_flows(tmp_path: Path, monkeypatch):
     assert app._share_path is None  # noqa: SLF001
 
     app._on_submit("/init")  # noqa: SLF001
-    assert (app.workspace / "AGENTS.md").is_file()
+    # /init feeds the initialize template to the agent turn.
+    snap = "\n".join(app._transcript.snapshot())  # noqa: SLF001
+    assert "AGENTS.md" in snap
+    assert "Create or update" in snap or "initialize" in snap.lower() or "investigate" in snap.lower()
+    # Wait for the /init agent turn to settle before meta commands that mutate session.
+    import time
+
+    for _ in range(100):
+        if not app._is_loading and not app._bridge.is_running:  # noqa: SLF001
+            break
+        time.sleep(0.05)
 
     app._on_submit("/export")  # noqa: SLF001
     exports = list((app.home / "exports").glob("*.md"))

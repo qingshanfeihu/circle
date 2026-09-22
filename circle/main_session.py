@@ -26,6 +26,9 @@ def run_main(
     agent = create_harness(
         build_chat_model(settings, home=home),
         root_dir=workspace,
+        home=home,
+        model_id=settings.auth.model,
+        protocol=settings.auth.protocol,
     )
     while True:
         try:

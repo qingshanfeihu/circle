@@ -46,7 +46,13 @@ class MainController:
             home=self.home,
             model_override=self.model_override,
         )
-        self._agent = create_harness(model, root_dir=self.workspace)
+        self._agent = create_harness(
+            model,
+            root_dir=self.workspace,
+            home=self.home,
+            model_id=self.settings.auth.model,
+            protocol=self.settings.auth.protocol,
+        )
         self._pending_config = {"configurable": {"thread_id": self._thread_id}}
         self.lines.append(
             TranscriptLine(

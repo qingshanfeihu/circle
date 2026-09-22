@@ -1,4 +1,4 @@
-"""Built-in slash commands aligned with Pi + OpenCode TUI surfaces."""
+"""Built-in slash commands for the Circle TUI."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
         aliases=("connect",),
     ),
     SlashCommand("logout", "Clear saved credentials"),
-    SlashCommand("init", "Create or refresh project AGENTS.md"),
+    SlashCommand("init", "Analyze repo and write AGENTS.md"),
     SlashCommand("trust", "Trust this workspace and create .agent/"),
     SlashCommand("settings", "Show current settings"),
     SlashCommand("themes", "List / set theme: /themes [name]"),
@@ -37,6 +37,11 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("session", "Show session id, title, model, size"),
     SlashCommand("models", "List or switch model: /models [name]", aliases=("model",)),
     SlashCommand("compact", "Summarize context to free the window", aliases=("summarize",)),
+    SlashCommand(
+        "plan",
+        "Toggle plan mode: /plan [on|off]",
+        aliases=("plan-mode",),
+    ),
     SlashCommand("undo", "Revert last user turn (conversation)"),
     SlashCommand("redo", "Restore after /undo"),
     SlashCommand("thinking", "Toggle thinking-block visibility"),
@@ -100,14 +105,21 @@ def help_text() -> str:
 
 
 def hotkeys_text() -> str:
+    # Session-ring shortcuts.
     return "\n".join(
         [
             "Keyboard shortcuts:",
             "  enter           send",
             "  esc             cancel turn / clear prompt",
             "  ctrl+c          abort turn; twice to exit",
+            "  ctrl+d          exit",
             "  ctrl+t          expand/collapse thinking",
-            "  up/down         scroll transcript",
+            "  ctrl+o          expand/collapse tool output",
+            "  ctrl+r          reverse-i-search history",
+            "  ctrl+l          redraw screen",
+            "  up/down         prompt history",
+            "  pageup/pagedown scroll transcript",
+            "  tab             slash-command complete",
             "  /               slash commands (/help)",
         ]
     )

@@ -40,7 +40,7 @@ class CircleSettings:
     auth: ModelAuth = field(default_factory=ModelAuth)
     trusted_folders: list[str] = field(default_factory=list)
     theme: str = "terminal"
-    # OpenCode-compatible MCP stubs: [{name, command|url, ...}]
+    # MCP server stubs: [{name, command|url, ...}]
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
 
     def is_ready(self) -> bool:

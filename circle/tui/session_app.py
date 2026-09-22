@@ -19,6 +19,7 @@ from typing import Any
 from langgraph.checkpoint.memory import MemorySaver
 
 from circle.harness import create_harness
+from circle.prompt_features import compact_messages
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
 from circle.ink.components.exec_approval_view import ExecApprovalSession
@@ -26,7 +27,7 @@ from circle.ink.components.footer import FooterPane
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
 from circle.ink.dom import NodeType, create_element, create_fill_text, create_text
-from circle.ink.parse_keypress import InputEvent, KeyPress, PasteEvent
+from circle.ink.parse_keypress import InputEvent, KeyPress, MouseEvent, PasteEvent
 from circle.ink.theme import GLYPH_AGENT, init_palette_from_terminal, palette
 from circle.model import build_chat_model
 from circle.paths import circle_home, ensure_home, normalize_workspace
@@ -44,7 +45,8 @@ from circle.settings import (
 from circle.tui.content_blocks import assistant_block, render_thinking_line
 from circle.tui.controllers import InitController, InitStep, TrustController
 from circle.tui.harness_bridge import HarnessBridge, StreamUpdate
-from circle.tui.slash_commands import help_text, hotkeys_text, parse_slash
+from circle.tui.input_history import InputHistory
+from circle.tui.slash_commands import BUILTIN_SLASH, help_text, hotkeys_text, parse_slash
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -100,7 +102,7 @@ class CircleSessionApp:
         apply_auth_to_environ(settings, self.home)
         init_palette_from_terminal()
 
-        self._app = InkApp(alt_screen=True, mouse=False)
+        self._app = InkApp(alt_screen=True, mouse=True)
         self._transcript = Transcript()
         self._ask_panel = AskUserPanel()
         self._thinking_line = create_element(NodeType.BOX)
@@ -118,6 +120,8 @@ class CircleSessionApp:
             thinking_text_cb=self._update_thinking_line,
         )
         self._footer.update(model=settings.auth.model, status="ready")
+        hist_path = (self.home / "history")
+        self._input_history = InputHistory(path=hist_path)
 
         self._divider_top = create_element(NodeType.BOX)
         self._divider_top.style.height = 1
@@ -146,7 +150,9 @@ class CircleSessionApp:
         self._thinking_body = ""
         self._thinking_expanded = False
         self._show_thinking = True
-        self._show_details = True
+        self._tool_outputs_expanded = False
+        self._show_details = False  # alias of tool_outputs_expanded (InfoTest verbose)
+        self._main_thinking_lines: list[dict[str, Any]] = []
         self._call_started_at = 0.0
         self._exec_approval: ExecApprovalSession | None = None
         self._ask_saved_prompt = ""
@@ -161,12 +167,35 @@ class CircleSessionApp:
         self._redo_stack: list[_SessionRecord] = []
         self._share_path: Path | None = None
         self._last_assistant_plain = ""
+        self._plan_mode = False
 
         model = build_chat_model(
             settings, home=self.home, model_override=model_override
         )
         self._agent = create_harness(
-            model, root_dir=self.workspace, checkpointer=self._checkpointer
+            model,
+            root_dir=self.workspace,
+            home=self.home,
+            checkpointer=self._checkpointer,
+            model_id=settings.auth.model,
+            protocol=settings.auth.protocol,
+            plan_mode=self._plan_mode,
+        )
+        self._bridge = self._make_bridge()
+
+    def _rebuild_agent(self, *, model: Any | None = None) -> None:
+        """Rebuild harness with current settings / plan mode."""
+        chat = model or build_chat_model(
+            self.settings, home=self.home, model_override=self.model_override
+        )
+        self._agent = create_harness(
+            chat,
+            root_dir=self.workspace,
+            home=self.home,
+            checkpointer=self._checkpointer,
+            model_id=self.settings.auth.model,
+            protocol=self.settings.auth.protocol,
+            plan_mode=self._plan_mode,
         )
         self._bridge = self._make_bridge()
 
@@ -222,16 +251,26 @@ class CircleSessionApp:
 
     def _handle_input(self, event: InputEvent) -> None:
         if isinstance(event, PasteEvent):
+            if self._input_history.in_search_mode:
+                return
             self._prompt.handle_paste(event.text)
             self._app.render()
+            return
+        if isinstance(event, MouseEvent):
+            self._handle_mouse(event)
             return
         if not isinstance(event, KeyPress):
             return
         self._handle_key(event)
 
     def _handle_key(self, kp: KeyPress) -> None:
+        # InfoTest ist_app._handle_key — same session-ring order.
         if self._exec_approval is not None:
             if self._exec_approval.handle_key(kp.key, kp.char):
+                return
+
+        if self._input_history.in_search_mode:
+            if self._handle_search_key(kp):
                 return
 
         if kp.key == "ctrl+c":
@@ -253,6 +292,10 @@ class CircleSessionApp:
             self._app.render()
             return
 
+        if kp.key == "ctrl+d":
+            self._app._running = False  # noqa: SLF001
+            return
+
         if kp.key == "escape":
             if self._is_loading:
                 self._bridge.cancel()
@@ -263,20 +306,40 @@ class CircleSessionApp:
             self._app.render()
             return
 
+        if kp.key == "ctrl+o":
+            self._toggle_tool_outputs()
+            return
+
         if kp.key == "ctrl+t":
-            self._thinking_expanded = not self._thinking_expanded
-            self._show_thinking = True
-            self._refresh_thinking_row()
+            self._toggle_thinking()
+            return
+
+        if kp.key == "ctrl+l":
+            self._app._force_full_render()  # noqa: SLF001
+            return
+
+        if kp.key == "pageup":
+            self._scroll_transcript(-self._half_viewport())
+            return
+        if kp.key == "pagedown":
+            self._scroll_transcript(self._half_viewport())
+            return
+
+        if kp.key == "ctrl+r":
+            self._enter_or_advance_search()
+            return
+
+        if kp.key == "up":
+            self._history_up()
+            self._app.render()
+            return
+        if kp.key == "down":
+            self._history_down()
             self._app.render()
             return
 
-        if kp.key in {"up", "pageup"}:
-            self._transcript.scroll_up(3)
-            self._app.render()
-            return
-        if kp.key in {"down", "pagedown"}:
-            self._transcript.scroll_down(3)
-            self._app.render()
+        if kp.key == "tab":
+            self._tab_complete()
             return
 
         if self._prompt.handle_key(
@@ -285,10 +348,144 @@ class CircleSessionApp:
         ):
             self._app.render()
 
+    def _handle_mouse(self, me: MouseEvent) -> None:
+        if me.type == "wheel":
+            if me.button == 0:
+                self._scroll_transcript(-3)
+            elif me.button == 1:
+                self._scroll_transcript(3)
+
+    def _half_viewport(self) -> int:
+        return max(1, self._transcript.viewport_height() // 2)
+
+    def _scroll_transcript(self, delta: int) -> None:
+        if delta == 0:
+            return
+        self._transcript.scroll_by(delta)
+        self._app._repaint_full()  # noqa: SLF001
+
+    def _history_up(self) -> None:
+        result = self._input_history.up(self._prompt.value)
+        if result is not None:
+            self._prompt.set_value(result)
+
+    def _history_down(self) -> None:
+        result = self._input_history.down(self._prompt.value)
+        if result is not None:
+            self._prompt.set_value(result)
+        else:
+            self._prompt.clear()
+
+    def _tab_complete(self) -> None:
+        val = self._prompt.value
+        if not val.startswith("/"):
+            return
+        prefix = val[1:].lower()
+        matches = [
+            cmd for cmd in BUILTIN_SLASH if cmd.name.lower().startswith(prefix)
+        ]
+        if not matches:
+            return
+        if len(matches) == 1:
+            self._prompt.set_value(f"/{matches[0].name} ")
+        else:
+            names = "  ".join(f"/{m.name}" for m in matches[:8])
+            self._footer.set_toast(f"{names}  [Tab · Enter]", ttl_seconds=2.0)
+            self._prompt.set_value(f"/{matches[0].name} ")
+        self._app.render()
+
+    def _enter_or_advance_search(self) -> None:
+        if self._input_history.in_search_mode:
+            result = self._input_history.search_next()
+            self._update_search_ui(result)
+        else:
+            result = self._input_history.start_search(self._prompt.value)
+            self._update_search_ui(result)
+
+    def _update_search_ui(self, match: str | None) -> None:
+        query = self._input_history.search_query
+        if match is not None:
+            self._prompt.set_value(match)
+        self._footer.set_search_state(query=query, match=match if match else "")
+        self._app.render()
+
+    def _handle_search_key(self, kp: KeyPress) -> bool:
+        key = kp.key
+        if key == "ctrl+r":
+            return False
+        if key == "escape":
+            draft = self._input_history.exit_search(restore=True)
+            self._prompt.set_value(draft)
+            self._footer.set_search_state(query=None, match=None)
+            self._app.render()
+            return True
+        if key == "enter":
+            self._input_history.exit_search(restore=False)
+            self._footer.set_search_state(query=None, match=None)
+            text = self._prompt.value
+            if text:
+                self._prompt.clear()
+                self._on_submit(text)
+            else:
+                self._app.render()
+            return True
+        if key == "backspace":
+            new_q = self._input_history.search_query[:-1]
+            result = self._input_history.update_search_query(new_q)
+            self._update_search_ui(result)
+            return True
+        if key == "ctrl+c":
+            draft = self._input_history.exit_search(restore=True)
+            self._prompt.set_value(draft)
+            self._footer.set_search_state(query=None, match=None)
+            self._app.render()
+            return True
+        if kp.char and len(kp.char) == 1 and kp.char.isprintable():
+            new_q = self._input_history.search_query + kp.char
+            result = self._input_history.update_search_query(new_q)
+            self._update_search_ui(result)
+            return True
+        self._input_history.exit_search(restore=False)
+        self._footer.set_search_state(query=None, match=None)
+        return False
+
+    def _toggle_thinking(self) -> None:
+        """InfoTest ``_toggle_thinking`` — expand/collapse all thinking rows."""
+        self._thinking_expanded = not self._thinking_expanded
+        self._show_thinking = True
+        done = not self._is_loading
+        for rec in self._main_thinking_lines:
+            body = str(rec.get("body") or "")
+            idx = int(rec.get("idx", -1))
+            if idx < 0:
+                continue
+            self._transcript.update_message_at(
+                idx,
+                render_thinking_line(
+                    body=body,
+                    done=True if idx != self._thinking_idx else done,
+                    expanded=self._thinking_expanded,
+                ),
+            )
+        if self._thinking_body and self._thinking_idx >= 0:
+            self._refresh_thinking_row(done=None if self._is_loading else True)
+        self._app.render()
+
+    def _toggle_tool_outputs(self) -> None:
+        """InfoTest ``_toggle_expand`` / ctrl+o — tool-output verbosity."""
+        self._tool_outputs_expanded = not self._tool_outputs_expanded
+        self._show_details = self._tool_outputs_expanded
+        state = "展开" if self._tool_outputs_expanded else "折叠"
+        self._toast(f"工具输出 → {state}（ctrl+o）")
+        self._footer.update(status="ready" if not self._is_loading else "running")
+        self._app.render()
+
     def _on_submit(self, text: str) -> None:
         text = text.strip()
         if not text:
             return
+        self._input_history.add(text)
+        self._input_history.reset_navigation()
         parsed = parse_slash(text)
         if parsed is not None:
             self._dispatch_slash(parsed.name, parsed.args)
@@ -341,7 +538,22 @@ class CircleSessionApp:
                 self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
             self._app.render()
             return
-        if self._bridge.is_running or self._is_loading:
+        # Meta / read-only commands stay available mid-turn (export, session, …).
+        # Agent-driving commands wait until idle.
+        _busy_ok = {
+            "settings",
+            "session",
+            "themes",
+            "mcp",
+            "copy",
+            "export",
+            "share",
+            "unshare",
+            "thinking",
+            "details",
+            "name",
+        }
+        if name not in _busy_ok and (self._bridge.is_running or self._is_loading):
             self._toast("(busy — 等待当前回合完成)")
             return
         handlers = {
@@ -359,6 +571,7 @@ class CircleSessionApp:
             "session": self._cmd_session,
             "models": self._cmd_models,
             "compact": self._cmd_compact,
+            "plan": self._cmd_plan,
             "undo": self._cmd_undo,
             "redo": self._cmd_redo,
             "thinking": self._cmd_thinking,
@@ -415,7 +628,7 @@ class CircleSessionApp:
             self._show_welcome()
 
     def _cmd_login(self, args: str) -> None:
-        """Pi /login · OpenCode /connect — OAuth provider auth."""
+        """OAuth provider login (/login, /connect)."""
         from circle.oauth import (
             OAuthNotConfiguredError,
             SUPPORTED_OAUTH_PROVIDERS,
@@ -467,10 +680,7 @@ class CircleSessionApp:
         apply_auth_to_environ(self.settings, self.home)
         try:
             chat = build_chat_model(self.settings, home=self.home)
-            self._agent = create_harness(
-                chat, root_dir=self.workspace, checkpointer=self._checkpointer
-            )
-            self._bridge = self._make_bridge()
+            self._rebuild_agent(model=chat)
             self.model_override = None
         except Exception as exc:  # noqa: BLE001
             self._toast(f"凭证已保存，但重建模型失败: {exc}")
@@ -611,10 +821,7 @@ class CircleSessionApp:
         except Exception as exc:  # noqa: BLE001
             self._toast(f"切换失败: {exc}")
             return
-        self._agent = create_harness(
-            model, root_dir=self.workspace, checkpointer=self._checkpointer
-        )
-        self._bridge = self._make_bridge()
+        self._rebuild_agent(model=model)
         self._footer.update(model=name)
         self._toast(f"模型 → {name}")
 
@@ -625,7 +832,7 @@ class CircleSessionApp:
         )
 
     def _cmd_compact(self, args: str) -> None:
-        hint = args.strip() or "Summarize the conversation for continuity. Keep decisions, paths, and open tasks."
+        hint = args.strip()
         plain_lines = [
             _strip_ansi(m).strip()
             for m in self._transcript.snapshot()
@@ -644,17 +851,7 @@ class CircleSessionApp:
             err: BaseException | None = None
             try:
                 model = self._session_chat_model()
-                result = model.invoke(
-                    [
-                        {
-                            "role": "user",
-                            "content": (
-                                f"{hint}\n\n---\n\nTranscript:\n{body}\n\n"
-                                "Reply with the summary only."
-                            ),
-                        }
-                    ]
-                )
+                result = model.invoke(compact_messages(transcript=body, hint=hint))
                 content = getattr(result, "content", result)
                 if isinstance(content, list):
                     parts = []
@@ -695,18 +892,59 @@ class CircleSessionApp:
 
         threading.Thread(target=_work, name="circle-compact", daemon=True).start()
 
+    def _cmd_plan(self, args: str) -> None:
+        token = (args or "").strip().lower()
+        if token in {"on", "1", "true", "enable"}:
+            want = True
+        elif token in {"off", "0", "false", "disable"}:
+            want = False
+        elif not token:
+            want = not self._plan_mode
+        else:
+            self._toast("用法: /plan [on|off]")
+            return
+        if want == self._plan_mode:
+            state = "开" if want else "关"
+            self._toast(f"plan mode 已是{state}")
+            return
+        self._plan_mode = want
+        try:
+            self._rebuild_agent()
+        except Exception as exc:  # noqa: BLE001
+            self._plan_mode = not want
+            self._toast(f"切换 plan mode 失败: {exc}")
+            return
+        if want:
+            self._toast("plan mode → 开（只读探索 + 写 /plan.md）")
+        else:
+            self._toast("plan mode → 关")
+
     def _cmd_thinking(self, _args: str) -> None:
         self._show_thinking = not self._show_thinking
-        self._thinking_expanded = self._show_thinking
-        if self._thinking_body:
-            self._refresh_thinking_row()
+        if not self._show_thinking:
+            for rec in self._main_thinking_lines:
+                idx = int(rec.get("idx", -1))
+                if idx >= 0:
+                    self._transcript.update_message_at(idx, "")
+        else:
+            for rec in self._main_thinking_lines:
+                idx = int(rec.get("idx", -1))
+                body = str(rec.get("body") or "")
+                if idx < 0:
+                    continue
+                self._transcript.update_message_at(
+                    idx,
+                    render_thinking_line(
+                        body=body,
+                        done=True,
+                        expanded=self._thinking_expanded,
+                    ),
+                )
         state = "显示" if self._show_thinking else "隐藏"
         self._toast(f"思考块 → {state}")
 
     def _cmd_details(self, _args: str) -> None:
-        self._show_details = not self._show_details
-        self._footer.update(status="ready" if not self._is_loading else "running")
-        self._toast(f"工具细节 → {'开' if self._show_details else '关'}")
+        self._toggle_tool_outputs()
 
     def _snapshot_record(self) -> _SessionRecord:
         return _SessionRecord(
@@ -729,6 +967,7 @@ class CircleSessionApp:
         self._stream_buf = ""
         self._thinking_idx = -1
         self._thinking_body = ""
+        self._main_thinking_lines = []
         self._context_prefix = ""
         self._transcript.restore(rec.lines)
 
@@ -750,29 +989,18 @@ class CircleSessionApp:
         self._restore_record(rec)
         self._toast("已重做")
 
-    def _cmd_init(self, _args: str) -> None:
-        path = self.workspace / "AGENTS.md"
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        block = (
-            f"# AGENTS.md\n\n"
-            f"Generated by Circle `/init` on {stamp}.\n\n"
-            f"## Project\n\n"
-            f"- Workspace: `{self.workspace}`\n\n"
-            f"## Conventions\n\n"
-            f"- Prefer small, reviewable changes.\n"
-            f"- Do not commit secrets; credentials stay in `~/.circle/`.\n"
-        )
-        if path.is_file():
-            existing = path.read_text(encoding="utf-8")
-            if "Generated by Circle `/init`" in existing or existing.strip():
-                path.write_text(
-                    existing.rstrip() + "\n\n---\n\n" + block,
-                    encoding="utf-8",
-                )
-                self._toast(f"已追加更新 {path}")
-                return
-        path.write_text(block, encoding="utf-8")
-        self._toast(f"已创建 {path}")
+    def _cmd_init(self, args: str) -> None:
+        """Send the initialize template to the agent to write AGENTS.md."""
+        from circle.system_prompt import load_command_prompt
+
+        tmpl = load_command_prompt("initialize")
+        if not tmpl:
+            self._toast("缺少 prompts/commands/initialize.md")
+            return
+        focus = (args or "").strip() or "(none)"
+        prompt = tmpl.replace("$ARGUMENTS", focus)
+        # Feed as a normal user turn so the agent writes AGENTS.md via tools.
+        self._on_submit(prompt)
 
     def _cmd_trust(self, _args: str) -> None:
         from circle.trust import accept_trust
@@ -1023,13 +1251,7 @@ class CircleSessionApp:
         self.settings = load_settings(self.home)
         apply_auth_to_environ(self.settings, self.home)
         try:
-            model = build_chat_model(
-                self.settings, home=self.home, model_override=self.model_override
-            )
-            self._agent = create_harness(
-                model, root_dir=self.workspace, checkpointer=self._checkpointer
-            )
-            self._bridge = self._make_bridge()
+            self._rebuild_agent()
         except Exception as exc:  # noqa: BLE001
             self._toast(f"reload 部分失败: {exc}")
             return
@@ -1148,8 +1370,19 @@ class CircleSessionApp:
             self._thinking_idx = self._transcript.message_count() - 1
             if self._stream_idx >= 0 and self._stream_idx >= self._thinking_idx:
                 self._stream_idx += 1
+            self._main_thinking_lines.append(
+                {"idx": self._thinking_idx, "body": self._thinking_body}
+            )
         else:
             self._transcript.update_message_at(self._thinking_idx, line)
+            for rec in self._main_thinking_lines:
+                if rec.get("idx") == self._thinking_idx:
+                    rec["body"] = self._thinking_body
+                    break
+            else:
+                self._main_thinking_lines.append(
+                    {"idx": self._thinking_idx, "body": self._thinking_body}
+                )
 
     def _on_done(self, text: str) -> None:
         with self._app.lock:

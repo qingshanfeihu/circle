@@ -74,6 +74,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         "reload": "/reload",
         "undo": "/undo",
         "redo": "/redo",
+        "plan": "/plan on",
     }
 
     # Re-login after logout in the map order — reorder carefully
@@ -89,9 +90,15 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         assert cmd, name
         if name == "logout":
             app._on_submit("/login anthropic")  # noqa: SLF001
-        if name == "reload":
-            app._on_submit("/login anthropic")  # noqa: SLF001
+        if name in {"reload", "plan", "init"}:
+            if name == "reload":
+                app._on_submit("/login anthropic")  # noqa: SLF001
+            # Keep ScriptedModel after /login clears the override.
             app.model_override = ScriptedModel(responses=[AIMessage(content="ok")])
+            try:
+                app._rebuild_agent(model=app.model_override)  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
         app._on_submit(cmd)  # noqa: SLF001
         # must not raise; transcript grows
         assert app._transcript.message_count() > 0  # noqa: SLF001
@@ -99,7 +106,10 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
     # compact separately (async)
     import time
 
+    # Drop any still-running /init bridge worker so compact is not blocked.
+    app._leave_busy()  # noqa: SLF001
     app.model_override = ScriptedModel(responses=[AIMessage(content="SUM")])
+    app._bridge = app._make_bridge()  # noqa: SLF001
     app._transcript.append_message("c1")  # noqa: SLF001
     app._transcript.append_message("c2")  # noqa: SLF001
     app._on_submit("/compact")  # noqa: SLF001
