@@ -46,6 +46,18 @@ circle ~/code/my-project
 
 快捷键：`ctrl+t` 展开思考 · `ctrl+o` 展开工具输出 · `ctrl+r` 历史搜索 · ↑↓ 提示历史。
 
+## Skills
+
+Circle 按 Agent Skills 约定加载 `SKILL.md`（YAML frontmatter + 说明）：
+
+| 位置 | 说明 |
+|------|------|
+| `~/.circle/skills/<name>/SKILL.md` | 用户级 |
+| `~/.agents/skills/…` | 本机共享 |
+| `.agent/skills/` · `.circle/skills/` · `.agents/skills/` | 项目级（后者会向上找到 git 根） |
+
+系统提示里只放名称与简介；需要全文时用 `read_file`、工具 `skill`，或会话里 `/skill <name>`。
+
 ## Dev
 
 ```bash

@@ -22,9 +22,9 @@ from circle.prompt_features import (
     collect_tool_description_overrides,
     explore_subagent_spec,
     plan_mode_append,
-    skill_source_dirs,
 )
 from circle.sandbox import CircleSandboxBackend
+from circle.skills import skill_sources
 from circle.system_prompt import build_system_prompt
 
 SYSTEM_PROMPT = build_system_prompt()
@@ -110,8 +110,8 @@ def create_harness(
     # Note: FilesystemPermission cannot be used with SandboxBackendProtocol yet
     # (deepagents limitation). Explore/plan stay read-mostly via system prompts.
 
-    skills = skill_source_dirs(cwd, home)
-    extra = build_extra_tools()
+    skills = skill_sources(cwd, home)
+    extra = build_extra_tools(cwd, home)
 
     kwargs: dict[str, Any] = {
         "model": model,

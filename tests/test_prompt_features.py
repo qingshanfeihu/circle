@@ -13,9 +13,9 @@ from circle.prompt_features import (
     compact_messages,
     explore_subagent_spec,
     plan_mode_append,
-    skill_source_dirs,
     title_messages,
 )
+from circle.skills import skill_source_dirs
 from circle.system_prompt import build_system_prompt, load_agent_prompt
 from circle.testing import ScriptedModel
 
@@ -67,9 +67,27 @@ def test_skill_source_dirs(tmp_path: Path):
     (project / ".agent" / "skills").mkdir(parents=True)
     (home / "skills").mkdir(parents=True)
     dirs = skill_source_dirs(project, home)
-    assert len(dirs) == 2
+    assert len(dirs) >= 2
     assert any("skills" in d for d in dirs)
-    assert skill_source_dirs(project, None) == [str((project / ".agent" / "skills").resolve())]
+    assert str((project / ".agent" / "skills").resolve()) in dirs
+
+
+def test_extra_tools_include_skill(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = tmp_path / "ws"
+    uh = tmp_path / "uhome"
+    uh.mkdir()
+    d = home / "skills" / "alpha"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Alpha skill\n---\n\n# Alpha\n",
+        encoding="utf-8",
+    )
+    tools = {t.name: t for t in build_extra_tools(ws, home, user_home=uh)}
+    assert "skill" in tools
+    out = tools["skill"].invoke({"name": "alpha"})
+    assert "skill_content" in out
+    assert "Alpha" in out
 
 
 def test_compact_and_title_messages_use_agent_prompts():

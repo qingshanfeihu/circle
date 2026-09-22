@@ -572,6 +572,7 @@ class CircleSessionApp:
             "models": self._cmd_models,
             "compact": self._cmd_compact,
             "plan": self._cmd_plan,
+            "skill": self._cmd_skill,
             "undo": self._cmd_undo,
             "redo": self._cmd_redo,
             "thinking": self._cmd_thinking,
@@ -918,6 +919,32 @@ class CircleSessionApp:
             self._toast("plan mode → 开（优先探索；变更仍需确认；计划写 /plan.md）")
         else:
             self._toast("plan mode → 关")
+
+    def _cmd_skill(self, args: str) -> None:
+        from circle.skills import discover_skills, format_skills_slash_list, load_skill_body
+
+        skills = discover_skills(self.workspace, self.home)
+        token = (args or "").strip()
+        if not token:
+            for line in format_skills_slash_list(skills).splitlines():
+                self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+            self._app.render()
+            return
+        name = token.split()[0]
+        body = load_skill_body(name, skills=skills)
+        if body.startswith("Error:"):
+            self._toast(body)
+            return
+        # Force-load into the next turn (progressive disclosure bypass).
+        prefix = (
+            f"The user loaded skill `{name}` via /skill. Follow it for the "
+            f"next request.\n\n{body}"
+        )
+        if self._context_prefix:
+            self._context_prefix = self._context_prefix + "\n\n" + prefix
+        else:
+            self._context_prefix = prefix
+        self._toast(f"已加载 skill `{name}`（将用于下一轮对话）")
 
     def _cmd_thinking(self, _args: str) -> None:
         self._show_thinking = not self._show_thinking

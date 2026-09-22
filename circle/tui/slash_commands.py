@@ -42,6 +42,11 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
         "Toggle plan mode: /plan [on|off]",
         aliases=("plan-mode",),
     ),
+    SlashCommand(
+        "skill",
+        "List or load a skill: /skill [name]",
+        aliases=("skills",),
+    ),
     SlashCommand("undo", "Revert last user turn (conversation)"),
     SlashCommand("redo", "Restore after /undo"),
     SlashCommand("thinking", "Toggle thinking-block visibility"),
