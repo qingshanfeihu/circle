@@ -75,6 +75,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         "undo": "/undo",
         "redo": "/redo",
         "plan": "/plan on",
+        "skill": "/skills",
     }
 
     # Re-login after logout in the map order — reorder carefully

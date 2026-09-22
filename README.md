@@ -46,6 +46,29 @@ circle ~/code/my-project
 
 快捷键：`ctrl+t` 展开思考 · `ctrl+o` 展开工具输出 · `ctrl+r` 历史搜索 · ↑↓ 提示历史。
 
+## Skills
+
+Circle 兼容 [skills.sh](https://skills.sh) / Agent Skills 生态：和多数 harness 一样读 **`.agents/skills`**。
+
+安装（任选其一）：
+
+```bash
+# 推荐：装到通用 .agents/skills（Circle / Cursor / Codex 等都会读）
+npx skills add <owner/repo> --skill <name> -a amp -y
+
+# 或装到所有支持 .agents/skills 的 agent
+npx skills add <owner/repo> --skill <name> -a amp,cursor,codex -y
+```
+
+Circle 还会额外读取：
+
+| 位置 | 说明 |
+|------|------|
+| `~/.agents/skills/` · 项目 `.agents/skills/` | skills.sh 通用目录（优先兼容） |
+| `~/.circle/skills/` · `.circle/skills/` · `.agent/skills/` | Circle 私有目录 |
+
+系统提示只放名称与简介；全文用 `read_file`、工具 `skill`，或 `/skill <name>`。
+
 ## Dev
 
 ```bash

@@ -60,6 +60,8 @@ def test_alias_map_covers_coding_agent_surface():
         "summarize",
         "plan",
         "plan-mode",
+        "skill",
+        "skills",
         "undo",
         "redo",
         "thinking",

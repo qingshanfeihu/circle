@@ -313,6 +313,7 @@ def _tool_catalog_section() -> str:
         "task": "delegate to a subagent (e.g. explore)",
         "webfetch": "fetch a URL as text/markdown",
         "question": "ask the user clarifying questions",
+        "skill": "load a SKILL.md package by name",
     }
     lines = ["Available tools:"]
     for name, desc in snippets.items():

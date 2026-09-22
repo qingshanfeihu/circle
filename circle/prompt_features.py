@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from circle.skills import build_skill_tool
 from circle.system_prompt import load_agent_prompt, load_tool_prompt
 
 # deepagents built-in tool names that have matching prompt files
@@ -39,25 +40,13 @@ def collect_tool_description_overrides() -> dict[str, str]:
         body = load_tool_prompt(name)
         if body:
             out[name] = body
-    # Alias shell → execute if present
     shell = load_tool_prompt("execute")
     if shell:
         out["execute"] = shell
+    skill = load_tool_prompt("skill")
+    if skill:
+        out["skill"] = skill
     return out
-
-
-def skill_source_dirs(workspace: Path | None, home: Path | None) -> list[str]:
-    """Skill roots: project ``.agent/skills`` then user ``~/.circle/skills``."""
-    sources: list[str] = []
-    if workspace is not None:
-        project = Path(workspace) / ".agent" / "skills"
-        if project.is_dir():
-            sources.append(str(project.resolve()))
-    if home is not None:
-        user = Path(home) / "skills"
-        if user.is_dir():
-            sources.append(str(user.resolve()))
-    return sources
 
 
 def explore_subagent_spec() -> dict[str, Any]:
@@ -265,8 +254,15 @@ def build_question_tool() -> StructuredTool:
     )
 
 
-def build_extra_tools() -> list[StructuredTool]:
-    return [build_webfetch_tool(), build_question_tool()]
+def build_extra_tools(
+    workspace: Path | None = None,
+    home: Path | None = None,
+    *,
+    user_home: Path | None = None,
+) -> list[StructuredTool]:
+    tools: list[StructuredTool] = [build_webfetch_tool(), build_question_tool()]
+    tools.append(build_skill_tool(workspace, home, user_home=user_home))
+    return tools
 
 
 _COMPACT_FORMAT = """\
