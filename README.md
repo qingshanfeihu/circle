@@ -48,7 +48,7 @@ circle ~/code/my-project
 
 ## Skills
 
-Circle 兼容 [skills.sh](https://skills.sh) / Agent Skills 生态：和多数 harness 一样读 **`.agents/skills`**。
+Circle 兼容 [skills.sh](https://skills.sh) / Agent Skills 生态：和多数 harness 一样读 **`.agents/skills`**，并兼容 `.opencode/skills`、`.pi/skills`、`.claude/skills`。
 
 安装（任选其一）：
 
@@ -64,10 +64,18 @@ Circle 还会额外读取：
 
 | 位置 | 说明 |
 |------|------|
-| `~/.agents/skills/` · 项目 `.agents/skills/` | skills.sh 通用目录（优先兼容） |
+| `~/.agents/skills/` · 项目 `.agents/skills/` | skills.sh 通用目录 |
+| `~/.config/opencode/skills` · `.opencode/skills` | OpenCode |
+| `~/.pi/agent/skills` · `.pi/skills` | Pi |
 | `~/.circle/skills/` · `.circle/skills/` · `.agent/skills/` | Circle 私有目录 |
 
-系统提示只放名称与简介；全文用 `read_file`、工具 `skill`，或 `/skill <name>`。
+系统提示只放名称与简介；全文用 `read_file`、工具 `skill`，或 `/skill <name>` / `/skill:name`。
+
+自定义 slash：在 `.circle/commands/*.md` 或 `.opencode/commands/*.md`（兼容 OpenCode frontmatter）。
+
+MCP：在 `~/.circle/settings.json` 配置 `mcp_servers` 后会真正加载工具；`/mcp` 查看，`/mcp reload` 重连。
+
+会话分支：`/tree` `/fork` `/clone`。Plan mode（`/plan`）硬拦截写改与 shell（仅允许 `/plan.md`）。
 
 ## Dev
 

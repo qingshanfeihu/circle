@@ -6,3 +6,5 @@ langchain-openai==1.1.12
 langchain-anthropic==1.7.2
 langgraph==1.2.12
 langsmith==0.14.0
+mcp==1.30.0
+langchain-mcp-adapters==0.3.2

@@ -27,6 +27,9 @@ _BUILTIN_TOOL_PROMPT_NAMES = (
     "execute",
     "write_todos",
     "task",
+    "apply_patch",
+    "websearch",
+    "lsp",
 )
 
 _MAX_FETCH_BYTES = 500_000
@@ -259,9 +262,53 @@ def build_extra_tools(
     home: Path | None = None,
     *,
     user_home: Path | None = None,
+    plan_mode: bool = False,
 ) -> list[StructuredTool]:
+    from circle.apply_patch import apply_patch_text, build_apply_patch_tool
+    from circle.lsp_tool import build_lsp_tool
+    from circle.websearch import build_websearch_tool
+
     tools: list[StructuredTool] = [build_webfetch_tool(), build_question_tool()]
     tools.append(build_skill_tool(workspace, home, user_home=user_home))
+    tools.append(build_websearch_tool())
+    tools.append(build_lsp_tool(workspace))
+
+    patch_tool = build_apply_patch_tool(workspace)
+    if plan_mode:
+        root = Path(workspace).resolve() if workspace else Path.cwd()
+
+        def _plan_patch(patchText: str) -> str:
+            for line in patchText.splitlines():
+                for prefix in (
+                    "*** Add File:",
+                    "*** Delete File:",
+                    "*** Update File:",
+                    "*** Move to:",
+                ):
+                    if line.startswith(prefix):
+                        target = line.split(":", 1)[1].strip()
+                        if Path(target).name.lower() not in {"plan.md", "plan"}:
+                            return (
+                                "Error: Plan mode is active — apply_patch blocked "
+                                "except for plan.md. Use /plan off."
+                            )
+            try:
+                return apply_patch_text(root, patchText)
+            except Exception as exc:  # noqa: BLE001
+                return f"Error: {exc}"
+
+        from pydantic import BaseModel, Field
+
+        class _PatchIn(BaseModel):
+            patchText: str = Field(description="Patch envelope.")
+
+        patch_tool = StructuredTool.from_function(
+            name="apply_patch",
+            description=patch_tool.description,
+            func=_plan_patch,
+            args_schema=_PatchIn,
+        )
+    tools.append(patch_tool)
     return tools
 
 

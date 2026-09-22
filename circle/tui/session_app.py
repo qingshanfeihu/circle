@@ -18,8 +18,15 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from circle.commands import (
+    CustomCommand,
+    discover_custom_commands,
+    expand_command_template,
+)
 from circle.harness import create_harness
+from circle.mcp_loader import format_mcp_status
 from circle.prompt_features import compact_messages
+from circle.session_tree import SessionTree
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
 from circle.ink.components.exec_approval_view import ExecApprovalSession
@@ -168,6 +175,15 @@ class CircleSessionApp:
         self._share_path: Path | None = None
         self._last_assistant_plain = ""
         self._plan_mode = False
+        self._session_tree = SessionTree()
+        self._msg_queue: list[tuple[str, str]] = []  # (steering|followup, text)
+        self._auto_compact_chars = 120_000
+        self._turns_since_compact = 0
+        self._custom_commands: dict[str, CustomCommand] = {
+            c.name: c
+            for c in discover_custom_commands(self.workspace, self.home)
+        }
+        self._mcp_tools: list[Any] = []
 
         model = build_chat_model(
             settings, home=self.home, model_override=model_override
@@ -180,7 +196,9 @@ class CircleSessionApp:
             model_id=settings.auth.model,
             protocol=settings.auth.protocol,
             plan_mode=self._plan_mode,
+            mcp_servers=settings.mcp_servers,
         )
+        self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
 
     def _rebuild_agent(self, *, model: Any | None = None) -> None:
@@ -188,6 +206,10 @@ class CircleSessionApp:
         chat = model or build_chat_model(
             self.settings, home=self.home, model_override=self.model_override
         )
+        self._custom_commands = {
+            c.name: c
+            for c in discover_custom_commands(self.workspace, self.home)
+        }
         self._agent = create_harness(
             chat,
             root_dir=self.workspace,
@@ -196,8 +218,13 @@ class CircleSessionApp:
             model_id=self.settings.auth.model,
             protocol=self.settings.auth.protocol,
             plan_mode=self._plan_mode,
+            mcp_servers=self.settings.mcp_servers,
         )
+        self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
+        backend = getattr(self._agent, "_circle_backend", None)
+        if backend is not None and hasattr(backend, "set_plan_mode"):
+            backend.set_plan_mode(self._plan_mode)
 
     def _make_bridge(self) -> HarnessBridge:
         return HarnessBridge(
@@ -342,6 +369,15 @@ class CircleSessionApp:
             self._tab_complete()
             return
 
+        # Pi-style: Alt+Enter queues a follow-up while busy (or sends now).
+        if kp.key in {"alt+enter", "alt+return"} or (getattr(kp, "alt", False) and kp.key in {"enter", "return"}):
+            text = self._prompt.value
+            if text.strip():
+                self._prompt.clear()
+                self._on_submit(text, kind="followup")
+                self._app.render()
+            return
+
         if self._prompt.handle_key(
             kp.key if kp.key else "char",
             kp.char if len(kp.char) == 1 else "",
@@ -480,22 +516,27 @@ class CircleSessionApp:
         self._footer.update(status="ready" if not self._is_loading else "running")
         self._app.render()
 
-    def _on_submit(self, text: str) -> None:
+    def _on_submit(self, text: str, *, kind: str = "steering") -> None:
         text = text.strip()
         if not text:
             return
         self._input_history.add(text)
         self._input_history.reset_navigation()
-        parsed = parse_slash(text)
+        extra = set(self._custom_commands)
+        parsed = parse_slash(text, extra_commands=extra)
         if parsed is not None:
             self._dispatch_slash(parsed.name, parsed.args)
             return
         if self._bridge.is_running or self._is_loading:
-            self._transcript.append_message(" \x1b[2m(busy — 等待当前回合完成)\x1b[0m")
-            self._app.render()
+            self._msg_queue.append((kind, text))
+            label = "follow-up" if kind == "followup" else "steering"
+            self._toast(f"已排队 {label}（{len(self._msg_queue)}）")
             return
+        self._start_user_turn(text)
 
+    def _start_user_turn(self, text: str) -> None:
         self._push_undo_checkpoint()
+        self._session_tree.add("user", text)
 
         if self._session_title == "new":
             self._session_title = text.split("\n", 1)[0][:60]
@@ -520,6 +561,21 @@ class CircleSessionApp:
             self._context_prefix = ""
         self._bridge.start(payload)
 
+    def _drain_message_queue(self) -> None:
+        if self._bridge.is_running or self._is_loading or not self._msg_queue:
+            return
+        steering = [(k, t) for k, t in self._msg_queue if k != "followup"]
+        followups = [(k, t) for k, t in self._msg_queue if k == "followup"]
+        if steering:
+            _, text = steering[0]
+            self._msg_queue = steering[1:] + followups
+            self._start_user_turn(text)
+            return
+        if followups:
+            _, text = followups[0]
+            self._msg_queue = followups[1:]
+            self._start_user_turn(text)
+
     def _toast(self, msg: str) -> None:
         self._transcript.append_message(f" \x1b[2m{msg}\x1b[0m")
         self._app.render()
@@ -529,7 +585,8 @@ class CircleSessionApp:
             self._app._running = False  # noqa: SLF001
             return
         if name == "help":
-            for line in help_text().splitlines():
+            custom = [(c.name, c.description) for c in self._custom_commands.values()]
+            for line in help_text(custom=custom or None).splitlines():
                 self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
             self._app.render()
             return
@@ -538,8 +595,11 @@ class CircleSessionApp:
                 self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
             self._app.render()
             return
-        # Meta / read-only commands stay available mid-turn (export, session, …).
-        # Agent-driving commands wait until idle.
+        if name in self._custom_commands:
+            cmd = self._custom_commands[name]
+            expanded = expand_command_template(cmd.template, args, cwd=self.workspace)
+            self._start_user_turn(expanded)
+            return
         _busy_ok = {
             "settings",
             "session",
@@ -552,6 +612,7 @@ class CircleSessionApp:
             "thinking",
             "details",
             "name",
+            "tree",
         }
         if name not in _busy_ok and (self._bridge.is_running or self._is_loading):
             self._toast("(busy — 等待当前回合完成)")
@@ -573,6 +634,9 @@ class CircleSessionApp:
             "compact": self._cmd_compact,
             "plan": self._cmd_plan,
             "skill": self._cmd_skill,
+            "tree": self._cmd_tree,
+            "fork": self._cmd_fork,
+            "clone": self._cmd_clone,
             "undo": self._cmd_undo,
             "redo": self._cmd_redo,
             "thinking": self._cmd_thinking,
@@ -916,7 +980,7 @@ class CircleSessionApp:
             self._toast(f"切换 plan mode 失败: {exc}")
             return
         if want:
-            self._toast("plan mode → 开（优先探索；变更仍需确认；计划写 /plan.md）")
+            self._toast("plan mode → 开（硬拦截写改/shell；仅允许 /plan.md）")
         else:
             self._toast("plan mode → 关")
 
@@ -930,21 +994,73 @@ class CircleSessionApp:
                 self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
             self._app.render()
             return
-        name = token.split()[0]
+        parts = token.split(None, 1)
+        name = parts[0]
+        skill_args = parts[1] if len(parts) > 1 else ""
         body = load_skill_body(name, skills=skills)
         if body.startswith("Error:"):
             self._toast(body)
             return
         # Force-load into the next turn (progressive disclosure bypass).
+        arg_note = f"\n\nUser arguments: {skill_args}" if skill_args else ""
         prefix = (
             f"The user loaded skill `{name}` via /skill. Follow it for the "
-            f"next request.\n\n{body}"
+            f"next request.{arg_note}\n\n{body}"
         )
         if self._context_prefix:
             self._context_prefix = self._context_prefix + "\n\n" + prefix
         else:
             self._context_prefix = prefix
-        self._toast(f"已加载 skill `{name}`（将用于下一轮对话）")
+        suffix = f" args={skill_args!r}" if skill_args else ""
+        self._toast(f"已加载 skill `{name}`{suffix}（将用于下一轮对话）")
+
+    def _cmd_tree(self, args: str) -> None:
+        token = (args or "").strip()
+        if not token:
+            for line in self._session_tree.render_list().splitlines():
+                self._transcript.append_message(f" [2m{line}[0m")
+            self._app.render()
+            return
+        if not self._session_tree.jump(token):
+            self._toast(f"未知节点 {token}")
+            return
+        self._toast(f"已跳到节点 {token}（后续对话从此分支）")
+
+    def _cmd_fork(self, args: str) -> None:
+        token = (args or "").strip() or (self._session_tree.active_id or "")
+        if not token:
+            self._toast("用法: /fork <id>")
+            return
+        forked = self._session_tree.fork_from(token)
+        if forked is None:
+            self._toast(f"无法 fork {token}")
+            return
+        self._archive_current()
+        self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        self._session_tree = forked
+        self._checkpointer = MemorySaver()
+        self._rebuild_agent()
+        self._session_title = (self._session_title or "session") + " (fork)"
+        self._transcript.clear()
+        self._show_welcome()
+        self._toast(f"已 fork 自 {token} → {self._thread_id}")
+        for node in self._session_tree.path_to():
+            if node.role == "user":
+                self._transcript.append_message(f" [2m>[0m {node.text.splitlines()[0][:80]}")
+        self._app.render()
+
+    def _cmd_clone(self, _args: str) -> None:
+        cloned = self._session_tree.clone_active()
+        self._archive_current()
+        self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        self._session_tree = cloned
+        self._checkpointer = MemorySaver()
+        self._rebuild_agent()
+        self._session_title = (self._session_title or "session") + " (clone)"
+        self._transcript.clear()
+        self._show_welcome()
+        self._toast(f"已 clone 当前分支 → {self._thread_id}")
+        self._app.render()
 
     def _cmd_thinking(self, _args: str) -> None:
         self._show_thinking = not self._show_thinking
@@ -1067,20 +1183,18 @@ class CircleSessionApp:
         save_settings(self.settings, self.home)
         self._toast(f"主题 → {name}（终端色板仍以探测为准）")
 
-    def _cmd_mcp(self, _args: str) -> None:
-        servers = self.settings.mcp_servers
-        if not servers:
-            self._toast(
-                "未配置 MCP。在 ~/.circle/settings.json 添加 mcp_servers: "
-                '[{ "name": "...", "command": "..." }]'
-            )
+    def _cmd_mcp(self, args: str) -> None:
+        token = (args or "").strip().lower()
+        if token in {"reload", "refresh", "connect"}:
+            try:
+                self._rebuild_agent()
+            except Exception as exc:  # noqa: BLE001
+                self._toast(f"MCP reload 失败: {exc}")
+                return
+            self._toast(f"MCP 已重载，工具 {len(self._mcp_tools)} 个")
             return
-        self._toast(f"MCP servers ({len(servers)}):")
-        for item in servers:
-            name = str(item.get("name") or item.get("id") or "?")
-            cmd = str(item.get("command") or item.get("url") or "")
-            self._transcript.append_message(f" \x1b[2m  · {name}  {cmd}\x1b[0m")
-        self._toast("（当前构建仅列出配置，不建立连接）")
+        for line in format_mcp_status(self.settings.mcp_servers, self._mcp_tools).splitlines():
+            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
         self._app.render()
 
     def _cmd_name(self, args: str) -> None:
@@ -1415,6 +1529,7 @@ class CircleSessionApp:
         with self._app.lock:
             visible = (text or "").strip() or "（无输出）"
             self._last_assistant_plain = visible
+            self._session_tree.add("assistant", visible)
             rendered = assistant_block(visible)
             if self._stream_idx >= 0:
                 self._transcript.update_message_at(self._stream_idx, rendered)
@@ -1426,6 +1541,27 @@ class CircleSessionApp:
             self._stream_buf = ""
             self._leave_busy()
             self._app.render()
+            self._turns_since_compact += 1
+            if self._should_auto_compact():
+                self._turns_since_compact = 0
+                self._toast("上下文较长 — 自动 /compact …")
+                self._cmd_compact("")
+            else:
+                self._drain_message_queue()
+
+    def _should_auto_compact(self) -> bool:
+        snap = "\n".join(self._transcript.snapshot())
+        if self._bridge.is_running or self._is_loading:
+            return False
+        return len(snap) >= self._auto_compact_chars or self._turns_since_compact >= 24
+
+    def _maybe_auto_compact(self) -> None:
+        """Pi-style auto compact when transcript grows large."""
+        if not self._should_auto_compact():
+            return
+        self._turns_since_compact = 0
+        self._toast("上下文较长 — 自动 /compact …")
+        self._cmd_compact("")
 
     def _on_error(self, exc: BaseException) -> None:
         with self._app.lock:
@@ -1433,6 +1569,7 @@ class CircleSessionApp:
             self._stream_idx = -1
             self._leave_busy()
             self._app.render()
+            self._drain_message_queue()
 
     def _on_interrupt(self, interrupts: Any) -> None:
         with self._app.lock:
@@ -1455,6 +1592,19 @@ class CircleSessionApp:
             name = str(req.get("name") or req.get("tool") or "tool")
             args = req.get("args") or {}
             desc = str(req.get("description") or "")
+            # Plan mode: auto-reject mutating tools (backend also hard-blocks).
+            if self._plan_mode and name in {
+                "execute",
+                "write_file",
+                "edit_file",
+                "apply_patch",
+            }:
+                path = str(args.get("file_path") or args.get("path") or "")
+                if name != "write_file" or Path(path).name.lower() not in {"plan.md", "plan"}:
+                    self._toast(f"plan mode 自动拒绝 {name}")
+                    self._enter_busy()
+                    self._bridge.resume({"decision": "reject"})
+                    return
             body = desc or "\n".join(
                 f"{k}={v!r}" for k, v in list(args.items())[:8]
             )

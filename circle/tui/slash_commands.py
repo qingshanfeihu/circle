@@ -25,7 +25,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("trust", "Trust this workspace and create .agent/"),
     SlashCommand("settings", "Show current settings"),
     SlashCommand("themes", "List / set theme: /themes [name]"),
-    SlashCommand("mcp", "List configured MCP servers"),
+    SlashCommand("mcp", "List / reload MCP servers and tools"),
     SlashCommand("new", "Start a new session", aliases=("clear",)),
     SlashCommand(
         "resume",
@@ -44,9 +44,12 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         "skill",
-        "List or load a skill: /skill [name]",
+        "List or load a skill: /skill [name] [args] or /skill:name [args]",
         aliases=("skills",),
     ),
+    SlashCommand("tree", "Show or jump session branch: /tree [id]"),
+    SlashCommand("fork", "Fork session from a node: /fork [id]"),
+    SlashCommand("clone", "Clone the active branch into a new session"),
     SlashCommand("undo", "Revert last user turn (conversation)"),
     SlashCommand("redo", "Restore after /undo"),
     SlashCommand("thinking", "Toggle thinking-block visibility"),
@@ -81,40 +84,58 @@ class ParsedSlash:
     args: str
 
 
-def parse_slash(text: str) -> ParsedSlash | None:
+def parse_slash(text: str, *, extra_commands: set[str] | None = None) -> ParsedSlash | None:
     trimmed = (text or "").strip()
     if not trimmed.startswith("/"):
         return None
     body = trimmed[1:].strip()
     if not body:
         return None
+
+    # Pi-style /skill:name [args]
+    if body.lower().startswith("skill:"):
+        rest = body[6:]
+        parts = rest.split(None, 1)
+        skill_name = parts[0].strip() if parts else ""
+        skill_args = parts[1] if len(parts) > 1 else ""
+        if skill_name:
+            combined = skill_name if not skill_args else f"{skill_name} {skill_args}"
+            return ParsedSlash(name="skill", raw_name=f"skill:{skill_name}", args=combined)
+
     parts = body.split(None, 1)
     raw = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
     canon = ALIAS_TO_CANONICAL.get(raw)
+    if canon is None and extra_commands and raw in extra_commands:
+        return ParsedSlash(name=raw, raw_name=raw, args=args)
     if canon is None:
         return None
     return ParsedSlash(name=canon, raw_name=raw, args=args)
 
 
-def help_text() -> str:
+def help_text(*, custom: list[tuple[str, str]] | None = None) -> str:
     lines = ["Available commands:", ""]
     for cmd in BUILTIN_SLASH:
         alias = ""
         if cmd.aliases:
             alias = " (" + ", ".join(f"/{a}" for a in cmd.aliases) + ")"
         lines.append(f"  /{cmd.name:<10} {cmd.description}{alias}")
+    if custom:
+        lines.append("")
+        lines.append("Custom commands:")
+        for name, desc in custom:
+            lines.append(f"  /{name:<10} {desc}")
     lines.append("")
-    lines.append("Type text without / to chat.")
+    lines.append("Type text without / to chat. Skills also: /skill:name")
     return "\n".join(lines)
 
 
 def hotkeys_text() -> str:
-    # Session-ring shortcuts.
     return "\n".join(
         [
             "Keyboard shortcuts:",
-            "  enter           send",
+            "  enter           send (queues steering message while busy)",
+            "  alt+enter       queue follow-up (delivered when idle)",
             "  esc             cancel turn / clear prompt",
             "  ctrl+c          abort turn; twice to exit",
             "  ctrl+d          exit",

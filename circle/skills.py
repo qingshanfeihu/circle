@@ -178,10 +178,12 @@ def skill_sources(
     uh = Path(user_home).expanduser().resolve() if user_home else Path.home()
     ordered: list[tuple[Path, str]] = []
 
-    # Lowest priority first.
+    # Lowest priority first — shared Agent Skills + OpenCode/Pi/Claude layouts.
     for path, label in (
         (uh / ".agents" / "skills", "Agents"),
         (uh / ".claude" / "skills", "Claude"),
+        (uh / ".config" / "opencode" / "skills", "OpenCode"),
+        (uh / ".pi" / "agent" / "skills", "Pi"),
     ):
         if path.is_dir():
             ordered.append((path.resolve(), label))
@@ -195,6 +197,9 @@ def skill_sources(
         ws = Path(workspace).expanduser().resolve()
         ordered.extend(_ancestor_agents_skills(ws))
         for path, label in (
+            (ws / ".opencode" / "skills", "Project OpenCode"),
+            (ws / ".pi" / "skills", "Project Pi"),
+            (ws / ".claude" / "skills", "Project Claude"),
             (ws / ".circle" / "skills", "Project Circle"),
             (ws / ".agent" / "skills", "Project"),
         ):

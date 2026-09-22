@@ -62,6 +62,9 @@ def test_alias_map_covers_coding_agent_surface():
         "plan-mode",
         "skill",
         "skills",
+        "tree",
+        "fork",
+        "clone",
         "undo",
         "redo",
         "thinking",
@@ -78,6 +81,13 @@ def test_alias_map_covers_coding_agent_surface():
         "q",
     }
     assert expected <= set(ALIAS_TO_CANONICAL)
+
+
+def test_skill_colon_form():
+    p = parse_slash("/skill:pack do-it")
+    assert p is not None
+    assert p.name == "skill"
+    assert p.args == "pack do-it"
     # InfoTest-only stay out
     for banned in ("yolo", "approvals", "kms", "footprint", "engine-debt"):
         assert banned not in ALIAS_TO_CANONICAL

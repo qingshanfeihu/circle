@@ -1,7 +1,7 @@
 """Circle harness.
 
 Configures the sandbox backend, bundled system prompt, tool descriptions,
-explore subagent, optional skills dirs, and extra tools (webfetch, question).
+explore subagent, optional skills dirs, and extra tools.
 """
 
 from __future__ import annotations
@@ -15,15 +15,17 @@ from deepagents import (
     register_harness_profile,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 
+from circle.mcp_loader import load_mcp_tools_sync
+from circle.plan_backend import PlanGuardedBackend
 from circle.prompt_features import (
     build_extra_tools,
     collect_tool_description_overrides,
     explore_subagent_spec,
     plan_mode_append,
 )
-from circle.sandbox import CircleSandboxBackend
 from circle.skills import skill_sources
 from circle.system_prompt import build_system_prompt
 
@@ -33,6 +35,7 @@ _INTERRUPT_ON = {
     "execute": True,
     "write_file": True,
     "edit_file": True,
+    "apply_patch": True,
 }
 
 _PROFILE_KEYS = (
@@ -63,12 +66,17 @@ def _ensure_tool_description_profiles() -> None:
     _profiles_ready = True
 
 
-def sandbox_backend(root_dir: str | Path | None = None) -> CircleSandboxBackend:
+def sandbox_backend(
+    root_dir: str | Path | None = None,
+    *,
+    plan_mode: bool = False,
+) -> PlanGuardedBackend:
     """Local sandbox: workspace-virtual paths under root; host abs paths pass through."""
-    return CircleSandboxBackend(
+    return PlanGuardedBackend(
         root_dir=root_dir,
         virtual_mode=True,
         inherit_env=False,
+        plan_mode=plan_mode,
     )
 
 
@@ -82,6 +90,8 @@ def create_harness(
     protocol: str | None = None,
     system_prompt: str | None = None,
     plan_mode: bool = False,
+    mcp_servers: list[dict[str, Any]] | None = None,
+    extra_tools: list[BaseTool] | None = None,
 ):
     """Build harness with file/shell tools, explore subagent, and prompt-backed extras.
 
@@ -107,22 +117,35 @@ def create_harness(
     )
 
     explore = explore_subagent_spec()
-    # Note: FilesystemPermission cannot be used with SandboxBackendProtocol yet
-    # (deepagents limitation). Explore/plan stay read-mostly via system prompts.
-
     skills = skill_sources(cwd, home)
-    extra = build_extra_tools(cwd, home)
+    tools: list[Any] = list(build_extra_tools(cwd, home, plan_mode=plan_mode))
+    if extra_tools:
+        tools.extend(extra_tools)
+    if mcp_servers:
+        mcp_tools = load_mcp_tools_sync(mcp_servers)
+        tools.extend(mcp_tools)
+    else:
+        mcp_tools = []
+
+    backend = sandbox_backend(root_dir, plan_mode=plan_mode)
 
     kwargs: dict[str, Any] = {
         "model": model,
-        "backend": sandbox_backend(root_dir),
+        "backend": backend,
         "system_prompt": prompt,
         "interrupt_on": _INTERRUPT_ON,
         "checkpointer": checkpointer if checkpointer is not None else MemorySaver(),
-        "tools": extra,
+        "tools": tools,
         "subagents": [explore],
     }
     if skills:
         kwargs["skills"] = skills
 
-    return create_deep_agent(**kwargs)
+    agent = create_deep_agent(**kwargs)
+    # Stash for plan toggle / MCP status without a second load.
+    try:
+        agent._circle_backend = backend  # type: ignore[attr-defined]  # noqa: SLF001
+        agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        pass
+    return agent

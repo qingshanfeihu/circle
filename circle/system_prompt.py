@@ -312,8 +312,11 @@ def _tool_catalog_section() -> str:
         "write_todos": "track multi-step task progress",
         "task": "delegate to a subagent (e.g. explore)",
         "webfetch": "fetch a URL as text/markdown",
+        "websearch": "search the web for current information",
         "question": "ask the user clarifying questions",
         "skill": "load a SKILL.md package by name",
+        "apply_patch": "apply a Begin/End Patch envelope to files",
+        "lsp": "language-server definitions, references, hover, symbols",
     }
     lines = ["Available tools:"]
     for name, desc in snippets.items():
