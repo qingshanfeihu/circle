@@ -99,6 +99,14 @@ class Transcript:
     def message_at(self, idx: int) -> str | None:
         return self._messages[idx] if 0 <= idx < len(self._messages) else None
 
+    def snapshot(self) -> list[str]:
+        return list(self._messages)
+
+    def restore(self, texts: list[str]) -> None:
+        self.clear()
+        if texts:
+            self.append_messages(list(texts))
+
     def _content_height_rows(self) -> int:
         width = self._node.rect.width if self._node.rect.width > 0 else 80
         return sum(

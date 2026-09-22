@@ -51,6 +51,8 @@ class InkApp:
         self._terminal = Terminal()
         self._alt_screen = alt_screen
         self._mouse = mouse
+        self._running = False
+        self._suspended = False
 
         
         
@@ -178,6 +180,7 @@ class InkApp:
 
     def stop(self) -> None:
         self._running = False
+        self._suspended = False
 
         cleanup = SHOW_CURSOR + DBP + DFE
         if self._mouse:
@@ -186,6 +189,31 @@ class InkApp:
             cleanup += EXIT_ALT_SCREEN
         self._terminal.write(cleanup)
         self._terminal.restore()
+
+    def suspend_for_external(self) -> None:
+        """Hand the TTY to $EDITOR without killing the session run loop."""
+        self._suspended = True
+        cleanup = SHOW_CURSOR + DBP + DFE
+        if self._mouse:
+            cleanup += DISABLE_MOUSE_TRACKING
+        if self._alt_screen:
+            cleanup += EXIT_ALT_SCREEN
+        self._terminal.write(cleanup)
+        self._terminal.set_raw_mode(False)
+
+    def resume_from_external(self) -> None:
+        """Take the TTY back after an external editor exits."""
+        self._terminal.set_raw_mode(True)
+        init_seq = ""
+        if self._alt_screen:
+            init_seq += ENTER_ALT_SCREEN
+        init_seq += HIDE_CURSOR + EBP + EFE
+        if self._mouse:
+            init_seq += ENABLE_MOUSE_TRACKING
+        init_seq += erase_in_display(2)
+        self._terminal.write(init_seq)
+        self._suspended = False
+        self._force_full_render()
 
     def write_passthrough(self, data: str) -> None:
         with self._render_lock:
@@ -287,6 +315,9 @@ class InkApp:
     def _read_input(self) -> None:
         fd = self._terminal.input_fd
         while self._running:
+            if self._suspended:
+                time.sleep(0.05)
+                continue
             try:
                 data = os.read(fd, 4096)
                 if not data:
