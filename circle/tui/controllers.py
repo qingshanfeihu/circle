@@ -9,7 +9,7 @@ from typing import Callable
 
 from circle.oauth import OAuthNotConfiguredError, start_oauth_login
 from circle.paths import normalize_workspace
-from circle.probe import ProbeResult, fallback_model_list, probe_endpoint
+from circle.probe import ProbeResult, fallback_model_list, resolve_endpoint
 from circle.settings import (
     CircleSettings,
     ModelAuth,
@@ -34,7 +34,7 @@ class InitStep(Enum):
 @dataclass
 class InitController:
     home: Path | None = None
-    probe: Callable[[str, str], ProbeResult | None] = field(default=probe_endpoint)
+    probe: Callable[[str, str], ProbeResult | None] = field(default=None)  # type: ignore[assignment]
     oauth_login: Callable[[str], object] = field(default=start_oauth_login)
     step: InitStep = InitStep.AUTH_MODE
     mode: str = ""  # api_key | oauth
@@ -48,6 +48,11 @@ class InitController:
     error: str = ""
     settings: CircleSettings | None = None
     _oauth_token: str = ""
+
+    def __post_init__(self) -> None:
+        if self.probe is None:
+            # Default: full resolve (probe + URL hint). Tests may inject probe_endpoint.
+            self.probe = resolve_endpoint  # type: ignore[assignment]
 
     def title(self) -> str:
         return "Circle 初始化"
@@ -188,7 +193,10 @@ class InitController:
         else:
             self.protocol = probed.protocol
             self.models = probed.models or fallback_model_list()
-            self.status = f"探测成功: {self.protocol}"
+            if getattr(probed, "inferred", False):
+                self.status = f"探测未命中，按 URL 推断: {self.protocol}"
+            else:
+                self.status = f"探测成功: {self.protocol}"
         self.model_focus = 0
         self.step = InitStep.PICK_MODEL
 

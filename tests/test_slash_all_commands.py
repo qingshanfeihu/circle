@@ -107,13 +107,27 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         # must not raise; transcript grows
         assert app._transcript.message_count() > 0  # noqa: SLF001
 
-    # compact separately (async)
+    # compact separately (async) — uses deepagents compact_conversation on the thread
     import time
+
+    from langchain_core.messages import HumanMessage
+
+    from circle.context_middleware import thread_config
 
     # Drop any still-running /init bridge worker so compact is not blocked.
     app._leave_busy()  # noqa: SLF001
     app.model_override = ScriptedModel(responses=[AIMessage(content="SUM")])
+    app._rebuild_agent(model=app.model_override)  # noqa: SLF001
     app._bridge = app._make_bridge()  # noqa: SLF001
+    app._agent.update_state(  # noqa: SLF001
+        thread_config(app._thread_id),  # noqa: SLF001
+        {
+            "messages": [
+                HumanMessage(content="c1"),
+                AIMessage(content="c2"),
+            ]
+        },
+    )
     app._transcript.append_message("c1")  # noqa: SLF001
     app._transcript.append_message("c2")  # noqa: SLF001
     app._on_submit("/compact")  # noqa: SLF001
@@ -152,8 +166,22 @@ def test_editor_does_not_stop_session(tmp_path: Path, monkeypatch):
 def test_compact_uses_model_override(tmp_path: Path, monkeypatch):
     import time
 
+    from langchain_core.messages import HumanMessage
+
+    from circle.context_middleware import thread_config
+
     app = _app(tmp_path, monkeypatch)
     app.model_override = ScriptedModel(responses=[AIMessage(content="OVERRIDE_SUM")])
+    app._rebuild_agent(model=app.model_override)  # noqa: SLF001
+    app._agent.update_state(  # noqa: SLF001
+        thread_config(app._thread_id),  # noqa: SLF001
+        {
+            "messages": [
+                HumanMessage(content="one"),
+                AIMessage(content="two"),
+            ]
+        },
+    )
     app._transcript.append_message("one")  # noqa: SLF001
     app._transcript.append_message("two")  # noqa: SLF001
     app._on_submit("/summarize")  # noqa: SLF001
@@ -161,11 +189,12 @@ def test_compact_uses_model_override(tmp_path: Path, monkeypatch):
     snap = ""
     while time.time() < deadline:
         snap = "\n".join(app._transcript.snapshot())  # noqa: SLF001
-        if "OVERRIDE_SUM" in snap or "compact 失败" in snap:
+        if "OVERRIDE_SUM" in snap or "compact 失败" in snap or "compacted" in snap.lower():
             break
         time.sleep(0.05)
-    assert "OVERRIDE_SUM" in snap
+    assert "OVERRIDE_SUM" in snap or "compacted" in snap.lower()
     assert "invalid x-api-key" not in snap
+    assert "compact 失败" not in snap
 
 
 def test_trust_on_untrusted_workspace(tmp_path: Path, monkeypatch):

@@ -6,7 +6,7 @@ import getpass
 from pathlib import Path
 
 from circle.oauth import OAuthNotConfiguredError, start_oauth_login
-from circle.probe import fallback_model_list, probe_endpoint
+from circle.probe import fallback_model_list, resolve_endpoint
 from circle.settings import (
     CircleSettings,
     ModelAuth,
@@ -54,15 +54,13 @@ def _init_api_key(*, home: Path | None) -> CircleSettings:
         raise SystemExit("URL 与 KEY 都是必填项")
 
     print("正在探测协议…")
-    probed = probe_endpoint(base_url, api_key)
-    if probed is None:
-        print("无法探测端点，按 OpenAI 兼容处理，使用内置模型列表。")
-        protocol = "openai"
-        models = fallback_model_list()
+    probed = resolve_endpoint(base_url, api_key)
+    protocol = probed.protocol
+    models = probed.models or fallback_model_list()
+    label = "OpenAI 兼容" if protocol == "openai" else "Anthropic Messages"
+    if probed.inferred:
+        print(f"探测未命中，按 URL 推断为 {label}，使用内置模型列表。")
     else:
-        protocol = probed.protocol
-        models = probed.models or fallback_model_list()
-        label = "OpenAI 兼容" if protocol == "openai" else "Anthropic Messages"
         print(f"检测到 {label}，共 {len(models)} 个模型。")
 
     model = _pick("选择主模型:", models)
@@ -121,7 +119,7 @@ def complete_api_key_init(
     api_key: str,
     model: str | None = None,
     home: Path | None = None,
-    probe=probe_endpoint,
+    probe=resolve_endpoint,
 ) -> CircleSettings:
     """Non-interactive init used by tests and scripted installs."""
     probed = probe(base_url, api_key)

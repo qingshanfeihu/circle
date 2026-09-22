@@ -42,24 +42,48 @@ def web_search(query: str, *, num_results: int = 5) -> str:
         return "Error: query is required"
     n = max(1, min(int(num_results or 5), 10))
     year = datetime.now(timezone.utc).year
-    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": q})
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read(500_000).decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        return f"Error: search HTTP {exc.code}"
-    except Exception as exc:  # noqa: BLE001
-        return f"Error: search failed: {exc}"
+    # html.duckduckgo.com often returns empty to non-browser UAs; try lite + html.
+    urls = [
+        "https://lite.duckduckgo.com/lite/?" + urllib.parse.urlencode({"q": q}),
+        "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": q}),
+    ]
+    raw = ""
+    last_err = ""
+    for url in urls:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": _USER_AGENT,
+                "Accept": "text/html",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read(500_000).decode("utf-8", errors="replace")
+            if raw and ("result" in raw.lower() or "http" in raw.lower() or "<a " in raw):
+                break
+        except urllib.error.HTTPError as exc:
+            last_err = f"HTTP {exc.code}"
+        except Exception as exc:  # noqa: BLE001
+            last_err = str(exc)
+    if not raw:
+        return f"Error: search failed: {last_err or 'empty body'}"
 
     links = _RESULT_RE.findall(raw)
+    if not links:
+        # lite layout: <a rel="nofollow" href="https://...">title</a>
+        links = re.findall(
+            r'<a[^>]+rel="nofollow"[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+            raw,
+            flags=re.I | re.S,
+        )
     snippets = [_strip_tags(s) for s in _SNIPPET_RE.findall(raw)]
     if not links:
         return f"No results for {q!r} (year hint: {year})."
     lines = [f"Web search results for {q!r} (as of {year}):", ""]
     for i, (href, title) in enumerate(links[:n], 1):
         title_plain = _strip_tags(title) or href
-        # DuckDuckGo sometimes wraps redirects
         if "uddg=" in href:
             parsed = urllib.parse.urlparse(href)
             qs = urllib.parse.parse_qs(parsed.query)

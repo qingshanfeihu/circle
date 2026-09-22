@@ -43,3 +43,40 @@ def test_probe_falls_through_to_anthropic(monkeypatch):
 def test_probe_returns_none_when_both_fail(monkeypatch):
     monkeypatch.setattr(probe, "_get", lambda *_a, **_k: (_ for _ in ()).throw(OSError("nope")))
     assert probe.probe_endpoint("https://x", "sk") is None
+
+
+def test_infer_protocol_hint_anthropic_url():
+    assert (
+        probe.infer_protocol_hint(
+            "https://dashscope.aliyuncs.com/apps/anthropic"
+        )
+        == "anthropic"
+    )
+
+
+def test_infer_protocol_hint_openaiish_url():
+    assert probe.infer_protocol_hint("https://api.openai.com/v1") == "openai"
+    assert (
+        probe.infer_protocol_hint(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        == "openai"
+    )
+
+
+def test_resolve_endpoint_uses_url_hint_when_probe_misses(monkeypatch):
+    monkeypatch.setattr(probe, "_get", lambda *_a, **_k: (_ for _ in ()).throw(OSError("nope")))
+    result = probe.resolve_endpoint(
+        "https://dashscope.aliyuncs.com/apps/anthropic",
+        "sk",
+    )
+    assert result.protocol == "anthropic"
+    assert result.inferred is True
+    assert result.models == probe.FALLBACK_MODELS
+
+
+def test_resolve_endpoint_defaults_openai_without_hint(monkeypatch):
+    monkeypatch.setattr(probe, "_get", lambda *_a, **_k: (_ for _ in ()).throw(OSError("nope")))
+    result = probe.resolve_endpoint("https://llm.example/gateway", "sk")
+    assert result.protocol == "openai"
+    assert result.inferred is True

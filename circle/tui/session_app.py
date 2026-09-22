@@ -16,16 +16,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
-
+from circle.checkpoint_store import (
+    copy_thread_if_possible,
+    make_checkpointer,
+    make_store,
+)
 from circle.commands import (
     CustomCommand,
     discover_custom_commands,
     expand_command_template,
 )
+from circle.context_middleware import (
+    compact_prompt,
+    inject_thread_message,
+    plan_boundary_message,
+    skill_boundary_message,
+    thread_config,
+)
 from circle.harness import create_harness
 from circle.mcp_loader import format_mcp_status
-from circle.prompt_features import compact_messages
 from circle.session_tree import SessionTree
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
@@ -165,10 +174,11 @@ class CircleSessionApp:
         self._ask_saved_prompt = ""
         self._last_ctrl_c = 0.0
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
-        self._checkpointer = MemorySaver()
+        ensure_home(self.home)
+        self._checkpointer = make_checkpointer(self.home)
+        self._store = make_store()
         self._archive: list[_SessionRecord] = []
         self._previous_thread_id: str | None = None
-        self._context_prefix = ""
         self._session_title = "new"
         self._undo_stack: list[_SessionRecord] = []
         self._redo_stack: list[_SessionRecord] = []
@@ -177,8 +187,6 @@ class CircleSessionApp:
         self._plan_mode = False
         self._session_tree = SessionTree()
         self._msg_queue: list[tuple[str, str]] = []  # (steering|followup, text)
-        self._auto_compact_chars = 120_000
-        self._turns_since_compact = 0
         self._custom_commands: dict[str, CustomCommand] = {
             c.name: c
             for c in discover_custom_commands(self.workspace, self.home)
@@ -193,6 +201,7 @@ class CircleSessionApp:
             root_dir=self.workspace,
             home=self.home,
             checkpointer=self._checkpointer,
+            store=self._store,
             model_id=settings.auth.model,
             protocol=settings.auth.protocol,
             plan_mode=self._plan_mode,
@@ -215,6 +224,7 @@ class CircleSessionApp:
             root_dir=self.workspace,
             home=self.home,
             checkpointer=self._checkpointer,
+            store=self._store,
             model_id=self.settings.auth.model,
             protocol=self.settings.auth.protocol,
             plan_mode=self._plan_mode,
@@ -555,11 +565,7 @@ class CircleSessionApp:
         self._thinking_body = ""
         self._call_started_at = time.time()
         self._app.render()
-        payload = text
-        if self._context_prefix:
-            payload = f"{self._context_prefix}\n\n---\n\n{text}"
-            self._context_prefix = ""
-        self._bridge.start(payload)
+        self._bridge.start(text)
 
     def _drain_message_queue(self) -> None:
         if self._bridge.is_running or self._is_loading or not self._msg_queue:
@@ -680,7 +686,6 @@ class CircleSessionApp:
         self._stream_buf = ""
         self._thinking_idx = -1
         self._thinking_body = ""
-        self._context_prefix = ""
         if lines is not None:
             self._transcript.restore(lines)
             for rec in self._archive:
@@ -769,7 +774,6 @@ class CircleSessionApp:
         self._stream_buf = ""
         self._thinking_idx = -1
         self._thinking_body = ""
-        self._context_prefix = ""
         self._session_title = "new"
         self._transcript.clear()
         self._show_welcome()
@@ -890,24 +894,18 @@ class CircleSessionApp:
         self._footer.update(model=name)
         self._toast(f"模型 → {name}")
 
-    def _session_chat_model(self):
-        """Model for one-shot helpers (/compact, …) — honor session override."""
-        return build_chat_model(
-            self.settings, home=self.home, model_override=self.model_override
-        )
-
     def _cmd_compact(self, args: str) -> None:
+        """Run deepagents ``compact_conversation`` in the current thread."""
         hint = args.strip()
-        plain_lines = [
-            _strip_ansi(m).strip()
-            for m in self._transcript.snapshot()
-            if _strip_ansi(m).strip()
-        ]
-        if len(plain_lines) < 2:
+        try:
+            state = self._agent.get_state(thread_config(self._thread_id))
+            msgs = (state.values or {}).get("messages") or []
+        except Exception:  # noqa: BLE001
+            msgs = []
+        if len(msgs) < 2:
             self._toast("对话太短，无需压缩")
             return
-        body = "\n".join(plain_lines[-200:])
-        self._toast("正在压缩上下文…")
+        self._toast("正在压缩上下文（deepagents compact_conversation）…")
         self._enter_busy()
         self._app.render()
 
@@ -915,9 +913,13 @@ class CircleSessionApp:
             summary = ""
             err: BaseException | None = None
             try:
-                model = self._session_chat_model()
-                result = model.invoke(compact_messages(transcript=body, hint=hint))
-                content = getattr(result, "content", result)
+                result = self._agent.invoke(
+                    {"messages": [{"role": "user", "content": compact_prompt(hint=hint)}]},
+                    config=thread_config(self._thread_id),
+                )
+                out_msgs = result.get("messages") or []
+                last = out_msgs[-1] if out_msgs else None
+                content = getattr(last, "content", "") if last is not None else ""
                 if isinstance(content, list):
                     parts = []
                     for block in content:
@@ -938,18 +940,8 @@ class CircleSessionApp:
                     )
                     self._app.render()
                     return
-                self._archive_current()
-                self._previous_thread_id = self._thread_id
-                self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
-                self._bridge = self._make_bridge()
-                self._context_prefix = (
-                    "Prior conversation was compacted. Summary:\n" + summary
-                )
-                self._session_title = (self._session_title or "session") + " (compacted)"
-                self._transcript.clear()
-                self._show_welcome()
-                self._transcript.append_message(" \x1b[2m— compacted —\x1b[0m")
-                for line in summary.splitlines() or ["(empty summary)"]:
+                self._transcript.append_message(" \x1b[2m— compacted (same thread) —\x1b[0m")
+                for line in (summary or "COMPACT_OK").splitlines():
                     self._transcript.append_message(f" {line}")
                 self._transcript.append_message("")
                 self._leave_busy()
@@ -975,6 +967,11 @@ class CircleSessionApp:
         self._plan_mode = want
         try:
             self._rebuild_agent()
+            inject_thread_message(
+                self._agent,
+                self._thread_id,
+                plan_boundary_message(enabled=want),
+            )
         except Exception as exc:  # noqa: BLE001
             self._plan_mode = not want
             self._toast(f"切换 plan mode 失败: {exc}")
@@ -1001,18 +998,17 @@ class CircleSessionApp:
         if body.startswith("Error:"):
             self._toast(body)
             return
-        # Force-load into the next turn (progressive disclosure bypass).
-        arg_note = f"\n\nUser arguments: {skill_args}" if skill_args else ""
-        prefix = (
-            f"The user loaded skill `{name}` via /skill. Follow it for the "
-            f"next request.{arg_note}\n\n{body}"
-        )
-        if self._context_prefix:
-            self._context_prefix = self._context_prefix + "\n\n" + prefix
-        else:
-            self._context_prefix = prefix
+        try:
+            inject_thread_message(
+                self._agent,
+                self._thread_id,
+                skill_boundary_message(name=name, body=body, args=skill_args),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._toast(f"加载 skill 失败: {exc}")
+            return
         suffix = f" args={skill_args!r}" if skill_args else ""
-        self._toast(f"已加载 skill `{name}`{suffix}（将用于下一轮对话）")
+        self._toast(f"已加载 skill `{name}`{suffix}（已写入 checkpointer 线程）")
 
     def _cmd_tree(self, args: str) -> None:
         token = (args or "").strip()
@@ -1036,9 +1032,10 @@ class CircleSessionApp:
             self._toast(f"无法 fork {token}")
             return
         self._archive_current()
+        old_thread = self._thread_id
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
         self._session_tree = forked
-        self._checkpointer = MemorySaver()
+        copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
         self._rebuild_agent()
         self._session_title = (self._session_title or "session") + " (fork)"
         self._transcript.clear()
@@ -1046,15 +1043,16 @@ class CircleSessionApp:
         self._toast(f"已 fork 自 {token} → {self._thread_id}")
         for node in self._session_tree.path_to():
             if node.role == "user":
-                self._transcript.append_message(f" [2m>[0m {node.text.splitlines()[0][:80]}")
+                self._transcript.append_message(f" \x1b[2m>\x1b[0m {node.text.splitlines()[0][:80]}")
         self._app.render()
 
     def _cmd_clone(self, _args: str) -> None:
         cloned = self._session_tree.clone_active()
         self._archive_current()
+        old_thread = self._thread_id
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
         self._session_tree = cloned
-        self._checkpointer = MemorySaver()
+        copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
         self._rebuild_agent()
         self._session_title = (self._session_title or "session") + " (clone)"
         self._transcript.clear()
@@ -1111,7 +1109,6 @@ class CircleSessionApp:
         self._thinking_idx = -1
         self._thinking_body = ""
         self._main_thinking_lines = []
-        self._context_prefix = ""
         self._transcript.restore(rec.lines)
 
     def _cmd_undo(self, _args: str) -> None:
@@ -1312,10 +1309,22 @@ class CircleSessionApp:
         self._session_title = path.stem[:60]
         lines = [f" {ln}" if ln else "" for ln in body.splitlines()]
         self._transcript.restore(lines)
-        self._context_prefix = (
-            "Imported prior transcript for continuity.\n" + body[:8000]
-        )
-        self._toast(f"已导入 {path}（下一轮会带上摘要上下文）")
+        try:
+            from langchain_core.messages import HumanMessage
+
+            inject_thread_message(
+                self._agent,
+                self._thread_id,
+                HumanMessage(
+                    content=(
+                        "Imported prior transcript for continuity.\n" + body[:8000]
+                    )
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._toast(f"已导入 UI，但写入 checkpointer 失败: {exc}")
+            return
+        self._toast(f"已导入 {path}（已写入 checkpointer 线程）")
 
     def _cmd_share(self, _args: str) -> None:
         ensure_home(self.home)
@@ -1541,27 +1550,7 @@ class CircleSessionApp:
             self._stream_buf = ""
             self._leave_busy()
             self._app.render()
-            self._turns_since_compact += 1
-            if self._should_auto_compact():
-                self._turns_since_compact = 0
-                self._toast("上下文较长 — 自动 /compact …")
-                self._cmd_compact("")
-            else:
-                self._drain_message_queue()
-
-    def _should_auto_compact(self) -> bool:
-        snap = "\n".join(self._transcript.snapshot())
-        if self._bridge.is_running or self._is_loading:
-            return False
-        return len(snap) >= self._auto_compact_chars or self._turns_since_compact >= 24
-
-    def _maybe_auto_compact(self) -> None:
-        """Pi-style auto compact when transcript grows large."""
-        if not self._should_auto_compact():
-            return
-        self._turns_since_compact = 0
-        self._toast("上下文较长 — 自动 /compact …")
-        self._cmd_compact("")
+            self._drain_message_queue()
 
     def _on_error(self, exc: BaseException) -> None:
         with self._app.lock:

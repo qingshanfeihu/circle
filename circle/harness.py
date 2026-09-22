@@ -1,7 +1,8 @@
 """Circle harness.
 
 Configures the sandbox backend, bundled system prompt, tool descriptions,
-explore subagent, optional skills dirs, and extra tools.
+explore subagent, skills, LangChain/deepagents memory + summarization, and
+extra tools.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 
+from circle.context_middleware import build_context_middleware
 from circle.mcp_loader import load_mcp_tools_sync
+from circle.memory_sources import memory_source_paths
 from circle.plan_backend import PlanGuardedBackend
 from circle.prompt_features import (
     build_extra_tools,
@@ -92,10 +95,15 @@ def create_harness(
     plan_mode: bool = False,
     mcp_servers: list[dict[str, Any]] | None = None,
     extra_tools: list[BaseTool] | None = None,
+    store: Any = None,
 ):
     """Build harness with file/shell tools, explore subagent, and prompt-backed extras.
 
-    Prefer a ``BaseChatModel`` from ``circle.model.build_chat_model``.
+    Prefers LangChain/deepagents primitives:
+    - ``memory=`` → MemoryMiddleware (AGENTS.md / MEMORY.md)
+    - built-in SummarizationMiddleware (auto compact at ~85% context)
+    - SummarizationToolMiddleware → ``compact_conversation`` tool for /compact
+    - ``checkpointer`` + ``store`` for short/long-term memory
     """
     _ensure_tool_description_profiles()
 
@@ -118,6 +126,7 @@ def create_harness(
 
     explore = explore_subagent_spec()
     skills = skill_sources(cwd, home)
+    memory = memory_source_paths(cwd, home)
     tools: list[Any] = list(build_extra_tools(cwd, home, plan_mode=plan_mode))
     if extra_tools:
         tools.extend(extra_tools)
@@ -128,6 +137,15 @@ def create_harness(
         mcp_tools = []
 
     backend = sandbox_backend(root_dir, plan_mode=plan_mode)
+
+    # compact_conversation tool (pairs with auto SummarizationMiddleware)
+    chat_model = model if not isinstance(model, str) else None
+    extra_mw: list[Any] = []
+    if chat_model is not None:
+        try:
+            extra_mw = build_context_middleware(chat_model, backend)
+        except Exception:  # noqa: BLE001
+            extra_mw = []
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -140,9 +158,14 @@ def create_harness(
     }
     if skills:
         kwargs["skills"] = skills
+    if memory:
+        kwargs["memory"] = memory
+    if extra_mw:
+        kwargs["middleware"] = extra_mw
+    if store is not None:
+        kwargs["store"] = store
 
     agent = create_deep_agent(**kwargs)
-    # Stash for plan toggle / MCP status without a second load.
     try:
         agent._circle_backend = backend  # type: ignore[attr-defined]  # noqa: SLF001
         agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]  # noqa: SLF001
