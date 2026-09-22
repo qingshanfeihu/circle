@@ -1,0 +1,61 @@
+
+from __future__ import annotations
+
+
+class C0:
+    NUL = 0x00
+    SOH = 0x01
+    STX = 0x02
+    ETX = 0x03
+    EOT = 0x04
+    ENQ = 0x05
+    ACK = 0x06
+    BEL = 0x07
+    BS = 0x08
+    HT = 0x09
+    LF = 0x0A
+    VT = 0x0B
+    FF = 0x0C
+    CR = 0x0D
+    SO = 0x0E
+    SI = 0x0F
+    DLE = 0x10
+    DC1 = 0x11
+    DC2 = 0x12
+    DC3 = 0x13
+    DC4 = 0x14
+    NAK = 0x15
+    SYN = 0x16
+    ETB = 0x17
+    CAN = 0x18
+    EM = 0x19
+    SUB = 0x1A
+    ESC_BYTE = 0x1B
+    FS = 0x1C
+    GS = 0x1D
+    RS = 0x1E
+    US = 0x1F
+    DEL = 0x7F
+
+
+ESC = "\x1b"
+BEL = "\x07"
+SEP = ";"
+
+
+class ESC_TYPE:
+    CSI = 0x5B
+    OSC = 0x5D
+    DCS = 0x50
+    APC = 0x5F
+    PM = 0x5E
+    SOS = 0x58
+    ST = 0x5C
+
+
+def is_c0(byte: int) -> bool:
+    return byte < 0x20 or byte == 0x7F
+
+
+def is_esc_final(byte: int) -> bool:
+    return 0x30 <= byte <= 0x7E

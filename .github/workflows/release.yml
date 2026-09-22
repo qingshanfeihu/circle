@@ -1,0 +1,130 @@
+name: release
+
+# Circle 免 Python 发布主线（调研定稿）:
+# PyInstaller onedir 平台矩阵 → GitHub Release 资产 → install.sh 按 os/arch 拉取。
+# 不走「源码 tar + 本机 Python + venv」。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset_os: linux
+            asset_arch: x86_64
+          - os: macos-14
+            asset_os: darwin
+            asset_arch: arm64
+          # macos-13 Intel；需要 x86_64 Darwin 时打开
+          # - os: macos-13
+          #   asset_os: darwin
+          #   asset_arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check tag matches pyproject version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PYV="$(python -c "import re,pathlib; t=pathlib.Path('pyproject.toml').read_text(); print(re.search(r'(?m)^version\\s*=\\s*\"([^\"]+)\"', t).group(1))")"
+          if [ "$TAG" != "$PYV" ]; then
+            echo "tag $GITHUB_REF_NAME 与 pyproject version $PYV 不一致" >&2
+            exit 1
+          fi
+
+      - name: Install build deps
+        run: |
+          python -m pip install -U pip setuptools wheel
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller==6.22.3
+          python -m pip install -e .
+
+      - name: Smoke (unfrozen)
+        run: |
+          circle --version
+          circle --print-home
+          python -m pytest -q
+
+      - name: PyInstaller onedir
+        run: |
+          pyinstaller packaging/circle.spec --noconfirm --clean
+          test -x dist/circle/circle || test -x dist/circle/circle.exe
+
+      - name: Pack asset
+        shell: bash
+        run: |
+          ASSET="circle-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz"
+          tar -C dist -czf "$ASSET" circle
+          shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          ls -l "$ASSET" "${ASSET}.sha256"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Upload asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten and checksums
+        run: |
+          mkdir -p dist-release
+          find artifacts -type f \( -name 'circle-*.tar.gz' -o -name 'circle-*.sha256' \) -exec cp {} dist-release/ \;
+          cp install.sh dist-release/install.sh
+          (cd dist-release && sha256sum circle-*.tar.gz install.sh > SHA256SUMS)
+          ls -l dist-release
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES="$(printf '%s\n' \
+            "Circle ${VERSION}" \
+            "" \
+            "免本机 Python 安装:" \
+            "" \
+            '```bash' \
+            "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | bash" \
+            '```' \
+            "" \
+            "钉版本:" \
+            "" \
+            '```bash' \
+            "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | CIRCLE_VERSION=${VERSION} bash" \
+            '```' \
+            "" \
+            "首跑: \`circle\` → 初始化（URL+KEY / OAuth）→ trust 工作区 → 主界面。" \
+            "用户配置: ~/.circle/settings.json")"
+          shopt -s nullglob
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Circle ${VERSION}" \
+            --notes "$NOTES" \
+            dist-release/*

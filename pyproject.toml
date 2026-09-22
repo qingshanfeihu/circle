@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "circle"
+version = "0.1.0"
+description = "Circle — compile harness with a zero-Python install path"
+requires-python = ">=3.11"
+readme = "README.md"
+dynamic = ["dependencies"]
+
+[project.scripts]
+circle = "circle.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["circle*"]
+exclude = ["tests*", "packaging*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
