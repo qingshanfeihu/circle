@@ -102,10 +102,10 @@ install_binary() {
         die "Release 资产布局异常：未找到可执行文件 circle"
     fi
     ln -sfn "$exe" "$BIN_DIR/circle"
-    log "已安装: $BIN_DIR/circle → $exe"
-    log "数据根: $HOME_DIR（凭据与 settings 由首次运行写入，安装器不写配置）"
+    log "已安装: ${BIN_DIR}/circle → ${exe}"
+    log "数据根: ${HOME_DIR}（凭据与 settings 由首次运行写入，安装器不写配置）"
 
-    if [[ ":$PATH:" == *":$BIN_DIR:"* ]]; then
+    if [[ ":$PATH:" == *":${BIN_DIR}:"* ]]; then
         log "安装完成。开始使用："
         log "  circle            # 首跑初始化 → trust 工作区 → 主界面"
         log "  circle /path/to/project"
@@ -114,9 +114,9 @@ install_binary() {
         [[ "${SHELL:-}" == *bash* ]] && rc="$HOME/.bashrc"
         if ! grep -q '# circle path' "$rc" 2>/dev/null; then
             printf '\n# circle path\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$rc"
-            log "已将 $BIN_DIR 写入 $rc"
+            log "已将 ${BIN_DIR} 写入 ${rc}"
         fi
-        log "安装完成。当前终端生效：source $rc （或重开终端）"
+        log "安装完成。当前终端生效：source ${rc} （或重开终端）"
         log "然后运行: circle"
     fi
 }
