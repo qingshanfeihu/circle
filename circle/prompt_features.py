@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from circle.skills import build_skill_tool, skill_source_dirs
+from circle.skills import build_skill_tool
 from circle.system_prompt import load_agent_prompt, load_tool_prompt
 
 # deepagents built-in tool names that have matching prompt files

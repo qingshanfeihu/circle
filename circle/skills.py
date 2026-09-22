@@ -201,15 +201,9 @@ def skill_sources(
             if path.is_dir():
                 ordered.append((path.resolve(), label))
 
-    # Deduplicate identical paths (keep last label/occurrence by re-adding).
-    dedup: dict[str, str] = {}
-    for path, label in ordered:
-        dedup[str(path)] = label
-    # Preserve priority: rebuild in order of first appearance of final map keys
-    # by walking ordered and only emitting when key matches final.
+    # Emit in order; if a path repeats, only the last label wins.
     seen: set[str] = set()
     final: list[tuple[str, str]] = []
-    # Emit in order but if path repeats, only last wins — reverse then reverse.
     for path, label in reversed(ordered):
         key = str(path)
         if key in seen:
