@@ -48,15 +48,26 @@ circle ~/code/my-project
 
 ## Skills
 
-Circle 按 Agent Skills 约定加载 `SKILL.md`（YAML frontmatter + 说明）：
+Circle 兼容 [skills.sh](https://skills.sh) / Agent Skills 生态：和多数 harness 一样读 **`.agents/skills`**。
+
+安装（任选其一）：
+
+```bash
+# 推荐：装到通用 .agents/skills（Circle / Cursor / Codex 等都会读）
+npx skills add <owner/repo> --skill <name> -a amp -y
+
+# 或装到所有支持 .agents/skills 的 agent
+npx skills add <owner/repo> --skill <name> -a amp,cursor,codex -y
+```
+
+Circle 还会额外读取：
 
 | 位置 | 说明 |
 |------|------|
-| `~/.circle/skills/<name>/SKILL.md` | 用户级 |
-| `~/.agents/skills/…` | 本机共享 |
-| `.agent/skills/` · `.circle/skills/` · `.agents/skills/` | 项目级（后者会向上找到 git 根） |
+| `~/.agents/skills/` · 项目 `.agents/skills/` | skills.sh 通用目录（优先兼容） |
+| `~/.circle/skills/` · `.circle/skills/` · `.agent/skills/` | Circle 私有目录 |
 
-系统提示里只放名称与简介；需要全文时用 `read_file`、工具 `skill`，或会话里 `/skill <name>`。
+系统提示只放名称与简介；全文用 `read_file`、工具 `skill`，或 `/skill <name>`。
 
 ## Dev
 

@@ -41,18 +41,44 @@ class SkillInfo:
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
+    """Parse simple YAML frontmatter (supports folded ``>`` / ``|`` scalars)."""
     match = _FRONTMATTER_RE.match(text)
     if not match:
         return {}
     data: dict[str, str] = {}
-    for line in match.group(1).splitlines():
+    lines = match.group(1).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            i += 1
+            continue
         if ":" not in line:
+            i += 1
             continue
         key, _, value = line.partition(":")
         key = key.strip().lower()
-        value = value.strip().strip("'\"")
-        if key:
-            data[key] = value
+        value = value.strip()
+        if not key:
+            i += 1
+            continue
+        if value in {">", "|", ">-", "|-", ">+", "|+"}:
+            block: list[str] = []
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt.strip() and not nxt.startswith((" ", "\t")) and ":" in nxt:
+                    break
+                block.append(nxt.strip() if value.startswith(">") else nxt.rstrip())
+                i += 1
+            # Folded (>): join with spaces; literal (|): keep newlines.
+            if value.startswith(">"):
+                data[key] = " ".join(p for p in block if p).strip()
+            else:
+                data[key] = "\n".join(block).strip()
+            continue
+        data[key] = value.strip().strip("'\"")
+        i += 1
     return data
 
 
@@ -288,7 +314,7 @@ def build_skill_tool(
 
 def format_skills_slash_list(skills: list[SkillInfo]) -> str:
     if not skills:
-        return "No skills found. Add SKILL.md under ~/.circle/skills or .agent/skills."
+        return "No skills found. Install with `npx skills add … -a amp` (writes .agents/skills), or add SKILL.md under ~/.circle/skills / .agent/skills."
     lines = ["Skills:", ""]
     for skill in skills:
         src = f" ({skill.source_label})" if skill.source_label else ""

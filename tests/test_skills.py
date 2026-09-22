@@ -72,3 +72,29 @@ def test_nested_agents_grouping_folder(tmp_path: Path):
     skills = discover_skills(None, home, user_home=uh)
     names = {s.name for s in skills}
     assert "lint-fix" in names
+
+
+def test_folded_description_frontmatter(tmp_path: Path):
+    home = tmp_path / "home"
+    uh = tmp_path / "uhome"
+    uh.mkdir()
+    d = home / "skills" / "fold"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: fold\ndescription: >\n  First line of desc\n  second line.\n---\n\n# Fold\n",
+        encoding="utf-8",
+    )
+    skills = discover_skills(None, home, user_home=uh)
+    assert len(skills) == 1
+    assert "First line of desc" in skills[0].description
+    assert skills[0].description.strip() != ">"
+
+
+def test_discover_from_shared_agents_skills(tmp_path: Path):
+    """skills.sh / amp / cursor install into ~/.agents/skills — Circle must see them."""
+    uh = tmp_path / "uhome"
+    shared = uh / ".agents" / "skills"
+    _write_skill(shared, "shared-pack", "Installed via skills CLI")
+    skills = discover_skills(None, tmp_path / "chome", user_home=uh)
+    assert {s.name for s in skills} == {"shared-pack"}
+    assert skills[0].source_label == "Agents"
