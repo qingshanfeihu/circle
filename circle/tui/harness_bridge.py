@@ -32,6 +32,8 @@ class StreamUpdate:
     reasoning_chars: int = 0
     llm_phase: str = ""  # thinking | output | ""
     cumulative: bool = True
+    tool_name: str = ""      # 非空 = 这是工具调用结果
+    tool_output: str = ""
 
 
 class HarnessBridge:
@@ -137,6 +139,13 @@ class HarnessBridge:
                     name = getattr(msg, "__class__", type("x", (), {})).__name__
                     content = getattr(msg, "content", None)
                     is_chunk = "Chunk" in name
+                    # ToolMessage → 发 tool 事件（视觉区分用）
+                    if name == "ToolMessage":
+                        tool_content = str(content or "")[:2000]
+                        self._on_update(StreamUpdate(
+                            tool_name="tool", tool_output=tool_content,
+                        ))
+                        continue
                     text, thinking = self._emit_from_content(content, chunk=is_chunk)
                     if text:
                         # Full AIMessage replaces; chunks accumulate when delta-like

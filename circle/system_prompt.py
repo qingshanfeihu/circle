@@ -308,7 +308,7 @@ def _tool_catalog_section() -> str:
         "edit_file": "apply a surgical edit to an existing file",
         "glob": "find files by glob pattern",
         "grep": "search file contents with regex",
-        "execute": "run a shell command in the workspace",
+        "execute": "run a shell command in the workspace (macOS: use python3 not python; prefer .venv311/bin/python3 for venv access)",
         "write_todos": "track multi-step task progress",
         "task": "delegate to a subagent (e.g. explore)",
         "webfetch": "fetch a URL as text/markdown",

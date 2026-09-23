@@ -1562,6 +1562,17 @@ class CircleSessionApp:
 
     def _on_stream_update(self, update: StreamUpdate) -> None:
         with self._app.lock:
+            # 工具结果 → 用视觉前缀 + 暗色渲染
+            if update.tool_name:
+                pal = palette()
+                lines = str(update.tool_output).split("\n")
+                rendered = "\n".join(
+                    [f" {pal.faint}│ ⏺ {lines[0][:120]}{pal.reset}"]
+                    + [f" {pal.faint}│ {ln[:120]}{pal.reset}" for ln in lines[1:15]]
+                )
+                self._transcript.append_message(rendered)
+                self._app.render()
+                return
             # Thinking-only phase (InfoTest: streaming_text is None, llm_phase=thinking)
             if update.thinking and not update.text:
                 self._thinking_body = update.thinking
