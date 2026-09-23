@@ -61,6 +61,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("unshare", "Delete the active local share file"),
     SlashCommand("editor", "Compose next message in $EDITOR / $VISUAL"),
     SlashCommand("reload", "Reload settings.json and rebuild the model"),
+    SlashCommand("yolo", "Toggle auto-approve all tool calls", aliases=("auto",)),
     SlashCommand("exit", "Quit Circle", aliases=("quit", "q")),
 )
 

@@ -1718,14 +1718,29 @@ class CircleSessionApp:
     def _on_interrupt(self, interrupts: Any) -> None:
         # yolo 模式：直接批准，不弹审批面板
         if getattr(self._bridge, "auto_approve", False):
+            import time as _time
             first = (interrupts[0] if isinstance(interrupts, (list, tuple)) and interrupts
                      else interrupts)
             value = getattr(first, "value", first)
+            # 统计所有待审批的 tool calls（可能有多个）
             reqs = []
             if isinstance(value, dict):
                 reqs = value.get("action_requests") or [value]
+            elif isinstance(value, list):
+                reqs = value
+            else:
+                reqs = [value]
+            # 每个 tool call 都要有一个 decision
             decisions = [{"type": "approve"} for _ in reqs]
-            self._bridge.resume({"decisions": decisions})
+            # 如果数量不匹配，用 bridge 的原始 resume（不走 slash 路径）
+            try:
+                from langgraph.types import Command as _Cmd
+                self._bridge._cancelled = False
+                self._bridge._spawn(_Cmd(resume={"decisions": decisions}))
+            except Exception:
+                # fallback：逐个批准
+                for _ in reqs:
+                    self._bridge.resume({"decision": "approve"})
             return
         with self._app.lock:
             first = (
