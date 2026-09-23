@@ -1562,15 +1562,45 @@ class CircleSessionApp:
 
     def _on_stream_update(self, update: StreamUpdate) -> None:
         with self._app.lock:
-            # 工具结果 → 用视觉前缀 + 暗色渲染
+            # 工具调用请求（LLM 要调工具）→ 状态灯 + 工具名(参数)
+            if update.tool_calls:
+                pal = palette()
+                from circle.ink.theme import status_light
+                for tc in update.tool_calls:
+                    name = str(tc.get("name", "tool"))[:20]
+                    args_str = " ".join(str(tc.get("args", {})).split())[:60]
+                    if args_str:
+                        line = f" {status_light('running')} {pal.dim}{name}({pal.blue}{args_str}{pal.dim}){pal.reset}"
+                    else:
+                        line = f" {status_light('running')} {pal.dim}{name}(){pal.reset}"
+                    self._transcript.append_message(line)
+                self._app.render()
+                return
+            # 工具结果 → 状态灯 + 摘要（折叠，ctrl+o 展开）
             if update.tool_name:
                 pal = palette()
-                lines = str(update.tool_output).split("\n")
-                rendered = "\n".join(
-                    [f" {pal.faint}│ ⏺ {lines[0][:120]}{pal.reset}"]
-                    + [f" {pal.faint}│ {ln[:120]}{pal.reset}" for ln in lines[1:15]]
-                )
-                self._transcript.append_message(rendered)
+                from circle.ink.theme import status_light
+                output = str(update.tool_output)
+                lines = output.split("\n")
+                is_error = "error" in output.lower()[:200] or "Error" in output[:200]
+                is_ok = not is_error and ("exit code 0" in output or "succeeded" in output or len(output.strip()) > 0)
+                light = status_light("error" if is_error else "ok")
+                # 折叠模式：只显示首行摘要
+                if not self._tool_outputs_expanded:
+                    first = lines[0][:100] if lines else ""
+                    hidden = max(0, len(lines) - 1)
+                    hint = f" {pal.faint}(ctrl+o 展开 +{hidden}行){pal.reset}" if hidden > 3 else ""
+                    line = f" {light} {pal.faint}{first}{pal.reset}{hint}"
+                    self._transcript.append_message(line)
+                else:
+                    # 展开模式：最多 30 行
+                    shown = lines[:30]
+                    rendered = f" {light} {pal.faint}{shown[0][:120]}{pal.reset}"
+                    for ln in shown[1:]:
+                        rendered += f"\n   {pal.faint}{ln[:120]}{pal.reset}"
+                    if len(lines) > 30:
+                        rendered += f"\n   {pal.faint}… +{len(lines)-30} 行{pal.reset}"
+                    self._transcript.append_message(rendered)
                 self._app.render()
                 return
             # Thinking-only phase (InfoTest: streaming_text is None, llm_phase=thinking)

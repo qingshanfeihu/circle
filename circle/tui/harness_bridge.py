@@ -34,6 +34,7 @@ class StreamUpdate:
     cumulative: bool = True
     tool_name: str = ""      # 非空 = 这是工具调用结果
     tool_output: str = ""
+    tool_calls: list = None  # AIMessage 的 tool_calls（LLM 请求调工具）
 
 
 class HarnessBridge:
@@ -139,6 +140,19 @@ class HarnessBridge:
                     name = getattr(msg, "__class__", type("x", (), {})).__name__
                     content = getattr(msg, "content", None)
                     is_chunk = "Chunk" in name
+                    # AIMessage with tool_calls → 发 tool_call 事件
+                    tool_calls = getattr(msg, "tool_calls", None)
+                    if tool_calls and name == "AIMessage" and not is_chunk:
+                        calls = []
+                        for tc in tool_calls:
+                            if isinstance(tc, dict):
+                                calls.append({
+                                    "name": tc.get("name", "tool"),
+                                    "args": tc.get("args", {}),
+                                })
+                        if calls:
+                            self._on_update(StreamUpdate(tool_calls=calls))
+                        continue
                     # ToolMessage → 发 tool 事件（视觉区分用）
                     if name == "ToolMessage":
                         tool_content = str(content or "")[:2000]
