@@ -685,6 +685,15 @@ class CircleSessionApp:
         self._transcript.append_message(f" \x1b[2m{msg}\x1b[0m")
         self._app.render()
 
+    def _cmd_yolo(self, args: str) -> None:
+        """/yolo — 切换自动批准所有工具调用。"""
+        enabled = args.strip().lower() not in ("off", "0", "false", "no")
+        self._footer.set_yolo(enabled)
+        self._bridge.auto_approve = enabled
+        self._toast("yolo → 开（自动批准所有工具调用）" if enabled
+                    else "yolo → 关（恢复逐项审批）")
+        self._app.render()
+
     def _dispatch_slash(self, name: str, args: str) -> None:
         if name == "exit":
             self._app._running = False  # noqa: SLF001
@@ -706,6 +715,7 @@ class CircleSessionApp:
             self._start_user_turn(expanded)
             return
         _busy_ok = {
+            "yolo",
             "settings",
             "session",
             "themes",
@@ -753,6 +763,7 @@ class CircleSessionApp:
             "unshare": self._cmd_unshare,
             "editor": self._cmd_editor,
             "reload": self._cmd_reload,
+            "yolo": self._cmd_yolo,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -1649,7 +1660,11 @@ class CircleSessionApp:
             self._stream_buf = ""
             self._leave_busy()
             self._app.render()
-            self._drain_message_queue()
+            # 延迟 drain：等 bridge 完全退出 running 状态后再消费队列
+            import threading
+            timer = threading.Timer(0.15, self._drain_message_queue)
+            timer.daemon = True
+            timer.start()
 
     def _on_error(self, exc: BaseException) -> None:
         with self._app.lock:
@@ -1660,6 +1675,17 @@ class CircleSessionApp:
             self._drain_message_queue()
 
     def _on_interrupt(self, interrupts: Any) -> None:
+        # yolo 模式：直接批准，不弹审批面板
+        if getattr(self._bridge, "auto_approve", False):
+            first = (interrupts[0] if isinstance(interrupts, (list, tuple)) and interrupts
+                     else interrupts)
+            value = getattr(first, "value", first)
+            reqs = []
+            if isinstance(value, dict):
+                reqs = value.get("action_requests") or [value]
+            decisions = [{"type": "approve"} for _ in reqs]
+            self._bridge.resume({"decisions": decisions})
+            return
         with self._app.lock:
             first = (
                 interrupts[0]

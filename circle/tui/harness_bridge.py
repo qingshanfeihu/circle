@@ -213,3 +213,5 @@ class HarnessBridge:
         except Exception as exc:  # noqa: BLE001
             self._on_error(exc)
             self._on_status("ready")
+
+    auto_approve: bool = False
