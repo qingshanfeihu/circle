@@ -1,8 +1,10 @@
 
 from __future__ import annotations
 
+import math
 import os
 import random
+import shutil
 import threading
 import time
 
@@ -33,6 +35,100 @@ _PHASE_STATE_TEXT = {
 _FOOTER_INDENT = " "
 
 _PHASE_STALE_S = 90.0
+
+# 流动渐变线条的色标（AI 渐变四色）
+_GRADIENT_STOPS = (
+    (0.00, (8, 148, 255)),
+    (0.30, (201, 89, 221)),
+    (0.65, (255, 46, 84)),
+    (0.90, (255, 144, 4)),
+    (1.00, (8, 148, 255)),
+)
+
+
+def _conic_gradient(u: float) -> tuple[int, int, int]:
+    """按相位 u ∈ [0,1) 插值圆锥渐变色。"""
+    u %= 1.0
+    for (p0, c0), (p1, c1) in zip(_GRADIENT_STOPS, _GRADIENT_STOPS[1:]):
+        if u <= p1:
+            t = (u - p0) / (p1 - p0)
+            return tuple(int(c0[i] + (c1[i] - c0[i]) * t) for i in range(3))
+    return _GRADIENT_STOPS[-1][1]
+
+
+def _mix_color(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    """混合两个 RGB 颜色，t ∈ [0,1]。"""
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _sgr(c: tuple[int, int, int]) -> str:
+    """生成 ANSI SGR 前景色序列。"""
+    return f"\x1b[38;2;{c[0]};{c[1]};{c[2]}m"
+
+
+def _build_flowing_line(elapsed: float, text: str, width: int | None = None) -> str:
+    """
+    构建流动渐变线条，文字从第 6 格起嵌入。
+    
+    Args:
+        elapsed: 已流逝秒数，用于驱动动画
+        text: 要嵌入的文字内容（已包含 ANSI 色码）
+        width: 终端宽度，None 则自动获取
+    
+    Returns:
+        带流动渐变效果的单行字符串
+    """
+    if width is None:
+        width = shutil.get_terminal_size().columns
+    
+    # 流动参数：flow 控制渐变色沿线流动，comet 控制彗头亮点位置
+    flow = (elapsed * 0.12) % 1.0  # 约 8s 一周期
+    comet = (elapsed * 0.30) % 1.0  # 约 3s 一周期
+    
+    # 计算单元格的颜色（带彗头提亮）
+    def cell_color(col_idx: int, total_cols: int) -> tuple[int, int, int]:
+        frac = col_idx / max(total_cols, 1)
+        f = (frac + flow) % 1.0
+        base = _conic_gradient(f)
+        
+        # 彗头高斯提亮
+        d = abs((frac - comet + 0.5) % 1.0 - 0.5)
+        glow = math.exp(-(d / 0.06) ** 2)
+        return _mix_color(base, (255, 255, 255), min(0.85, glow))
+    
+    # 文字嵌入起始位置
+    text_start = 6
+    line_width = width - 2  # 减去两侧的缩进
+    
+    # 构建线条
+    result = _FOOTER_INDENT
+    col = 0
+    
+    # 前置渐变 ─
+    while col < text_start and col < line_width:
+        color = cell_color(col, line_width)
+        result += _sgr(color) + "─"
+        col += 1
+    
+    # 嵌入文字（文字已经带有自己的 ANSI 码，用白色显示）
+    if col < line_width:
+        result += "\x1b[38;2;215;215;224m" + text + "\x1b[0m"
+        # 粗略估计文字占用的列数（考虑 ANSI 转义序列不占显示宽度）
+        # 简化处理：假设文字中的可见字符都是单宽
+        visible_chars = len(text)
+        # 更精确的处理：移除 ANSI 序列后计算
+        import re
+        clean_text = re.sub(r'\x1b\[[0-9;]*m', '', text)
+        col += len(clean_text)
+    
+    # 后置渐变 ─
+    while col < line_width:
+        color = cell_color(col, line_width)
+        result += _sgr(color) + "─"
+        col += 1
+    
+    result += "\x1b[0m"
+    return result
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -401,9 +497,29 @@ class FooterPane:
         )
         write_1h = min(self._cache_write_1h_tokens + self.fork_cache_write_1h, write)
         miss = max(total_in - hit - write, 0)
-        parts = [
-            f"↑ {_format_token_count(total_in)} · ↓ {_format_token_count(display_out)} tokens"
-        ]
+        
+        # 工作期间显示当前轮实时统计，空闲时显示会话累计
+        if self._timer_running and self._busy_since:
+            _run_in = max(0, self.input_tokens + self.fork_input - self._run_start_input)
+            _run_out = max(0, self.output_tokens + self.fork_output - self._run_start_output)
+            _live_out = self.fork_live_output
+            
+            # 根据当前阶段决定显示方向
+            if self._llm_phase == "input" or (_run_in > 0 and _run_out == 0 and _live_out == 0):
+                # 输入阶段或只有输入
+                parts = [f"↑ {_format_token_count(_run_in)} tokens"]
+            elif _run_out > 0 or _live_out > 0:
+                # 输出阶段或有输出
+                total_out = _run_out + _live_out
+                parts = [f"↓ {_format_token_count(total_out)} tokens"]
+            else:
+                # 刚开始，还没有数据
+                parts = ["↑ 0 · ↓ 0 tokens"]
+        else:
+            # 空闲时显示会话累计
+            parts = [
+                f"↑ {_format_token_count(total_in)} · ↓ {_format_token_count(display_out)} tokens"
+            ]
         if self.model:
             parts.append(self.model)
         if self._costs_supplied:
@@ -480,10 +596,13 @@ class FooterPane:
                     slot_text = self._verb
                 _verb_slot = shimmer.render(slot_text, palette())
                 _phase_wait = self._activity_slot_text(silent=False)
-                thinking_text = (
-                    f"{GLYPH_FOOTER_BUSY} {_verb_slot}… ({elapsed_str} · {_tok}"
+                # 构建文字内容
+                text_content = (
+                    f"{_verb_slot}… ({elapsed_str} · {_tok}"
                     + (f" · {_phase_wait}" if _phase_wait else "")
-                    + f" · \x1b[1m{_state}\x1b[0m)")
+                    + f" · \x1b[1m{_state}\x1b[0m)"
+                )
+                thinking_text = _build_flowing_line(elapsed, text_content)
             else:
                 _tok = (
                     f" · ↑ {_format_token_count(_run_in)}"
@@ -511,8 +630,9 @@ class FooterPane:
                     _fork_wait = f" · {_slot}"
                 _max_tag = " · \x1b[1m最大深度思考中\x1b[0m" if self._max_thinking else ""
                 _verb_slot = shimmer.render(self._verb, palette())
-                thinking_text = (f"{GLYPH_FOOTER_BUSY} {_verb_slot}… "
-                                 f"({elapsed_str}{_tok}{_fork_wait}{_max_tag})")
+                # 构建文字内容
+                text_content = f"{_verb_slot}… ({elapsed_str}{_tok}{_fork_wait}{_max_tag})"
+                thinking_text = _build_flowing_line(elapsed, text_content)
             if self._thinking_cb:
                 self._thinking_cb(thinking_text)
         else:
