@@ -87,6 +87,7 @@ def test_builtin_slash_inventory_complete():
         "editor",
         "reload",
         "exit",
+        "yolo",
     }
     for alias, canon in ALIAS_TO_CANONICAL.items():
         p = parse_slash(f"/{alias}")

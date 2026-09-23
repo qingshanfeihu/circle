@@ -89,7 +89,7 @@ def test_skill_colon_form():
     assert p.name == "skill"
     assert p.args == "pack do-it"
     # InfoTest-only stay out
-    for banned in ("yolo", "approvals", "kms", "footprint", "engine-debt"):
+    for banned in ("approvals", "kms", "footprint", "engine-debt"):
         assert banned not in ALIAS_TO_CANONICAL
 
 
