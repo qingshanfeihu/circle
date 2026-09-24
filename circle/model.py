@@ -30,6 +30,26 @@ def _request_timeout_s() -> float:
     return _DEFAULT_TIMEOUT_S
 
 
+def reasoning_effort_of(model: Any) -> str:
+    """Configured thinking strength, if the client actually set one."""
+    if model is None:
+        return (os.environ.get("CIRCLE_REASONING_EFFORT") or "").strip()
+    effort = getattr(model, "reasoning_effort", None)
+    if effort:
+        return str(effort)
+    output_config = getattr(model, "output_config", None)
+    if isinstance(output_config, dict) and output_config.get("effort"):
+        return str(output_config["effort"])
+    extra = getattr(model, "extra_body", None)
+    if isinstance(extra, dict):
+        if extra.get("reasoning_effort"):
+            return str(extra["reasoning_effort"])
+        thinking = extra.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type"):
+            return str(thinking["type"])
+    return (os.environ.get("CIRCLE_REASONING_EFFORT") or "").strip()
+
+
 def build_chat_model(
     settings: CircleSettings,
     *,
@@ -57,6 +77,7 @@ def build_chat_model(
         )
 
     timeout = _request_timeout_s()
+    effort = (os.environ.get("CIRCLE_REASONING_EFFORT") or "xhigh").strip()
     kwargs: dict[str, Any] = {
         "model_provider": "anthropic" if auth.protocol == "anthropic" else "openai",
         "api_key": api_key,
@@ -64,6 +85,8 @@ def build_chat_model(
         "timeout": timeout,
         "max_retries": 1,
     }
+    if auth.protocol == "anthropic" and effort:
+        kwargs["reasoning_effort"] = effort
     if auth.base_url:
         kwargs["base_url"] = auth.base_url
 

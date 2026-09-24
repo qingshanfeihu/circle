@@ -1,7 +1,9 @@
 """Circle session shell — IstInkApp session ring without compile/KMS.
 
-Layout matches InfoTest: transcript · ask panel · thinking · divider ·
-prompt · divider · footer. Streaming + exec approval via HarnessBridge.
+Layout: transcript · ask panel · closed composer frame · footer.
+The frame is one rounded loop. While busy, one rainbow runs around that
+loop and through the status text on the top edge.
+Streaming + exec approval via HarnessBridge.
 """
 
 from __future__ import annotations
@@ -38,14 +40,17 @@ from circle.mcp_loader import format_mcp_status
 from circle.session_tree import SessionTree
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
+from circle.ink.components.dialog_frame import build_loop_frame
 from circle.ink.components.exec_approval_view import ExecApprovalSession
 from circle.ink.components.footer import FooterPane
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
-from circle.ink.dom import NodeType, create_element, create_fill_text, create_text
+from circle.ink.dom import NodeType, create_element, create_text
 from circle.ink.parse_keypress import InputEvent, KeyPress, MouseEvent, PasteEvent
 from circle.ink.theme import GLYPH_AGENT, init_palette_from_terminal, palette
-from circle.model import build_chat_model
+from circle.model import build_chat_model, reasoning_effort_of
+from circle.pricing import context_window_for
+from circle.tui.harness_bridge import format_tool_args
 from circle.paths import circle_home, ensure_home, normalize_workspace
 from circle import secret_prompt
 from circle.settings import (
@@ -59,6 +64,7 @@ from circle.settings import (
     save_credentials,
     save_settings,
 )
+from circle.tui.agent_strip import render_agent_strip
 from circle.tui.content_blocks import assistant_block, render_thinking_line
 from circle.tui.controllers import InitController, InitStep, TrustController
 from circle.tui.harness_bridge import HarnessBridge, StreamUpdate
@@ -122,16 +128,46 @@ class CircleSessionApp:
         self._app = InkApp(alt_screen=True, mouse=True)
         self._transcript = Transcript()
         self._ask_panel = AskUserPanel()
-        self._thinking_line = create_element(NodeType.BOX)
-        self._thinking_line.style.height = 0
-        self._thinking_text = create_text("")
-        self._thinking_line.append_child(self._thinking_text)
+        self._dialog_label = ""
+        self._dialog_phase_origin = 0.0
 
         self._prompt = PromptInput(
             cursor_manager=self._app.cursor,
             on_submit=self._on_submit,
-            placeholder="输入消息（/ 命令 · /help）",
+            placeholder="",
         )
+        self._prompt.node.style.flex_grow = 1
+        self._dialog = create_element(NodeType.BOX)
+        self._dialog.style.height = 3
+        self._dialog.style.overflow = "hidden"
+        self._dialog_top_text = create_text("")
+        self._dialog_left_text = create_text("│")
+        self._dialog_right_text = create_text("│")
+        self._dialog_bottom_text = create_text("")
+        dialog_top = create_element(NodeType.BOX)
+        dialog_top.style.height = 1
+        dialog_top.append_child(self._dialog_top_text)
+        dialog_mid = create_element(NodeType.BOX)
+        dialog_mid.style.height = 1
+        dialog_mid.style.flex_direction = "row"
+        dialog_left = create_element(NodeType.BOX)
+        dialog_left.style.width = 1
+        dialog_left.style.height = 1
+        dialog_left.append_child(self._dialog_left_text)
+        dialog_right = create_element(NodeType.BOX)
+        dialog_right.style.width = 1
+        dialog_right.style.height = 1
+        dialog_right.append_child(self._dialog_right_text)
+        dialog_bottom = create_element(NodeType.BOX)
+        dialog_bottom.style.height = 1
+        dialog_bottom.append_child(self._dialog_bottom_text)
+        dialog_mid.append_child(dialog_left)
+        dialog_mid.append_child(self._prompt.node)
+        dialog_mid.append_child(dialog_right)
+        self._dialog.append_child(dialog_top)
+        self._dialog.append_child(dialog_mid)
+        self._dialog.append_child(dialog_bottom)
+
         self._footer = FooterPane(
             render_callback=self._app.render,
             thinking_text_cb=self._update_thinking_line,
@@ -139,24 +175,24 @@ class CircleSessionApp:
         self._footer.update(model=settings.auth.model, status="ready")
         hist_path = (self.home / "history")
         self._input_history = InputHistory(path=hist_path)
+        self._app.before_render = self._sync_dialog_frame
 
-        self._divider_top = create_element(NodeType.BOX)
-        self._divider_top.style.height = 1
-        self._divider_top.text_styles.dim = True
-        self._divider_top.append_child(create_fill_text("─"))
-        self._divider_bottom = create_element(NodeType.BOX)
-        self._divider_bottom.style.height = 1
-        self._divider_bottom.text_styles.dim = True
-        self._divider_bottom.append_child(create_fill_text("─"))
+        self._agent_rows: list[dict] = []
+        self._seen_call_ids: set[str] = set()
+        self._tool_line_at: dict[str, int] = {}
+        self._tool_names: dict[str, str] = {}
+        self._tool_filled: dict[str, bool] = {}
+        self._agent_strip = create_element(NodeType.BOX)
+        self._agent_strip.style.height = 0
+        self._agent_strip_text = create_text("")
+        self._agent_strip.append_child(self._agent_strip_text)
 
         root = self._app.root
         root.append_child(self._transcript.node)
         root.append_child(self._ask_panel.node)
-        root.append_child(self._thinking_line)
-        root.append_child(self._divider_top)
-        root.append_child(self._prompt.node)
-        root.append_child(self._divider_bottom)
+        root.append_child(self._dialog)
         root.append_child(self._footer.node)
+        root.append_child(self._agent_strip)
 
         self._app.on_input = self._handle_input
 
@@ -202,6 +238,8 @@ class CircleSessionApp:
         model = build_chat_model(
             settings, home=self.home, model_override=model_override
         )
+        self._chat_model = model
+        self._sync_model_meter()
         self._agent = create_harness(
             model,
             root_dir=self.workspace,
@@ -225,6 +263,7 @@ class CircleSessionApp:
             c.name: c
             for c in discover_custom_commands(self.workspace, self.home)
         }
+        self._chat_model = chat
         self._agent = create_harness(
             chat,
             root_dir=self.workspace,
@@ -236,6 +275,7 @@ class CircleSessionApp:
             plan_mode=self._plan_mode,
             mcp_servers=self.settings.mcp_servers,
         )
+        self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
         backend = getattr(self._agent, "_circle_backend", None)
@@ -283,13 +323,84 @@ class CircleSessionApp:
         self._footer.update(status="ready")
         self._app.render()
 
-    def _update_thinking_line(self, text: str) -> None:
-        if not text:
-            self._thinking_line.style.height = 0
-            self._thinking_text.set_value("")
+    def _update_thinking_line(self, text: str | None) -> None:
+        """Store the status that the closed frame embeds in its top edge."""
+        label = text or ""
+        if label and not self._dialog_label:
+            self._dialog_phase_origin = time.monotonic()
+        if not label:
+            self._dialog_phase_origin = 0.0
+        self._dialog_label = label
+
+    def _sync_dialog_frame(self) -> None:
+        width = self._app.width
+        if width < 8:
             return
-        self._thinking_text.set_value(f" \x1b[2m{text}\x1b[0m")
-        self._thinking_line.style.height = 1
+        elapsed = None
+        if self._dialog_label:
+            elapsed = time.monotonic() - self._dialog_phase_origin
+        top, left, right, bottom = build_loop_frame(
+            width,
+            elapsed=elapsed,
+            label=self._dialog_label,
+        )
+        self._dialog_top_text.set_value(top)
+        self._dialog_left_text.set_value(left)
+        self._dialog_right_text.set_value(right)
+        self._dialog_bottom_text.set_value(bottom)
+        self._sync_agent_strip()
+
+    def _note_task(self, call: dict) -> None:
+        if str(call.get("name") or "") != "task":
+            return
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        action = " ".join(str(
+            args.get("description")
+            or args.get("prompt")
+            or args.get("task")
+            or "运行中"
+        ).split())
+        name = str(args.get("subagent_type") or "task")
+        call_id = str(call.get("id") or "")
+        for row in self._agent_rows:
+            same = (call_id and row.get("id") == call_id) or (
+                not call_id and not row.get("id") and row.get("name") == name
+            )
+            if same:
+                if action != "运行中":
+                    row["action"] = action
+                    row["name"] = name
+                return
+        self._agent_rows.append({
+            "id": call_id,
+            "name": name,
+            "action": action,
+            "started": time.time(),
+        })
+
+    def _drop_task(self, call_id: str) -> None:
+        if call_id:
+            kept = [row for row in self._agent_rows if row.get("id") != call_id]
+            if len(kept) != len(self._agent_rows):
+                self._agent_rows[:] = kept
+                return
+        if self._agent_rows:
+            self._agent_rows.pop(0)
+
+    def _sync_agent_strip(self) -> None:
+        strip = getattr(self, "_agent_strip", None)
+        text = getattr(self, "_agent_strip_text", None)
+        if strip is None or text is None:
+            return
+        rows = getattr(self, "_agent_rows", [])
+        if not rows:
+            strip.style.height = 0
+            text.set_value("")
+            return
+        width = max(40, self._app.width or 80)
+        lines = render_agent_strip(rows, width=width)
+        strip.style.height = len(lines)
+        text.set_value("\n".join(lines))
 
     # ── input ──────────────────────────────────────────────────────────
 
@@ -324,6 +435,18 @@ class CircleSessionApp:
         if kp.key == "ctrl+s":
             self._start_secret_entry()
             return
+
+        from circle.ink.selection import clear_selection, has_selection
+
+        if has_selection(self._app.selection):
+            if kp.key == "ctrl+c":
+                self._copy_selection(clear_after=False)
+                return
+            if kp.key == "escape":
+                clear_selection(self._app.selection)
+                self._app.notify_selection_change()
+                self._app.render()
+                return
 
         if kp.key == "ctrl+c":
             now = time.time()
@@ -445,13 +568,16 @@ class CircleSessionApp:
         self._prompt.clear()
         self._secret_hint_shown = False
         question = str(request.get("question") or "请输入机密")
-        self._footer.update(status=f"机密：{question}（回车确认 / Esc 取消）")
+        self._footer.hold_status(f"请输入{question}（回车确认 / Esc 取消）")
         self._app.render()
 
     def _sync_secret_display(self) -> None:
-        """输入行只显示掩码；真实值只在本方法外的 buffer 里。"""
-        buffer = self._secret_entry["buffer"] if self._secret_entry else ""
-        self._prompt.set_value("*" * len(buffer))
+        """密码显示掩码；用户名按请求里的 mask=false 原文显示。值不进对话。"""
+        entry = self._secret_entry or {}
+        buffer = entry.get("buffer") or ""
+        request = entry.get("request") or {}
+        shown = "*" * len(buffer) if request.get("mask", True) else buffer
+        self._prompt.set_value(shown)
 
     def _handle_secret_key(self, kp: KeyPress) -> None:
         entry = self._secret_entry
@@ -472,12 +598,18 @@ class CircleSessionApp:
             self._secret_entry = None
             entry["buffer"] = ""
             self._prompt.clear()
-            self._app.render()
+            if secret_prompt.list_pending(self.home):
+                self._start_secret_entry()
+            else:
+                self._footer.clear_hold_status()
+                self._footer.update(status="设备口令已收集")
+                self._app.render()
             return
         if kp.key == "escape":
             self._secret_entry = None
             entry["buffer"] = ""
             self._prompt.clear()
+            self._footer.clear_hold_status()
             self._footer.update(status="已取消")
             self._app.render()
             return
@@ -494,11 +626,110 @@ class CircleSessionApp:
             self._app.render()
 
     def _handle_mouse(self, me: MouseEvent) -> None:
+        # InfoTest IstInkApp._handle_mouse — text selection, copy, wheel.
+        # Circle has no agent strip / fork-row targets, so those clicks fall
+        # through to ordinary text selection.
+        col, row = self._mouse_to_screen_coords(me.x, me.y)
+
         if me.type == "wheel":
             if me.button == 0:
                 self._scroll_transcript(-3)
             elif me.button == 1:
                 self._scroll_transcript(3)
+            return
+
+        if me.button != 0:
+            return
+
+        if me.type == "press":
+            self._handle_left_press(col, row, alt=me.alt)
+            return
+
+        if me.type == "move":
+            sel = self._app.selection
+            if not sel.is_dragging:
+                return
+            if sel.anchor_span is not None:
+                from circle.ink.selection import extend_selection
+
+                extend_selection(sel, self._app._curr_screen, col, row)
+            else:
+                from circle.ink.selection import update_selection
+
+                update_selection(sel, col, row)
+            self._app.notify_selection_change()
+            self._app.render()
+            return
+
+        if me.type == "release":
+            from circle.ink.selection import finish_selection, has_selection
+
+            sel = self._app.selection
+            was_dragging = sel.is_dragging
+            finish_selection(sel)
+            if was_dragging and has_selection(sel):
+                self._copy_selection(clear_after=False)
+            self._app.notify_selection_change()
+            self._app.render()
+
+    def _handle_left_press(self, col: int, row: int, *, alt: bool) -> None:
+        now = time.monotonic()
+        last = getattr(self, "_last_click_meta", None)
+        click_count = 1
+        if (
+            last is not None
+            and now - last[0] < 0.3
+            and last[1] == col
+            and last[2] == row
+        ):
+            click_count = last[3] + 1
+        if click_count > 3:
+            click_count = 3
+
+        from circle.ink.selection import select_line_at, select_word_at, start_selection
+
+        sel = self._app.selection
+        sel.scrolled_off_above = []
+        sel.scrolled_off_below = []
+        sel.scrolled_off_above_sw = []
+        sel.scrolled_off_below_sw = []
+
+        screen = self._app._curr_screen
+        if click_count == 1:
+            start_selection(sel, col, row, alt=alt)
+        elif click_count == 2:
+            select_word_at(sel, screen, col, row)
+        else:
+            select_line_at(sel, screen, row)
+
+        self._last_click_meta = (now, col, row, click_count)
+        self._app.notify_selection_change()
+        self._app.render()
+
+    def _mouse_to_screen_coords(self, x: int, y: int) -> tuple[int, int]:
+        screen = self._app._curr_screen
+        clamped_x = max(0, min(x, max(0, screen.width - 1)))
+        clamped_y = max(0, min(y, max(0, screen.height - 1)))
+        return clamped_x, clamped_y
+
+    def _copy_selection(self, *, clear_after: bool) -> None:
+        from circle.ink.selection import clear_selection, get_selected_text, has_selection
+        from circle.ink.termio.osc import set_clipboard
+
+        sel = self._app.selection
+        if not has_selection(sel):
+            return
+        text = get_selected_text(sel, self._app.visible_screen())
+        if not text:
+            return
+        seq = set_clipboard(text)
+        if seq:
+            self._app._terminal.write(seq)
+        self._footer.set_toast(f"Copied {len(text)} chars", ttl_seconds=1.2)
+        if clear_after:
+            clear_selection(sel)
+            self._app.notify_selection_change()
+        self._app.render()
 
     def _half_viewport(self) -> int:
         return max(1, self._transcript.viewport_height() // 2)
@@ -506,8 +737,53 @@ class CircleSessionApp:
     def _scroll_transcript(self, delta: int) -> None:
         if delta == 0:
             return
+        old_top = self._transcript.node.scroll_top
         self._transcript.scroll_by(delta)
+        actual = self._transcript.node.scroll_top - old_top
+        if actual != 0:
+            self._shift_selection_for_scroll(actual)
         self._app._repaint_full()  # noqa: SLF001
+
+    def _shift_selection_for_scroll(self, scroll_delta: int) -> None:
+        from circle.ink.selection import (
+            capture_scrolled_rows,
+            has_selection,
+            selection_bounds,
+            shift_selection,
+        )
+
+        sel = self._app.selection
+        if not has_selection(sel):
+            return
+        rect = self._transcript.node.rect
+        if rect.height <= 0:
+            return
+        min_row = rect.y
+        max_row = rect.y + rect.height - 1
+        bounds = selection_bounds(sel)
+        if bounds is None or bounds[0].row > max_row or bounds[1].row < min_row:
+            return
+
+        screen = self._app.visible_screen()
+        if scroll_delta > 0:
+            capture_scrolled_rows(
+                sel, screen, min_row, min(max_row, min_row + scroll_delta - 1),
+                side="above",
+            )
+        else:
+            span = -scroll_delta
+            capture_scrolled_rows(
+                sel, screen, max(min_row, max_row - span + 1), max_row,
+                side="below",
+            )
+        shift_selection(
+            sel,
+            d_row=-scroll_delta,
+            min_row=min_row,
+            max_row=max_row,
+            width=screen.width,
+        )
+        self._app.notify_selection_change()
 
     def _history_up(self) -> None:
         result = self._input_history.up(self._prompt.value)
@@ -1091,6 +1367,128 @@ class CircleSessionApp:
         else:
             self._toast("plan mode → 关")
 
+    def _schedule_skill_link(self, skill_dir: Path) -> None:
+        """If a skill ships scripts/link_status.py, run it and surface its prompts.
+
+        The script owns the wording and which secrets to ask. The harness only
+        displays messages, starts masked input, and runs the scripts it names.
+        """
+        script = skill_dir / "scripts" / "link_status.py"
+        if not script.is_file():
+            return
+        running = getattr(self, "_skill_link_running", None)
+        if running is None:
+            running = set()
+            self._skill_link_running = running
+        key = str(skill_dir)
+        if key in running:
+            return
+        running.add(key)
+        threading.Thread(
+            target=self._skill_link_worker, args=(skill_dir,), daemon=True,
+        ).start()
+
+    def _skill_link_worker(self, skill_dir: Path) -> None:
+        import json as _json
+        import subprocess
+
+        try:
+            script = skill_dir / "scripts" / "link_status.py"
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=str(self.workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            try:
+                status = _json.loads(proc.stdout or "{}")
+            except _json.JSONDecodeError:
+                status = {}
+            if not isinstance(status, dict):
+                return
+            with self._app.lock:
+                self._present_skill_link(status, skill_dir)
+                self._app.render()
+        finally:
+            running = getattr(self, "_skill_link_running", None)
+            if running is not None:
+                running.discard(str(skill_dir))
+
+    def _present_skill_link(self, status: dict, skill_dir: Path) -> None:
+        for message in status.get("messages") or []:
+            text = str(message).strip()
+            if text:
+                self._transcript.append_message(text)
+        prompt = str(status.get("prompt") or "").strip()
+        if prompt:
+            self._transcript.append_message(prompt)
+        for spec in status.get("run") or []:
+            if isinstance(spec, dict) and spec.get("script"):
+                threading.Thread(
+                    target=self._run_skill_link_script,
+                    args=(skill_dir, spec),
+                    daemon=True,
+                ).start()
+        pending_keys = {
+            str(item.get("key") or "")
+            for item in secret_prompt.list_pending(self.home)
+        }
+        asked = False
+        for item in status.get("ask") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "")
+            target = str(item.get("target_file") or "")
+            if not key or not target or key in pending_keys:
+                continue
+            secret_prompt.create_request(
+                self.home,
+                question=str(item.get("question") or key),
+                key=key,
+                target_file=target,
+                mask=bool(item.get("mask", True)),
+            )
+            pending_keys.add(key)
+            asked = True
+        if asked:
+            self._start_secret_entry()
+
+    def _run_skill_link_script(self, skill_dir: Path, spec: dict) -> None:
+        import subprocess
+
+        script = skill_dir / str(spec.get("script") or "")
+        if not script.is_file():
+            return
+        args = [str(arg) for arg in (spec.get("args") or [])]
+        marker = str(spec.get("status_marker") or "")
+        prefix = str(spec.get("status_prefix") or "")
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(script), *args],
+            cwd=str(self.workspace),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            text = line.rstrip()
+            if not text:
+                continue
+            with self._app.lock:
+                self._transcript.append_message(text)
+                if marker and marker in text:
+                    tail = text.split(marker, 1)[1].strip()
+                    self._footer.hold_status(f"{prefix}{tail}")
+                self._app.render()
+        code = proc.wait()
+        with self._app.lock:
+            done = spec.get("ok_status") if code == 0 else spec.get("fail_status")
+            if done:
+                self._footer.clear_hold_status()
+                self._footer.update(status=str(done))
+            self._app.render()
+
     def _cmd_skill(self, args: str) -> None:
         from circle.skills import discover_skills, format_skills_slash_list, load_skill_body
 
@@ -1119,6 +1517,10 @@ class CircleSessionApp:
             return
         suffix = f" args={skill_args!r}" if skill_args else ""
         self._toast(f"已加载 skill `{name}`{suffix}（已写入 checkpointer 线程）")
+        for skill in skills:
+            if skill.name == name:
+                self._schedule_skill_link(skill.directory)
+                break
 
     def _cmd_tree(self, args: str) -> None:
         token = (args or "").strip()
@@ -1520,6 +1922,69 @@ class CircleSessionApp:
 
     # ── busy / footer ──────────────────────────────────────────────────
 
+    def _sync_model_meter(self) -> None:
+        self._footer.update(
+            model=self.settings.auth.model,
+            tokens_budget=context_window_for(self.settings.auth.model),
+            reasoning_effort=reasoning_effort_of(getattr(self, "_chat_model", None)),
+        )
+
+    def _apply_usage(self, usage: dict | None) -> None:
+        if not usage:
+            return
+        kwargs: dict = {
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "cache_hit_tokens": int(usage.get("cache_hit") or 0),
+            "cache_write_tokens": int(usage.get("cache_write") or 0),
+            "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
+            "tokens_used": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
+        }
+        if usage.get("reasoning_effort"):
+            kwargs["reasoning_effort"] = str(usage["reasoning_effort"])
+        self._footer.update(**kwargs)
+
+    def _fill_tool_lines(self, reqs: list) -> None:
+        for req in reqs:
+            if not isinstance(req, dict):
+                continue
+            name = str(req.get("name") or req.get("tool") or "")
+            args = req.get("args") if isinstance(req.get("args"), dict) else {}
+            if not name or not args:
+                continue
+            call_id = str(req.get("id") or req.get("tool_call_id") or "")
+            self._upsert_tool_line(call_id, name, args)
+
+    def _tool_call_line(self, name: str, args: dict) -> str:
+        from circle.ink.theme import status_light
+
+        pal = palette()
+        shown = format_tool_args(args)
+        return (
+            f" {status_light('running')} {pal.dim}{name}"
+            f"({pal.blue}{shown}{pal.dim}){pal.reset}"
+        )
+
+    def _upsert_tool_line(self, call_id: str, name: str, args: dict) -> None:
+        shown = format_tool_args(args)
+        line = self._tool_call_line(name, args if shown else {})
+        if call_id and call_id in self._tool_line_at:
+            if not shown:
+                return
+            self._transcript.update_message_at(self._tool_line_at[call_id], line)
+            return
+        if not call_id and shown:
+            for cid, idx in reversed(list(self._tool_line_at.items())):
+                if self._tool_names.get(cid) == name and not self._tool_filled.get(cid):
+                    self._transcript.update_message_at(idx, line)
+                    self._tool_filled[cid] = True
+                    return
+        self._transcript.append_message(line)
+        if call_id:
+            self._tool_line_at[call_id] = self._transcript.message_count() - 1
+            self._tool_names[call_id] = name
+            self._tool_filled[call_id] = bool(shown)
+
     def _enter_busy(self) -> None:
         self._is_loading = True
         self._footer.update(
@@ -1541,6 +2006,9 @@ class CircleSessionApp:
             call_started_at=None,
         )
         self._update_thinking_line("")
+        self._agent_rows.clear()
+        self._seen_call_ids.clear()
+        self._sync_agent_strip()
         self._call_started_at = 0.0
 
     def _on_status(self, status: str) -> None:
@@ -1562,25 +2030,33 @@ class CircleSessionApp:
 
     def _on_stream_update(self, update: StreamUpdate) -> None:
         with self._app.lock:
+            self._apply_usage(update.usage)
             # 工具调用请求（LLM 要调工具）→ 状态灯 + 工具名(参数)
             if update.tool_calls:
-                pal = palette()
-                from circle.ink.theme import status_light
                 for tc in update.tool_calls:
-                    name = str(tc.get("name", "tool"))[:20]
-                    args_str = " ".join(str(tc.get("args", {})).split())[:60]
-                    if args_str:
-                        line = f" {status_light('running')} {pal.dim}{name}({pal.blue}{args_str}{pal.dim}){pal.reset}"
-                    else:
-                        line = f" {status_light('running')} {pal.dim}{name}(){pal.reset}"
-                    self._transcript.append_message(line)
+                    name = str(tc.get("name", "tool"))[:40]
+                    call_id = str(tc.get("id") or "")
+                    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+                    if name == "task":
+                        self._note_task(tc)
+                    self._upsert_tool_line(call_id, name, args)
+                self._sync_agent_strip()
                 self._app.render()
                 return
             # 工具结果 → 状态灯 + 摘要（折叠，ctrl+o 展开）
             if update.tool_name:
+                if update.tool_name == "task":
+                    self._drop_task(update.tool_call_id)
+                    self._sync_agent_strip()
                 pal = palette()
                 from circle.ink.theme import status_light
                 output = str(update.tool_output)
+                base_marker = "Base directory for this skill: "
+                if update.tool_name == "skill" and base_marker in output:
+                    for line in output.splitlines():
+                        if line.startswith(base_marker):
+                            self._schedule_skill_link(Path(line[len(base_marker):].strip()))
+                            break
                 lines = output.split("\n")
                 is_error = "error" in output.lower()[:200] or "Error" in output[:200]
                 is_ok = not is_error and ("exit code 0" in output or "succeeded" in output or len(output.strip()) > 0)
@@ -1732,6 +2208,8 @@ class CircleSessionApp:
                 reqs = [value]
             # 每个 tool call 都要有一个 decision
             decisions = [{"type": "approve"} for _ in reqs]
+            with self._app.lock:
+                self._fill_tool_lines(reqs)
             # 如果数量不匹配，用 bridge 的原始 resume（不走 slash 路径）
             try:
                 from langgraph.types import Command as _Cmd
@@ -1760,6 +2238,7 @@ class CircleSessionApp:
             )
             name = str(req.get("name") or req.get("tool") or "tool")
             args = req.get("args") or {}
+            self._fill_tool_lines(action_requests or [req])
             desc = str(req.get("description") or "")
             # Plan mode: auto-reject mutating tools (backend also hard-blocks).
             if self._plan_mode and name in {

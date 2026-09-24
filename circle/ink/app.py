@@ -83,6 +83,9 @@ class InkApp:
         self._input_parser = InputParser()
         self._on_input: Callable[[InputEvent], None] | None = None
         self._on_mouse: Callable[[MouseEvent], None] | None = None
+        # Runs after the terminal size is known and before layout. Must not
+        # call render(); used to rebuild the composer frame at the real width.
+        self.before_render: Callable[[], None] | None = None
 
         
         
@@ -251,6 +254,8 @@ class InkApp:
 
         self._width = self._terminal.columns
         self._height = self._terminal.rows
+        if self.before_render is not None:
+            self.before_render()
         compute_layout(self.root, self._width, self._height)
 
 
