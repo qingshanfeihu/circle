@@ -19,7 +19,8 @@ Skip when:
 - `pending` - not started
 - `in_progress` - actively working (exactly ONE at a time)
 - `completed` - finished successfully
-- `cancelled` - no longer needed
+
+These three are the only values the tool accepts. Each call replaces the whole list, so an item that is no longer needed is simply left out of the next call.
 
 ## Rules
 - Update status in real time; don't batch completions

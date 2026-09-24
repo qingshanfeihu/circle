@@ -45,6 +45,7 @@ from circle.ink.components.ask_user_panel import AskUserPanel
 from circle.ink.components.dialog_frame import build_loop_frame
 from circle.ink.components.exec_approval_view import ExecApprovalSession
 from circle.ink.components.footer import FooterPane
+from circle.ink.components.plan_panel import PlanPanel
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
 from circle.ink.dom import NodeType, create_element, create_text
@@ -69,6 +70,8 @@ from circle.settings import (
 from circle.tui.agent_detail import render_detail_band, render_detail_lines
 from circle.tui.agent_strip import (
     MAX_ROWS,
+    format_elapsed,
+    format_tokens,
     render_agent_strip,
     running_cards,
     snapshot_cards,
@@ -76,9 +79,15 @@ from circle.tui.agent_strip import (
 )
 from circle.tui.content_blocks import assistant_block
 from circle.tui.controllers import InitController, InitStep, TrustController
-from circle.tui.harness_bridge import HarnessBridge, StreamUpdate
+from circle.tui.harness_bridge import NO_OUTPUT, HarnessBridge, StreamUpdate
 from circle.tui.message_model import MessageSnapshot
-from circle.tui.transcript_view import ViewOptions, final_text, render_turn
+from circle.tui.transcript_view import (
+    ViewOptions,
+    final_text,
+    latest_todos,
+    render_turn,
+    turn_had_output,
+)
 from circle.tui.input_history import InputHistory
 from circle.tui.slash_commands import (
     BUILTIN_SLASH,
@@ -219,11 +228,18 @@ class CircleSessionApp:
         self._detail_uuid: str | None = None
         self._detail_drawn: tuple | None = None
         self._ticked_at = 0.0
+        # write_todos 的计划面板（对话框上方）
+        self._plan_panel = PlanPanel()
+        self._plan_width = 0
+        # 本回合耗时：不含停下等用户审批/作答的时间
+        self._turn_started_at = 0.0
+        self._turn_elapsed = 0.0
 
         root = self._app.root
         root.append_child(self._transcript.node)
         root.append_child(self._agent_detail_band)
         root.append_child(self._agent_detail.node)
+        root.append_child(self._plan_panel.node)
         root.append_child(self._ask_panel.node)
         root.append_child(self._dialog)
         root.append_child(self._footer.node)
@@ -439,6 +455,7 @@ class CircleSessionApp:
         self._tick_agents()
         self._render_agent_detail()
         self._sync_agent_strip()
+        self._sync_plan_panel()
 
     # ── subagents: strip, selection, detail page ───────────────────────────
 
@@ -1172,6 +1189,8 @@ class CircleSessionApp:
             self._transcript.append_message(f" {_faint('>')} {line}")
         self._transcript.append_message("")
         self._open_turn_region()
+        self._turn_elapsed = 0.0
+        self._turn_started_at = time.time()
         self._enter_busy()
         self._call_started_at = time.time()
         self._app.render()
@@ -1665,6 +1684,7 @@ class CircleSessionApp:
         copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
         self._rebuild_agent()
         self._session_title = (self._session_title or "session") + " (fork)"
+        self._reset_turn_regions()
         self._transcript.clear()
         self._show_welcome()
         self._toast(f"已 fork 自 {token} → {self._thread_id}")
@@ -1682,6 +1702,7 @@ class CircleSessionApp:
         copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
         self._rebuild_agent()
         self._session_title = (self._session_title or "session") + " (clone)"
+        self._reset_turn_regions()
         self._transcript.clear()
         self._show_welcome()
         self._toast(f"已 clone 当前分支 → {self._thread_id}")
@@ -1958,6 +1979,7 @@ class CircleSessionApp:
         self._bridge = self._make_bridge()
         self._session_title = path.stem[:60]
         lines = [f" {ln}" if ln else "" for ln in body.splitlines()]
+        self._reset_turn_regions()
         self._transcript.restore(lines)
         try:
             from langchain_core.messages import HumanMessage
@@ -2178,17 +2200,21 @@ class CircleSessionApp:
         self._snap_sig = None
 
     def _close_turn_region(self) -> None:
+        """The turn is over: its last snapshot moves to ``_turns`` for later redraws. No
+        region is open until the next user turn, so a late snapshot draws nothing."""
         if self._turn_base >= 0 and self._last_snap is not None:
             self._turns.append({"base": self._turn_base, "entries": list(self._turn_entries),
                                 "snap": self._last_snap})
         self._turn_base = -1
         self._turn_entries = []
+        self._last_snap = None
 
     def _reset_turn_regions(self) -> None:
         if self._detail_active:
             self._leave_agent_detail(render=False)
         self._strip_selecting = False
         self._strip_selected = None
+        self._plan_panel.clear()
         self._turns = []
         self._turn_base = -1
         self._turn_entries = []
@@ -2196,9 +2222,22 @@ class CircleSessionApp:
         self._pending_calls = []
         self._snap_sig = None
 
+    def _sync_plan_panel(self, snap: MessageSnapshot | None = None) -> None:
+        width = max(40, self._app.width or 80)
+        todos = latest_todos(snap) if snap is not None else None
+        if todos is not None and todos != self._plan_panel.todos:
+            self._plan_width = width
+            self._plan_panel.update(todos, width=width)
+        elif width != self._plan_width and self._plan_panel.is_visible:
+            self._plan_width = width
+            self._plan_panel.update(self._plan_panel.todos, width=width)
+
     def _on_snapshot(self, snap: MessageSnapshot) -> None:
         with self._app.lock:
+            if self._turn_base < 0:
+                return  # 回合已收口：迟到的快照不再上屏
             self._last_snap = snap
+            self._sync_plan_panel(snap)
             # 流式 token 很密：同一形态的快照 40ms 内只画一次；消息数、状态或流式段起止一变就立刻画
             now = time.monotonic()
             sig = (len(snap.messages), snap.status, snap.streaming_text is None)
@@ -2210,11 +2249,8 @@ class CircleSessionApp:
             self._app.render()
 
     def _render_turn_region(self) -> None:
-        if self._last_snap is None:
+        if self._last_snap is None or self._turn_base < 0:
             return
-        if self._turn_base < 0:
-            self._turn_base = self._transcript.message_count()
-            self._turn_entries = []
         new = render_turn(self._last_snap, self._view_options())
         old = self._turn_entries
         i = 0
@@ -2226,18 +2262,22 @@ class CircleSessionApp:
         self._turn_entries = new
 
     def _rerender_turns(self) -> None:
-        """Redraw finished turns in place (same entry count) and the current one."""
+        """ctrl+o / ctrl+t / /thinking: redraw every turn of this session from its last
+        snapshot. A turn that gains or loses entries shifts everything after it."""
         options = self._view_options()
         options.pending_calls = []
+        shift = 0
         for turn in self._turns:
+            turn["base"] += shift
             new = render_turn(turn["snap"], options)
             old = turn["entries"]
-            if len(new) != len(old):
+            if new == old:
                 continue
-            for i, (before, after) in enumerate(zip(old, new)):
-                if before != after:
-                    self._transcript.update_message_at(turn["base"] + i, after)
+            self._transcript.replace_range(turn["base"], len(old), new)
+            shift += len(new) - len(old)
             turn["entries"] = new
+        if self._turn_base >= 0:
+            self._turn_base += shift
         self._render_turn_region()
 
     def _on_done(self, text: str) -> None:
@@ -2246,12 +2286,16 @@ class CircleSessionApp:
             self._snap_sig = None
             self._render_turn_region()
             shown = final_text(self._last_snap) if self._last_snap is not None else ""
-            visible = shown or (text or "").strip() or "（无输出）"
-            if not shown and (text or "").strip():
-                self._transcript.append_message(assistant_block(text.strip()))
+            said = "" if (text or "").strip() == NO_OUTPUT else (text or "").strip()
+            visible = shown or said or NO_OUTPUT
+            if not shown:
+                self._transcript.append_message(assistant_block(said or NO_OUTPUT))
             self._last_assistant_plain = visible
             self._session_tree.add("assistant", visible)
+            cooked = self._cooked_lines(answered=bool(shown or said))
             self._close_turn_region()
+            for line in cooked:
+                self._transcript.append_message(line)
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"text": visible})
@@ -2265,14 +2309,54 @@ class CircleSessionApp:
         with self._app.lock:
             self._pending_calls = []
             self._render_turn_region()
+            cooked = self._cooked_lines(answered=True)
             self._close_turn_region()
+            for line in cooked:
+                self._transcript.append_message(line)
             self._transcript.append_message(_error_line(_format_llm_error(exc)))
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"error": _format_llm_error(exc)})
             self._drain_message_queue()
 
+    def _turn_totals(self) -> tuple[float, int, int]:
+        """Elapsed (without waits on the user) and this turn's tokens: the main agent's
+        usage plus every subagent's, as the turn's snapshot has them."""
+        elapsed = self._turn_elapsed
+        if self._turn_started_at:
+            elapsed += time.time() - self._turn_started_at
+        snap = self._last_snap
+        if snap is None:
+            return elapsed, 0, 0
+        usage = snap.usage or {}
+        cards = [card for _uuid, card in snapshot_cards(snap)]
+        tokens_in = int(usage.get("input_tokens") or 0) + sum(int(c.get("tokens_in") or 0) for c in cards)
+        tokens_out = int(usage.get("output_tokens") or 0) + sum(int(c.get("tokens_out") or 0) for c in cards)
+        return elapsed, tokens_in, tokens_out
+
+    def _cooked_lines(self, *, answered: bool) -> list[str]:
+        """One ``✻ Cooked`` line per user turn (not per approval pause), and a red line
+        when the model gave nothing at all."""
+        if not self._turn_started_at and not self._turn_elapsed:
+            return []
+        elapsed, tokens_in, tokens_out = self._turn_totals()
+        self._turn_started_at = 0.0
+        self._turn_elapsed = 0.0
+        pal = palette()
+        lines = [f"  {pal.dim}✻ Cooked for {format_elapsed(elapsed)} · ↑ {format_tokens(tokens_in)}"
+                 f" · ↓ {format_tokens(tokens_out)} tokens{pal.reset}"]
+        snap = self._last_snap
+        quiet = not answered and (snap is None or not turn_had_output(snap))
+        if quiet and tokens_in == 0 and tokens_out == 0:
+            lines.append(_error_line("模型没有返回任何内容（0 token），本轮未完成；"
+                                     "检查账户额度与接口状态后重试"))
+        return lines
+
     def _on_interrupt(self, interrupts: Any) -> None:
+        # 停下等用户：这段时间不计入本回合耗时
+        if self._turn_started_at:
+            self._turn_elapsed += time.time() - self._turn_started_at
+            self._turn_started_at = 0.0
         first = (interrupts[0] if isinstance(interrupts, (list, tuple)) and interrupts
                  else interrupts)
         value = getattr(first, "value", first)
@@ -2350,6 +2434,7 @@ class CircleSessionApp:
             if self._ask_saved_prompt:
                 self._prompt.set_value(self._ask_saved_prompt)
             self._ask_saved_prompt = ""
+            self._turn_started_at = time.time()
             self._enter_busy()
             self._pending_calls = []
             self._render_turn_region()

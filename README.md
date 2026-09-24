@@ -51,6 +51,11 @@ circle ~/code/my-project
 逐次工具调用与结果、每轮思考（`ctrl+t` 展开正文，只保留每轮末尾一段），←→ 切换到其他子代理，esc 返回。
 主对话里 task 行下面折叠显示子代理的调用次数、耗时、token，运行中再列最近 3 次调用，`ctrl+o` 列出全部。
 
+模型用 `write_todos` 记录计划时，对话框上方显示计划面板（完成 ● / 进行中 ◉ / 未开始 ○），显示的是模型实际记下的状态，
+回合结束不会把没做完的项改成完成；超过 10 项时只显示第一个未完成项附近的一段。每个用户回合结束有一行
+`✻ Cooked for 耗时 · ↑ 上行 · ↓ 下行 tokens`（含子代理；停下等审批的时间不计），模型什么都没返回时另有一行红字说明。
+`ctrl+o` / `ctrl+t` / `/thinking` 会按各回合的快照把整段对话重画一遍。
+
 ## Skills
 
 Circle 兼容 [skills.sh](https://skills.sh) / Agent Skills 生态：和多数 harness 一样读 **`.agents/skills`**，并兼容 `.opencode/skills`、`.pi/skills`、`.claude/skills`。

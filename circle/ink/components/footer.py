@@ -471,6 +471,46 @@ class FooterPane:
         parts.append(meter)
         return " · ".join(parts)
 
+    def _busy_label(self, elapsed: float) -> str:
+        """The busy word on the composer's top edge (InfoTest ``FooterPane._busy_label``):
+        verb, this run's tokens, elapsed, and the phase or what it is waiting on."""
+        elapsed_str = _format_elapsed(elapsed)
+        run_in = max(0, self.input_tokens + self.fork_input - self._run_start_input)
+        run_out = max(0, self.output_tokens + self.fork_output - self._run_start_output)
+        state = _PHASE_STATE_TEXT.get(self._llm_phase)
+        if state and self._phase_beat and time.time() - self._phase_beat > _PHASE_STALE_S:
+            state = None
+        if state and self._max_thinking and self._llm_phase == "thinking":
+            state = "最大深度思考中"
+        if state:
+            if self._llm_phase == "input":
+                tok = f"↑ {_format_token_count(run_in)} tokens"
+                quiet = (max(0, int(time.time() - self.call_started_at))
+                         if self.call_started_at is not None else 0)
+                head = f"{self._verb} {quiet}s" if quiet >= 5 else self._verb
+            else:
+                tok = (f"↓ {_format_token_count(run_out + self.fork_live_output)}"
+                       f"(+{_format_token_count(self._output_token_count)}) tokens")
+                head = self._verb
+            wait = self._activity_slot_text(silent=False)
+            return f"{head}… · {tok} · {elapsed_str}" + (f" · {wait}" if wait else "") + f" · {state}"
+        tok = (f"↑ {_format_token_count(run_in)}"
+               f" · ↓ {_format_token_count(run_out + self.fork_live_output)} tokens")
+        silent = False
+        if self.fork_last_event_ts > (self._busy_since or 0.0):
+            idle = time.time() - self.fork_last_event_ts
+            stream_idle = (time.time() - self.fork_stream_ts) if self.fork_stream_ts else float("inf")
+            try:
+                stall_s = float(os.environ.get("CIRCLE_LLM_STALL_TIMEOUT")
+                                or os.environ.get("IST_LLM_STALL_TIMEOUT") or 180.0)
+            except (TypeError, ValueError):
+                stall_s = 180.0
+            silent = idle >= stall_s and stream_idle >= stall_s
+        slot = self._activity_slot_text(silent=silent)
+        wait = f" · {slot}" if slot else ""
+        max_tag = " · 最大深度思考中" if self._max_thinking else ""
+        return f"{self._verb}… · {elapsed_str} · {tok}{wait}{max_tag}"
+
     def _refresh(self) -> None:
         if self._search_query is not None:
             match_disp = self._search_match if self._search_match else ""
@@ -488,57 +528,9 @@ class FooterPane:
             )
             return
         if self._timer_running and self._busy_since:
-            elapsed = time.time() - self._busy_since
-            elapsed_str = _format_elapsed(elapsed)
-            _state = _PHASE_STATE_TEXT.get(self._llm_phase)
-            if _state and self._phase_beat and (
-                    time.time() - self._phase_beat > _PHASE_STALE_S):
-                _state = None
-            if _state and self._max_thinking and self._llm_phase == "thinking":
-                _state = "最大深度思考中"
-            if _state:
-                if (
-                    self.call_started_at is not None
-                    and self._llm_phase == "input"
-                ):
-                    quiet = max(0, int(time.time() - self.call_started_at))
-                    slot_text = f"{self._verb} {quiet}s" if quiet >= 5 else self._verb
-                else:
-                    slot_text = self._verb
-                _phase_wait = self._activity_slot_text(silent=False)
-                # Plain text. The composer frame paints this label with the
-                # same rainbow as the border, so the word is not a second flow.
-                thinking_text = (
-                    f"{slot_text}… ({elapsed_str}"
-                    + (f" · {_phase_wait}" if _phase_wait else "")
-                    + f" · {_state})"
-                )
-            else:
-                _fork_wait = ""
-                _silent = False
-                if self.fork_last_event_ts > (self._busy_since or 0.0):
-                    _idle = time.time() - self.fork_last_event_ts
-                    _stream_idle = (
-                        time.time() - self.fork_stream_ts
-                        if self.fork_stream_ts else float("inf")
-                    )
-                    try:
-                        _stall_s = float(
-                            os.environ.get("CIRCLE_LLM_STALL_TIMEOUT")
-                            or os.environ.get("IST_LLM_STALL_TIMEOUT")
-                            or 180.0
-                        )
-                    except (TypeError, ValueError):
-                        _stall_s = 180.0
-                    _silent = _idle >= _stall_s and _stream_idle >= _stall_s
-                _slot = self._activity_slot_text(silent=_silent)
-                if _slot:
-                    _fork_wait = f" · {_slot}"
-                _max_tag = " · 最大深度思考中" if self._max_thinking else ""
-                thinking_text = (
-                    f"{self._verb}… "
-                    f"({elapsed_str}{_fork_wait}{_max_tag})"
-                )
+            # Plain text. The composer frame paints this label with the same
+            # rainbow as the border, so the word is not a second flow.
+            thinking_text = self._busy_label(time.time() - self._busy_since)
             if self._thinking_cb:
                 self._thinking_cb(thinking_text)
         else:

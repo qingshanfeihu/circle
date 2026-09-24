@@ -27,6 +27,10 @@ from circle.tool_events import announce_blocked_tool_call
 from circle.tui.sink import TuiSink
 
 
+# 回合结束却没有正文时交给 on_done 的占位；会话据此判断模型其实没有作答
+NO_OUTPUT = "（无输出）"
+
+
 @dataclass
 class StreamUpdate:
     """Minimal stand-in for InfoTest MessageSnapshot stream fields."""
@@ -422,7 +426,7 @@ class HarnessBridge:
                         message_text(getattr(messages[-1], "content", None))
                         or final_text
                     )
-                self._on_done(final_text or "（无输出）")
+                self._on_done(final_text or NO_OUTPUT)
                 self._on_status("ready")
                 return
 
@@ -450,7 +454,7 @@ class HarnessBridge:
                         or final_text
                     )
             bus.emit("run_end")
-            self._on_done(final_text or "（无输出）")
+            self._on_done(final_text or NO_OUTPUT)
             self._on_status("ready")
         except Exception as exc:  # noqa: BLE001
             self._on_error(exc)

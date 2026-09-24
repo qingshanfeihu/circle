@@ -43,6 +43,7 @@ from circle.tui.message_model import (
     BLOCK_ERROR,
     BLOCK_TEXT,
     BLOCK_THINKING,
+    BLOCK_TODO_LIST,
     BLOCK_TOOL_RESULT,
     BLOCK_TOOL_USE,
     BLOCK_WARN,
@@ -234,6 +235,29 @@ def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
     if snap.streaming_text and snap.streaming_text.strip():
         add(_text_entry(snap.streaming_text, opts), "text")
     return entries
+
+
+def latest_todos(snap: MessageSnapshot) -> list[dict] | None:
+    """The newest ``write_todos`` list in the snapshot; None when there is none."""
+    for msg in reversed(snap.messages):
+        for block in msg.content:
+            if block.type == BLOCK_TODO_LIST:
+                todos = block.payload.get("todos") if block.payload else None
+                return [dict(t) for t in todos or () if isinstance(t, Mapping)]
+    return None
+
+
+def turn_had_output(snap: MessageSnapshot) -> bool:
+    """Whether the main agent answered or called anything this turn."""
+    for msg in snap.messages:
+        if msg.parent_tool_use_id:
+            continue
+        for block in msg.content:
+            if block.type == BLOCK_TOOL_USE:
+                return True
+            if block.type == BLOCK_TEXT and block.text.strip():
+                return True
+    return bool(snap.streaming_text and snap.streaming_text.strip())
 
 
 def final_text(snap: MessageSnapshot) -> str:

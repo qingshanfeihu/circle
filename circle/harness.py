@@ -17,6 +17,7 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
@@ -40,7 +41,7 @@ from circle.prompt_features import (
     plan_mode_append,
 )
 from circle.skills import skill_sources
-from circle.system_prompt import build_system_prompt
+from circle.system_prompt import build_system_prompt, load_tool_prompt
 
 if TYPE_CHECKING:
     from circle.extensions import ExtensionHost
@@ -89,6 +90,11 @@ def _ensure_tool_description_profiles() -> None:
             except Exception:  # noqa: BLE001
                 continue
     _profiles_ready = True
+
+
+def _todo_middleware() -> TodoListMiddleware:
+    description = load_tool_prompt("write_todos")
+    return TodoListMiddleware(tool_description=description) if description else TodoListMiddleware()
 
 
 def sandbox_backend(
@@ -199,6 +205,9 @@ def create_harness(
         compat,
         LoopGuardMiddleware(),
         ToolResultPruneMiddleware(),
+        # deepagents 0.7 起不再默认挂 write_todos；提示词与计划面板都依赖它。
+        # 同名中间件按名替换，模型档自带的那份（如 Codex）不会重复
+        _todo_middleware(),
     ]
     # compact_conversation tool (pairs with auto SummarizationMiddleware)
     chat_model = model if not isinstance(model, str) else None
