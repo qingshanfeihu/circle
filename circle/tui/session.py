@@ -35,6 +35,10 @@ class MainController:
     _agent: Any = None
     _pending_config: dict[str, Any] = field(default_factory=dict)
     last_interrupt: Any = None
+    # 本次 HITL interrupt 携带的 action_requests 数量（并行工具调用时 > 1），
+    # resume 时需要给每个补一个 decision，否则 langchain 抛
+    # "Number of human decisions (N) does not match number of hanging tool calls (M)"。
+    _interrupt_request_count: int = 1
     _worker: threading.Thread | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -178,6 +182,7 @@ class MainController:
             action_requests = value.get("action_requests") or []
         if not action_requests and isinstance(value, dict):
             action_requests = [value]
+        self._interrupt_request_count = len(action_requests) if action_requests else 1
         req = (
             action_requests[0]
             if action_requests
@@ -187,6 +192,8 @@ class MainController:
         args = req.get("args") or {}
         desc = str(req.get("description") or "")
         body = desc or "\n".join(f"{k}={v!r}" for k, v in list(args.items())[:8])
+        if self._interrupt_request_count > 1:
+            body += f"\n（另有 {self._interrupt_request_count - 1} 个待审批工具调用，本次决定将一并应用）"
         self.lines.append(TranscriptLine("tool", f"permission · {name}"))
         self.approval = ExecApprovalSession(
             {
@@ -204,11 +211,14 @@ class MainController:
         self.approval = None
         key = str(decision.get("decision") or "reject")
         if key in {"reject", "always_cancel"}:
-            decisions = [{"type": "reject", "message": "user rejected"}]
+            one = {"type": "reject", "message": "user rejected"}
             self.lines.append(TranscriptLine("system", "已拒绝工具调用"))
         else:
-            decisions = [{"type": "approve"}]
+            one = {"type": "approve"}
             self.lines.append(TranscriptLine("system", "已批准工具调用"))
+        # 把同一个决定应用到本次中断挂起的全部 tool calls 上
+        decisions = [dict(one) for _ in range(max(1, self._interrupt_request_count))]
+        self._interrupt_request_count = 1
         self.phase = "running"
         self._notify()
         self._invoke_async(Command(resume={"decisions": decisions}))

@@ -1738,9 +1738,8 @@ class CircleSessionApp:
                 self._bridge._cancelled = False
                 self._bridge._spawn(_Cmd(resume={"decisions": decisions}))
             except Exception:
-                # fallback：逐个批准
-                for _ in reqs:
-                    self._bridge.resume({"decision": "approve"})
+                # fallback：bridge.resume 会把决定扇出到全部挂起调用
+                self._bridge.resume({"decision": "approve"})
             return
         with self._app.lock:
             first = (
@@ -1778,6 +1777,11 @@ class CircleSessionApp:
             body = desc or "\n".join(
                 f"{k}={v!r}" for k, v in list(args.items())[:8]
             )
+            if len(action_requests) > 1:
+                body += (
+                    f"\n（另有 {len(action_requests) - 1} 个待审批工具调用，"
+                    "本次决定将一并应用）"
+                )
             self._begin_exec_approval(
                 {
                     "tool": name,

@@ -61,6 +61,10 @@ class HarnessBridge:
         self._config: dict[str, Any] = {
             "configurable": {"thread_id": thread_id},
         }
+        # HITL interrupt 可携带多个 action_requests（模型并行发起多个需审批的工具调用），
+        # resume 时必须给每个都补一个 decision，否则 langchain 会抛
+        # "Number of human decisions (N) does not match number of hanging tool calls (M)"。
+        self._pending_action_count: int = 1
 
     @property
     def is_running(self) -> bool:
@@ -86,10 +90,26 @@ class HarnessBridge:
         self._cancelled = False
         key = str(decision.get("decision") or "reject")
         if key in {"reject", "always_cancel"}:
-            decisions = [{"type": "reject", "message": "user rejected"}]
+            one = {"type": "reject", "message": "user rejected"}
         else:
-            decisions = [{"type": "approve"}]
+            one = {"type": "approve"}
+        # 把同一个决定应用到本次中断挂起的全部 tool calls 上
+        decisions = [dict(one) for _ in range(max(1, self._pending_action_count))]
+        self._pending_action_count = 1
         self._spawn(Command(resume={"decisions": decisions}))
+
+    @staticmethod
+    def _count_action_requests(interrupts: Any) -> int:
+        """统计一次 HITL interrupt 携带的 action_requests 数量。"""
+        first = (
+            interrupts[0]
+            if isinstance(interrupts, (list, tuple)) and interrupts
+            else interrupts
+        )
+        value = getattr(first, "value", first)
+        if isinstance(value, dict) and value.get("action_requests"):
+            return len(value["action_requests"])
+        return 1
 
     def _spawn(self, payload: Any) -> None:
         self._worker = threading.Thread(
@@ -196,6 +216,7 @@ class HarnessBridge:
                 state = self._agent.get_state(self._config)
                 interrupts = getattr(state, "interrupts", None) or ()
                 if interrupts:
+                    self._pending_action_count = self._count_action_requests(interrupts)
                     self._on_interrupt(interrupts)
                     self._on_status("approval")
                     return
@@ -222,6 +243,7 @@ class HarnessBridge:
             if isinstance(result, dict):
                 interrupts = result.get("__interrupt__")
                 if interrupts:
+                    self._pending_action_count = self._count_action_requests(interrupts)
                     self._on_interrupt(interrupts)
                     self._on_status("approval")
                     return
