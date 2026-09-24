@@ -265,6 +265,7 @@ def build_system_prompt(
     context_files: list[tuple[str, str]] | None = None,
     append: str | None = None,
     include_tool_catalog: bool = True,
+    extension_tools: list[tuple[str, str]] | None = None,
 ) -> str:
     """Assemble the full system prompt for the main Circle agent."""
     root = Path(cwd).resolve() if cwd else Path.cwd()
@@ -280,7 +281,7 @@ def build_system_prompt(
         pass
 
     if include_tool_catalog:
-        catalog = _tool_catalog_section()
+        catalog = _tool_catalog_section(extension_tools)
         if catalog:
             sections.append(catalog)
 
@@ -300,7 +301,7 @@ def build_system_prompt(
     return "\n\n".join(s for s in sections if s and s.strip())
 
 
-def _tool_catalog_section() -> str:
+def _tool_catalog_section(extension_tools: list[tuple[str, str]] | None = None) -> str:
     snippets = {
         "ls": "list directory entries",
         "read_file": "read a file (workspace-virtual or host-absolute path)",
@@ -321,6 +322,11 @@ def _tool_catalog_section() -> str:
     lines = ["Available tools:"]
     for name, desc in snippets.items():
         lines.append(f"- {name}: {desc}")
+    if extension_tools:
+        lines.append("")
+        lines.append("Extension tools:")
+        for name, desc in extension_tools:
+            lines.append(f"- {name}: {desc}")
     return "\n".join(lines)
 
 

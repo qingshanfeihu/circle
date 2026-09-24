@@ -26,6 +26,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("settings", "Show current settings"),
     SlashCommand("themes", "List / set theme: /themes [name]"),
     SlashCommand("mcp", "List / reload MCP servers and tools"),
+    SlashCommand("extensions", "List extensions: /extensions [reload]", aliases=("ext",)),
     SlashCommand("new", "Start a new session", aliases=("clear",)),
     SlashCommand(
         "resume",

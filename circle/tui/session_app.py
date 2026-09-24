@@ -35,7 +35,8 @@ from circle.context_middleware import (
     skill_boundary_message,
     thread_config,
 )
-from circle.harness import create_harness
+from circle.extensions import CommandContext, ExtensionHost
+from circle.harness import BUILTIN_TOOL_NAMES, create_harness
 from circle.mcp_loader import format_mcp_status
 from circle.session_tree import SessionTree
 from circle.ink.app import InkApp
@@ -69,7 +70,13 @@ from circle.tui.content_blocks import assistant_block, render_thinking_line
 from circle.tui.controllers import InitController, InitStep, TrustController
 from circle.tui.harness_bridge import HarnessBridge, StreamUpdate
 from circle.tui.input_history import InputHistory
-from circle.tui.slash_commands import BUILTIN_SLASH, help_text, hotkeys_text, parse_slash
+from circle.tui.slash_commands import (
+    BUILTIN_SLASH,
+    help_text,
+    hotkeys_text,
+    known_slash_names,
+    parse_slash,
+)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -229,6 +236,7 @@ class CircleSessionApp:
             for c in discover_custom_commands(self.workspace, self.home)
         }
         self._mcp_tools: list[Any] = []
+        self._extensions = self._load_extensions()
         # 机密输入模式（question 工具 secret 类型）：buffer 只存在内存，
         # 输入行只渲染掩码；值经 secret_prompt 直写目标文件，不进对话。
         self._secret_entry: dict[str, Any] | None = None
@@ -250,6 +258,7 @@ class CircleSessionApp:
             protocol=settings.auth.protocol,
             plan_mode=self._plan_mode,
             mcp_servers=settings.mcp_servers,
+            extensions=self._extensions,
         )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
@@ -274,6 +283,7 @@ class CircleSessionApp:
             protocol=self.settings.auth.protocol,
             plan_mode=self._plan_mode,
             mcp_servers=self.settings.mcp_servers,
+            extensions=self._extensions,
         )
         self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
@@ -281,6 +291,26 @@ class CircleSessionApp:
         backend = getattr(self._agent, "_circle_backend", None)
         if backend is not None and hasattr(backend, "set_plan_mode"):
             backend.set_plan_mode(self._plan_mode)
+
+    def _load_extensions(self) -> ExtensionHost:
+        """用户级扩展总是考虑；项目级只在当前工作区受信任时加载。"""
+        reserved_commands = known_slash_names() | set(self._custom_commands)
+        return ExtensionHost(
+            home=self.home,
+            workspace=self.workspace,
+            trusted=is_folder_trusted(self.settings, self.workspace),
+            settings=self.settings.extensions,
+            reserved_tools=set(BUILTIN_TOOL_NAMES),
+            reserved_commands=reserved_commands,
+        ).load()
+
+    def _command_context(self) -> CommandContext:
+        return CommandContext(
+            workspace=self.workspace,
+            toast=self._toast,
+            append=lambda text: (self._transcript.append_message(text), self._app.render()),
+            send_user_message=self._start_user_turn,
+        )
 
     def _make_bridge(self) -> HarnessBridge:
         return HarnessBridge(
@@ -322,6 +352,7 @@ class CircleSessionApp:
         self._transcript.append_message("")
         self._footer.update(status="ready")
         self._app.render()
+        self._extensions.emit("session_start", {"workspace": str(self.workspace)})
 
     def _update_thinking_line(self, text: str | None) -> None:
         """Store the status that the closed frame embeds in its top edge."""
@@ -907,7 +938,7 @@ class CircleSessionApp:
             return
         self._input_history.add(text)
         self._input_history.reset_navigation()
-        extra = set(self._custom_commands)
+        extra = set(self._custom_commands) | set(self._extensions.commands())
         parsed = parse_slash(text, extra_commands=extra)
         if parsed is not None:
             self._dispatch_slash(parsed.name, parsed.args)
@@ -940,6 +971,7 @@ class CircleSessionApp:
         self._thinking_body = ""
         self._call_started_at = time.time()
         self._app.render()
+        self._extensions.emit("turn_start", {"text": text})
         self._bridge.start(text)
 
     def _drain_message_queue(self) -> None:
@@ -976,6 +1008,7 @@ class CircleSessionApp:
             return
         if name == "help":
             custom = [(c.name, c.description) for c in self._custom_commands.values()]
+            custom += [(c.name, c.description) for c in self._extensions.commands().values()]
             for line in help_text(custom=custom or None).splitlines():
                 self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
             self._app.render()
@@ -1007,6 +1040,13 @@ class CircleSessionApp:
         }
         if name not in _busy_ok and (self._bridge.is_running or self._is_loading):
             self._toast("(busy — 等待当前回合完成)")
+            return
+        ext_command = self._extensions.commands().get(name)
+        if ext_command is not None:
+            try:
+                ext_command.handler(args, self._command_context())
+            except Exception as exc:  # noqa: BLE001 — 扩展命令出错只提示，不影响会话
+                self._toast(f"/{name} 失败: {type(exc).__name__}: {exc}")
             return
         handlers = {
             "login": self._cmd_login,
@@ -1040,6 +1080,7 @@ class CircleSessionApp:
             "editor": self._cmd_editor,
             "reload": self._cmd_reload,
             "yolo": self._cmd_yolo,
+            "extensions": self._cmd_extensions,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -1367,128 +1408,6 @@ class CircleSessionApp:
         else:
             self._toast("plan mode → 关")
 
-    def _schedule_skill_link(self, skill_dir: Path) -> None:
-        """If a skill ships scripts/link_status.py, run it and surface its prompts.
-
-        The script owns the wording and which secrets to ask. The harness only
-        displays messages, starts masked input, and runs the scripts it names.
-        """
-        script = skill_dir / "scripts" / "link_status.py"
-        if not script.is_file():
-            return
-        running = getattr(self, "_skill_link_running", None)
-        if running is None:
-            running = set()
-            self._skill_link_running = running
-        key = str(skill_dir)
-        if key in running:
-            return
-        running.add(key)
-        threading.Thread(
-            target=self._skill_link_worker, args=(skill_dir,), daemon=True,
-        ).start()
-
-    def _skill_link_worker(self, skill_dir: Path) -> None:
-        import json as _json
-        import subprocess
-
-        try:
-            script = skill_dir / "scripts" / "link_status.py"
-            proc = subprocess.run(
-                [sys.executable, str(script)],
-                cwd=str(self.workspace),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            try:
-                status = _json.loads(proc.stdout or "{}")
-            except _json.JSONDecodeError:
-                status = {}
-            if not isinstance(status, dict):
-                return
-            with self._app.lock:
-                self._present_skill_link(status, skill_dir)
-                self._app.render()
-        finally:
-            running = getattr(self, "_skill_link_running", None)
-            if running is not None:
-                running.discard(str(skill_dir))
-
-    def _present_skill_link(self, status: dict, skill_dir: Path) -> None:
-        for message in status.get("messages") or []:
-            text = str(message).strip()
-            if text:
-                self._transcript.append_message(text)
-        prompt = str(status.get("prompt") or "").strip()
-        if prompt:
-            self._transcript.append_message(prompt)
-        for spec in status.get("run") or []:
-            if isinstance(spec, dict) and spec.get("script"):
-                threading.Thread(
-                    target=self._run_skill_link_script,
-                    args=(skill_dir, spec),
-                    daemon=True,
-                ).start()
-        pending_keys = {
-            str(item.get("key") or "")
-            for item in secret_prompt.list_pending(self.home)
-        }
-        asked = False
-        for item in status.get("ask") or []:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "")
-            target = str(item.get("target_file") or "")
-            if not key or not target or key in pending_keys:
-                continue
-            secret_prompt.create_request(
-                self.home,
-                question=str(item.get("question") or key),
-                key=key,
-                target_file=target,
-                mask=bool(item.get("mask", True)),
-            )
-            pending_keys.add(key)
-            asked = True
-        if asked:
-            self._start_secret_entry()
-
-    def _run_skill_link_script(self, skill_dir: Path, spec: dict) -> None:
-        import subprocess
-
-        script = skill_dir / str(spec.get("script") or "")
-        if not script.is_file():
-            return
-        args = [str(arg) for arg in (spec.get("args") or [])]
-        marker = str(spec.get("status_marker") or "")
-        prefix = str(spec.get("status_prefix") or "")
-        proc = subprocess.Popen(
-            [sys.executable, "-u", str(script), *args],
-            cwd=str(self.workspace),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            text = line.rstrip()
-            if not text:
-                continue
-            with self._app.lock:
-                self._transcript.append_message(text)
-                if marker and marker in text:
-                    tail = text.split(marker, 1)[1].strip()
-                    self._footer.hold_status(f"{prefix}{tail}")
-                self._app.render()
-        code = proc.wait()
-        with self._app.lock:
-            done = spec.get("ok_status") if code == 0 else spec.get("fail_status")
-            if done:
-                self._footer.clear_hold_status()
-                self._footer.update(status=str(done))
-            self._app.render()
-
     def _cmd_skill(self, args: str) -> None:
         from circle.skills import discover_skills, format_skills_slash_list, load_skill_body
 
@@ -1517,10 +1436,6 @@ class CircleSessionApp:
             return
         suffix = f" args={skill_args!r}" if skill_args else ""
         self._toast(f"已加载 skill `{name}`{suffix}（已写入 checkpointer 线程）")
-        for skill in skills:
-            if skill.name == name:
-                self._schedule_skill_link(skill.directory)
-                break
 
     def _cmd_tree(self, args: str) -> None:
         token = (args or "").strip()
@@ -1703,6 +1618,21 @@ class CircleSessionApp:
             self._toast(f"MCP 已重载，工具 {len(self._mcp_tools)} 个")
             return
         for line in format_mcp_status(self.settings.mcp_servers, self._mcp_tools).splitlines():
+            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+        self._app.render()
+
+    def _cmd_extensions(self, args: str) -> None:
+        """/extensions — 列出扩展；/extensions reload 重新加载并重建 agent。"""
+        if (args or "").strip().lower() in {"reload", "refresh"}:
+            self.settings = load_settings(self.home)
+            self._extensions = self._load_extensions()
+            try:
+                self._rebuild_agent()
+            except Exception as exc:  # noqa: BLE001
+                self._toast(f"扩展重载失败: {exc}")
+                return
+            self._toast(f"扩展已重载，工具 {len(self._extensions.tool_specs())} 个")
+        for line in self._extensions.describe():
             self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
         self._app.render()
 
@@ -1912,6 +1842,7 @@ class CircleSessionApp:
     def _cmd_reload(self, _args: str) -> None:
         self.settings = load_settings(self.home)
         apply_auth_to_environ(self.settings, self.home)
+        self._extensions = self._load_extensions()
         try:
             self._rebuild_agent()
         except Exception as exc:  # noqa: BLE001
@@ -2051,12 +1982,12 @@ class CircleSessionApp:
                 pal = palette()
                 from circle.ink.theme import status_light
                 output = str(update.tool_output)
-                base_marker = "Base directory for this skill: "
-                if update.tool_name == "skill" and base_marker in output:
-                    for line in output.splitlines():
-                        if line.startswith(base_marker):
-                            self._schedule_skill_link(Path(line[len(base_marker):].strip()))
-                            break
+                self._extensions.emit("tool_result", {
+                    "tool": update.tool_name, "output": output,
+                    "tool_call_id": update.tool_call_id})
+                if self._render_extension_result(update):
+                    self._app.render()
+                    return
                 lines = output.split("\n")
                 is_error = "error" in output.lower()[:200] or "Error" in output[:200]
                 is_ok = not is_error and ("exit code 0" in output or "succeeded" in output or len(output.strip()) > 0)
@@ -2126,6 +2057,21 @@ class CircleSessionApp:
                 )
             self._app.render()
 
+    def _render_extension_result(self, update: StreamUpdate) -> bool:
+        """扩展为该工具注册了渲染器时由它出行；渲染器出错就回落默认折叠行。"""
+        renderer = self._extensions.renderer(str(update.tool_name))
+        if renderer is None:
+            return False
+        try:
+            lines = renderer(update)
+        except Exception:  # noqa: BLE001
+            return False
+        if not lines:
+            return False
+        for line in lines:
+            self._transcript.append_message(str(line))
+        return True
+
     def _refresh_thinking_row(self, *, done: bool | None = None) -> None:
         if not self._show_thinking:
             if self._thinking_idx >= 0:
@@ -2177,6 +2123,7 @@ class CircleSessionApp:
             self._stream_buf = ""
             self._leave_busy()
             self._app.render()
+            self._extensions.emit("turn_end", {"text": visible})
             # 延迟 drain：等 bridge 完全退出 running 状态后再消费队列
             import threading
             timer = threading.Timer(0.15, self._drain_message_queue)
@@ -2189,6 +2136,7 @@ class CircleSessionApp:
             self._stream_idx = -1
             self._leave_busy()
             self._app.render()
+            self._extensions.emit("turn_end", {"error": _format_llm_error(exc)})
             self._drain_message_queue()
 
     def _on_interrupt(self, interrupts: Any) -> None:

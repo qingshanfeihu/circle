@@ -42,6 +42,8 @@ class CircleSettings:
     theme: str = "terminal"
     # MCP server stubs: [{name, command|url, ...}]
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    # 扩展开关：{name: {"enabled": bool}}；没写的扩展默认启用（circle/extensions.py）
+    extensions: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def is_ready(self) -> bool:
         if not self.initialized:
@@ -76,6 +78,10 @@ def load_settings(home: Path | None = None) -> CircleSettings:
     mcp_servers: list[dict[str, Any]] = [
         dict(item) for item in mcp_raw if isinstance(item, dict)
     ]
+    ext_raw = raw.get("extensions") or {}
+    extensions: dict[str, dict[str, Any]] = {
+        str(name): dict(cfg) for name, cfg in ext_raw.items() if isinstance(cfg, dict)
+    } if isinstance(ext_raw, dict) else {}
     return CircleSettings(
         version=int(raw.get("version") or SETTINGS_VERSION),
         initialized=bool(raw.get("initialized")),
@@ -83,6 +89,7 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         trusted_folders=folders,
         theme=str(raw.get("theme") or "terminal"),
         mcp_servers=mcp_servers,
+        extensions=extensions,
     )
 
 

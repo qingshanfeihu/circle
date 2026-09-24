@@ -7,8 +7,9 @@ extra tools.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents import (
     HarnessProfile,
@@ -33,6 +34,11 @@ from circle.prompt_features import (
 from circle.skills import skill_sources
 from circle.system_prompt import build_system_prompt
 
+if TYPE_CHECKING:
+    from circle.extensions import ExtensionHost
+
+logger = logging.getLogger(__name__)
+
 SYSTEM_PROMPT = build_system_prompt()
 
 _INTERRUPT_ON = {
@@ -41,6 +47,13 @@ _INTERRUPT_ON = {
     "edit_file": True,
     "apply_patch": True,
 }
+
+# 内置工具名：扩展不得占用（deepagents 自带 + circle extras + /compact 工具）
+BUILTIN_TOOL_NAMES = frozenset({
+    "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "write_todos",
+    "task", "compact_conversation", "webfetch", "question", "skill", "websearch", "lsp",
+    "apply_patch",
+})
 
 _PROFILE_KEYS = (
     "anthropic",
@@ -98,6 +111,7 @@ def create_harness(
     mcp_servers: list[dict[str, Any]] | None = None,
     extra_tools: list[BaseTool] | None = None,
     store: Any = None,
+    extensions: ExtensionHost | None = None,
 ):
     """Build harness with file/shell tools, explore subagent, and prompt-backed extras.
 
@@ -124,6 +138,7 @@ def create_harness(
         model_id=mid,
         protocol=protocol,
         append=append,
+        extension_tools=extensions.catalog() if extensions is not None else None,
     )
 
     explore = explore_subagent_spec()
@@ -137,6 +152,21 @@ def create_harness(
         tools.extend(mcp_tools)
     else:
         mcp_tools = []
+    interrupt_on = dict(_INTERRUPT_ON)
+    subagents: list[dict[str, Any]] = [explore]
+    extension_middleware: list[Any] = []
+    if extensions is not None:
+        taken = {getattr(t, "name", None) for t in tools} | set(BUILTIN_TOOL_NAMES)
+        for tool in extensions.tools():
+            if tool.name in taken:
+                # MCP 工具在扩展加载之后才知道名字；撞名时内置/MCP 优先，扩展这一个丢弃
+                logger.warning("extension tool %s clashes with an existing tool; skipped", tool.name)
+                continue
+            taken.add(tool.name)
+            tools.append(tool)
+        interrupt_on.update({name: True for name in extensions.interrupt_on() if name in taken})
+        subagents.extend(extensions.subagents(tools))
+        extension_middleware = extensions.middleware()
 
     backend = sandbox_backend(root_dir, plan_mode=plan_mode)
 
@@ -148,15 +178,16 @@ def create_harness(
             extra_mw = build_context_middleware(chat_model, backend)
         except Exception:  # noqa: BLE001
             extra_mw = []
+    extra_mw.extend(extension_middleware)
 
     kwargs: dict[str, Any] = {
         "model": model,
         "backend": backend,
         "system_prompt": prompt,
-        "interrupt_on": _INTERRUPT_ON,
+        "interrupt_on": interrupt_on,
         "checkpointer": checkpointer if checkpointer is not None else MemorySaver(),
         "tools": tools,
-        "subagents": [explore],
+        "subagents": subagents,
     }
     if skills:
         kwargs["skills"] = skills

@@ -63,6 +63,7 @@ def test_builtin_slash_inventory_complete():
         "settings",
         "themes",
         "mcp",
+        "extensions",
         "new",
         "resume",
         "continue",

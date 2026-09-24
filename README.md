@@ -77,6 +77,33 @@ MCP：在 `~/.circle/settings.json` 配置 `mcp_servers` 后会真正加载工�
 
 会话分支：`/tree` `/fork` `/clone`。Plan mode（`/plan`）硬拦截写改与 shell（仅允许 `/plan.md`）。
 
+## Extensions
+
+扩展是一段 Python，给 Circle 加工具、slash 命令、中间件、子代理、工具结果渲染和事件处理，不用改 Circle 本体。
+一个扩展一个目录，里面的 `extension.py` 定义 `register(api)`：
+
+| 位置 | 何时加载 |
+|------|----------|
+| `~/.circle/extensions/<name>/extension.py` | 总是 |
+| 项目 `.circle/extensions/<name>/extension.py` | 仅当该工作区已受信任（`/trust`） |
+
+```python
+def register(api):
+    def lookup(args):
+        return {"ok": True, "hits": []}          # dict 以 JSON 返回给模型；抛 api.ToolError 表示失败
+    api.register_tool("my_lookup", "Look something up.",
+                      {"type": "object", "properties": {"q": {"type": "string"}}},
+                      lookup, read_only=True)    # 非只读工具走审批，与 execute/write 一致
+    api.register_command("hello", "Say hello", lambda args, ctx: ctx.toast("hello " + args))
+```
+
+其余接口：`register_middleware(mw, slot)`（`model_call` / `tool_boundary` / `after_model`）、
+`register_subagent(spec, tools=[工具名])`（工具白名单）、`register_renderer("tool_result:<工具名>", fn)`、
+`on(event, handler)`（`session_start` / `turn_start` / `turn_end` / `tool_result`）。
+工具或命令与内置重名会被拒绝；`register` 抛异常时这个扩展整体不加载，不影响其他扩展。
+`/extensions` 查看状态，`/extensions reload` 重新加载；`~/.circle/settings.json` 里
+`"extensions": {"<name>": {"enabled": false}}` 关闭某个扩展。
+
 ## Dev
 
 ```bash
