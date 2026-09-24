@@ -25,6 +25,12 @@ from circle.context_middleware import build_context_middleware
 from circle.host_paths import install_tilde_expansion
 from circle.mcp_loader import load_mcp_tools_sync
 from circle.memory_sources import memory_source_paths
+from circle.middleware import (
+    LoopGuardMiddleware,
+    ToolCallCompatibilityMiddleware,
+    ToolErrorBoundaryMiddleware,
+    ToolResultPruneMiddleware,
+)
 from circle.plan_backend import PlanGuardedBackend
 from circle.prompt_features import (
     build_extra_tools,
@@ -182,14 +188,22 @@ def create_harness(
         subagents.extend(extensions.subagents(tools))
         extension_middleware = extensions.middleware()
 
+    # 通用中间件在最前：错误边界包住其后所有工具层（含扩展的 tool_boundary），
+    # 兼容层在执行前修形态；工具表要等 deepagents 组装完才齐，建完再 bind
+    compat = ToolCallCompatibilityMiddleware(gated=interrupt_on)
+    extra_mw: list[Any] = [
+        ToolErrorBoundaryMiddleware(),
+        compat,
+        LoopGuardMiddleware(),
+        ToolResultPruneMiddleware(),
+    ]
     # compact_conversation tool (pairs with auto SummarizationMiddleware)
     chat_model = model if not isinstance(model, str) else None
-    extra_mw: list[Any] = []
     if chat_model is not None:
         try:
-            extra_mw = build_context_middleware(chat_model, backend)
+            extra_mw.extend(build_context_middleware(chat_model, backend))
         except Exception:  # noqa: BLE001
-            extra_mw = []
+            pass
     extra_mw.extend(extension_middleware)
 
     kwargs: dict[str, Any] = {
@@ -205,12 +219,15 @@ def create_harness(
         kwargs["skills"] = skills
     if memory:
         kwargs["memory"] = memory
-    if extra_mw:
-        kwargs["middleware"] = extra_mw
+    kwargs["middleware"] = extra_mw
     if store is not None:
         kwargs["store"] = store
 
     agent = create_deep_agent(**kwargs)
+    try:
+        compat.bind(agent.nodes["tools"].bound.tools_by_name.values())
+    except Exception:  # noqa: BLE001 — 取不到工具表时只修已解析到工具的调用
+        logger.debug("tool table unavailable for tool-call repair", exc_info=True)
     try:
         agent._circle_backend = backend  # type: ignore[attr-defined]  # noqa: SLF001
         agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]  # noqa: SLF001
