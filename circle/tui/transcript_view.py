@@ -1,0 +1,192 @@
+"""Turn a ``MessageSnapshot`` into the transcript entries of the current turn.
+
+Pure: the same snapshot and options always give the same entries, so live rendering
+and a ctrl+o / ctrl+t re-render draw the same bytes. Each entry is one transcript
+message (it may span several lines).
+
+Layout follows InfoTest's single tool-row form: every tool call is one row
+``{light} {Short}({summary})`` with its result on ``⎿`` lines right below it, whether
+it succeeded, failed or was refused. A failure the model can fix itself (bad
+arguments, unknown tool name) gets no lamp and a muted strikethrough instead of red.
+Blocks are separated by one blank entry; consecutive tool rows are not.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any, Callable, Iterable
+
+from circle.display_lexicon import (
+    tool_arg_summary,
+    tool_result_recoverable,
+    tool_short_name,
+)
+from circle.ink.components.markdown_renderer import MarkdownRenderer
+from circle.ink.theme import GLYPH_AGENT, GLYPH_ERROR, palette, status_light
+from circle.tui.content_blocks import render_thinking_line
+from circle.tui.message_model import (
+    BLOCK_ERROR,
+    BLOCK_TEXT,
+    BLOCK_THINKING,
+    BLOCK_TOOL_RESULT,
+    BLOCK_TOOL_USE,
+    BLOCK_WARN,
+    ContentBlock,
+    MessageSnapshot,
+)
+
+COLLAPSED_HINT_MIN_HIDDEN = 1
+EXPANDED_MAX_LINES = 30
+_RESULT_WIDTH = 160
+_HIDDEN_TOOLS = frozenset({"write_todos"})  # 由计划面板显示，不占工具行
+
+
+@dataclass
+class ViewOptions:
+    width: int = 100
+    tools_expanded: bool = False
+    thinking_expanded: bool = False
+    show_thinking: bool = True
+    # 扩展为某个工具注册的结果渲染器：fn(update) -> list[str]
+    renderer_for: Callable[[str], Callable[[Any], Iterable[str]] | None] = lambda _name: None
+    # 等待审批、尚未执行的调用（HITL 请求里的 name/args）
+    pending_calls: list[dict] = field(default_factory=list)
+
+
+def _clip(text: str, width: int = _RESULT_WIDTH) -> str:
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _text_entry(text: str, opts: ViewOptions) -> str:
+    rendered = MarkdownRenderer(width=max(20, opts.width - 4)).render_streaming(text.strip())
+    lines = rendered.split("\n")
+    return "\n".join([f" {GLYPH_AGENT} {lines[0]}"] + [f"   {ln}" if ln else "" for ln in lines[1:]])
+
+
+def _tool_row(block: ContentBlock, result: ContentBlock | None) -> str:
+    pal = palette()
+    name = tool_short_name(block.name)
+    summary = tool_arg_summary(block.name, dict(block.input))
+    call = f"{name}({summary})"
+    if result is None:
+        light = status_light("running" if block.status == "running" else "none")
+        return f" {light} {pal.text}{call}{pal.reset}"
+    if result.is_error and tool_result_recoverable(result.payload):
+        return f" {status_light('none')} {pal.muted_strike}{call}{pal.reset}"
+    light = status_light("error" if result.is_error else "ok")
+    return f" {light} {pal.text}{call}{pal.reset}"
+
+
+def _result_lines(result: ContentBlock, opts: ViewOptions) -> list[str]:
+    pal = palette()
+    lines = [ln.rstrip() for ln in str(result.output or "").split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    if not lines:
+        lines = ["(no output)"]
+    recoverable = result.is_error and tool_result_recoverable(result.payload)
+    first_color = pal.muted_strike if recoverable else (pal.red if result.is_error else pal.faint)
+    rest_color = pal.muted_strike if recoverable else pal.faint
+    if not opts.tools_expanded:
+        hidden = len(lines) - 1
+        hint = (f" {pal.faint}(ctrl+o 展开 +{hidden} 行){pal.reset}"
+                if hidden >= COLLAPSED_HINT_MIN_HIDDEN else "")
+        return [f"   ⎿ {first_color}{_clip(lines[0])}{pal.reset}{hint}"]
+    shown = lines[:EXPANDED_MAX_LINES]
+    out = [f"   ⎿ {first_color}{_clip(shown[0])}{pal.reset}"]
+    out += [f"     {rest_color}{_clip(ln)}{pal.reset}" for ln in shown[1:]]
+    if len(lines) > EXPANDED_MAX_LINES:
+        out.append(f"     {pal.faint}… +{len(lines) - EXPANDED_MAX_LINES} 行{pal.reset}")
+    return out
+
+
+def _extension_lines(block: ContentBlock, result: ContentBlock, opts: ViewOptions) -> list[str] | None:
+    renderer = opts.renderer_for(block.name)
+    if renderer is None:
+        return None
+    update = SimpleNamespace(tool_name=block.name, tool_output=str(result.output or ""),
+                             tool_call_id=block.tool_use_id, is_error=result.is_error)
+    try:
+        lines = [str(line) for line in (renderer(update) or [])]
+    except Exception:  # noqa: BLE001 — a broken renderer falls back to the default lines
+        return None
+    return lines or None
+
+
+def _tool_entry(block: ContentBlock, result: ContentBlock | None, opts: ViewOptions) -> str:
+    parts = [_tool_row(block, result)]
+    if result is not None:
+        parts += _extension_lines(block, result, opts) or _result_lines(result, opts)
+    return "\n".join(parts)
+
+
+def _pending_entry(request: dict) -> str:
+    pal = palette()
+    name = str(request.get("name") or "tool")
+    args = request.get("args") if isinstance(request.get("args"), dict) else {}
+    call = f"{tool_short_name(name)}({tool_arg_summary(name, {'args': args})})"
+    return f" {status_light('running')} {pal.text}{call}{pal.reset} {pal.faint}等待审批{pal.reset}"
+
+
+def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
+    results: dict[str, ContentBlock] = {}
+    for msg in snap.messages:
+        for block in msg.content:
+            if block.type == BLOCK_TOOL_RESULT and block.tool_use_id:
+                results[block.tool_use_id] = block
+    called = {b.tool_use_id for m in snap.messages for b in m.content if b.type == BLOCK_TOOL_USE}
+
+    entries: list[str] = []
+    last_kind = ""
+
+    def add(entry: str, kind: str) -> None:
+        nonlocal last_kind
+        if entries and not (kind == "tool" and last_kind == "tool"):
+            entries.append("")
+        entries.append(entry)
+        last_kind = kind
+
+    for msg in snap.messages:
+        if msg.parent_tool_use_id:
+            continue  # 子代理内部事件：由子代理卡片承载
+        for block in msg.content:
+            if block.type == BLOCK_THINKING:
+                if opts.show_thinking and (block.thinking or block.thinking_title):
+                    add(render_thinking_line(body=block.thinking, done=block.thinking_done,
+                                             expanded=opts.thinking_expanded,
+                                             title=block.thinking_title,
+                                             duration_s=block.thinking_duration_s), "thinking")
+            elif block.type == BLOCK_TEXT:
+                if block.text.strip():
+                    add(_text_entry(block.text, opts), "text")
+            elif block.type == BLOCK_TOOL_USE:
+                if block.name not in _HIDDEN_TOOLS:
+                    add(_tool_entry(block, results.get(block.tool_use_id), opts), "tool")
+            elif block.type == BLOCK_TOOL_RESULT:
+                if block.tool_use_id not in called and block.name not in _HIDDEN_TOOLS:
+                    orphan = ContentBlock(type=BLOCK_TOOL_USE, name=block.name, status="done")
+                    add(_tool_entry(orphan, block, opts), "tool")
+            elif block.type == BLOCK_ERROR:
+                pal = palette()
+                text = str(block.payload.get("text") or "")
+                add(f" {pal.red}{GLYPH_ERROR}{pal.reset} {text}", "error")
+            elif block.type == BLOCK_WARN:
+                pal = palette()
+                add(f" {pal.yellow}△{pal.reset} {block.payload.get('text') or ''}", "warn")
+    for request in opts.pending_calls:
+        add(_pending_entry(request), "tool")
+    if snap.streaming_text and snap.streaming_text.strip():
+        add(_text_entry(snap.streaming_text, opts), "text")
+    return entries
+
+
+def final_text(snap: MessageSnapshot) -> str:
+    """The last answer text of the turn (for history and the session tree)."""
+    for msg in reversed(snap.messages):
+        if msg.parent_tool_use_id:
+            continue
+        for block in msg.content:
+            if block.type == BLOCK_TEXT and block.text.strip():
+                return block.text.strip()
+    return ""

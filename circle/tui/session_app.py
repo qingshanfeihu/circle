@@ -53,7 +53,6 @@ from circle.ink.theme import GLYPH_AGENT, GLYPH_ERROR, init_palette_from_termina
 from circle.model import build_chat_model, reasoning_effort_of
 from circle.model_guard import add_retry_listener
 from circle.pricing import context_window_for
-from circle.tui.harness_bridge import format_tool_args
 from circle.paths import circle_home, ensure_home, normalize_workspace
 from circle import secret_prompt
 from circle.settings import (
@@ -68,9 +67,11 @@ from circle.settings import (
     save_settings,
 )
 from circle.tui.agent_strip import render_agent_strip
-from circle.tui.content_blocks import assistant_block, render_thinking_line
+from circle.tui.content_blocks import assistant_block
 from circle.tui.controllers import InitController, InitStep, TrustController
 from circle.tui.harness_bridge import HarnessBridge, StreamUpdate
+from circle.tui.message_model import MessageSnapshot
+from circle.tui.transcript_view import ViewOptions, final_text, render_turn
 from circle.tui.input_history import InputHistory
 from circle.tui.slash_commands import (
     BUILTIN_SLASH,
@@ -189,9 +190,6 @@ class CircleSessionApp:
 
         self._agent_rows: list[dict] = []
         self._seen_call_ids: set[str] = set()
-        self._tool_line_at: dict[str, int] = {}
-        self._tool_names: dict[str, str] = {}
-        self._tool_filled: dict[str, bool] = {}
         self._agent_strip = create_element(NodeType.BOX)
         self._agent_strip.style.height = 0
         self._agent_strip_text = create_text("")
@@ -207,15 +205,19 @@ class CircleSessionApp:
         self._app.on_input = self._handle_input
 
         self._is_loading = False
-        self._stream_idx = -1
-        self._stream_buf = ""
-        self._thinking_idx = -1
-        self._thinking_body = ""
         self._thinking_expanded = False
         self._show_thinking = True
         self._tool_outputs_expanded = False
         self._show_details = False  # alias of tool_outputs_expanded (InfoTest verbose)
-        self._main_thinking_lines: list[dict[str, Any]] = []
+        # 本回合在转录里占的区域：从 _turn_base 起的 _turn_entries 条，由快照整体渲染；
+        # 已结束的回合留在 _turns 里，ctrl+o / ctrl+t 时按各自的最后快照原位重画
+        self._turn_base = -1
+        self._turn_entries: list[str] = []
+        self._turns: list[dict[str, Any]] = []
+        self._last_snap: MessageSnapshot | None = None
+        self._pending_calls: list[dict[str, Any]] = []
+        self._snap_sig: tuple | None = None
+        self._snap_rendered_at = 0.0
         self._call_started_at = 0.0
         self._exec_approval: ExecApprovalSession | None = None
         # 一次中断里的多个待审批调用逐个问，答案按顺序攒齐后一起 resume
@@ -332,6 +334,7 @@ class CircleSessionApp:
             on_done=self._on_done,
             on_error=self._on_error,
             on_status=self._on_status,
+            on_snapshot=self._on_snapshot,
         )
 
     def run(self) -> int:
@@ -932,28 +935,14 @@ class CircleSessionApp:
         """InfoTest ``_toggle_thinking`` — expand/collapse all thinking rows."""
         self._thinking_expanded = not self._thinking_expanded
         self._show_thinking = True
-        done = not self._is_loading
-        for rec in self._main_thinking_lines:
-            body = str(rec.get("body") or "")
-            idx = int(rec.get("idx", -1))
-            if idx < 0:
-                continue
-            self._transcript.update_message_at(
-                idx,
-                render_thinking_line(
-                    body=body,
-                    done=True if idx != self._thinking_idx else done,
-                    expanded=self._thinking_expanded,
-                ),
-            )
-        if self._thinking_body and self._thinking_idx >= 0:
-            self._refresh_thinking_row(done=None if self._is_loading else True)
+        self._rerender_turns()
         self._app.render()
 
     def _toggle_tool_outputs(self) -> None:
         """InfoTest ``_toggle_expand`` / ctrl+o — tool-output verbosity."""
         self._tool_outputs_expanded = not self._tool_outputs_expanded
         self._show_details = self._tool_outputs_expanded
+        self._rerender_turns()
         state = "展开" if self._tool_outputs_expanded else "折叠"
         self._toast(f"工具输出 → {state}（ctrl+o）")
         self._footer.update(status="ready" if not self._is_loading else "running")
@@ -991,11 +980,8 @@ class CircleSessionApp:
         for line in text.split("\n"):
             self._transcript.append_message(f" {_faint('>')} {line}")
         self._transcript.append_message("")
+        self._open_turn_region()
         self._enter_busy()
-        self._stream_idx = -1
-        self._stream_buf = ""
-        self._thinking_idx = -1
-        self._thinking_body = ""
         self._call_started_at = time.time()
         self._app.render()
         self._extensions.emit("turn_start", {"text": text})
@@ -1138,10 +1124,7 @@ class CircleSessionApp:
         self._previous_thread_id = self._thread_id
         self._thread_id = thread_id
         self._bridge = self._make_bridge()
-        self._stream_idx = -1
-        self._stream_buf = ""
-        self._thinking_idx = -1
-        self._thinking_body = ""
+        self._reset_turn_regions()
         if lines is not None:
             self._transcript.restore(lines)
             for rec in self._archive:
@@ -1226,10 +1209,7 @@ class CircleSessionApp:
         self._previous_thread_id = self._thread_id
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
         self._bridge = self._make_bridge()
-        self._stream_idx = -1
-        self._stream_buf = ""
-        self._thinking_idx = -1
-        self._thinking_body = ""
+        self._reset_turn_regions()
         self._session_title = "new"
         self._transcript.clear()
         self._show_welcome()
@@ -1518,25 +1498,7 @@ class CircleSessionApp:
 
     def _cmd_thinking(self, _args: str) -> None:
         self._show_thinking = not self._show_thinking
-        if not self._show_thinking:
-            for rec in self._main_thinking_lines:
-                idx = int(rec.get("idx", -1))
-                if idx >= 0:
-                    self._transcript.update_message_at(idx, "")
-        else:
-            for rec in self._main_thinking_lines:
-                idx = int(rec.get("idx", -1))
-                body = str(rec.get("body") or "")
-                if idx < 0:
-                    continue
-                self._transcript.update_message_at(
-                    idx,
-                    render_thinking_line(
-                        body=body,
-                        done=True,
-                        expanded=self._thinking_expanded,
-                    ),
-                )
+        self._rerender_turns()
         state = "显示" if self._show_thinking else "隐藏"
         self._toast(f"思考块 → {state}")
 
@@ -1560,11 +1522,7 @@ class CircleSessionApp:
         self._thread_id = rec.thread_id
         self._session_title = rec.title
         self._bridge = self._make_bridge()
-        self._stream_idx = -1
-        self._stream_buf = ""
-        self._thinking_idx = -1
-        self._thinking_body = ""
-        self._main_thinking_lines = []
+        self._reset_turn_regions()
         self._transcript.restore(rec.lines)
 
     def _cmd_undo(self, _args: str) -> None:
@@ -1934,47 +1892,6 @@ class CircleSessionApp:
             kwargs["reasoning_effort"] = str(usage["reasoning_effort"])
         self._footer.update(**kwargs)
 
-    def _fill_tool_lines(self, reqs: list) -> None:
-        for req in reqs:
-            if not isinstance(req, dict):
-                continue
-            name = str(req.get("name") or req.get("tool") or "")
-            args = req.get("args") if isinstance(req.get("args"), dict) else {}
-            if not name or not args:
-                continue
-            call_id = str(req.get("id") or req.get("tool_call_id") or "")
-            self._upsert_tool_line(call_id, name, args)
-
-    def _tool_call_line(self, name: str, args: dict) -> str:
-        from circle.ink.theme import status_light
-
-        pal = palette()
-        shown = format_tool_args(args)
-        return (
-            f" {status_light('running')} {pal.dim}{name}"
-            f"({pal.blue}{shown}{pal.dim}){pal.reset}"
-        )
-
-    def _upsert_tool_line(self, call_id: str, name: str, args: dict) -> None:
-        shown = format_tool_args(args)
-        line = self._tool_call_line(name, args if shown else {})
-        if call_id and call_id in self._tool_line_at:
-            if not shown:
-                return
-            self._transcript.update_message_at(self._tool_line_at[call_id], line)
-            return
-        if not call_id and shown:
-            for cid, idx in reversed(list(self._tool_line_at.items())):
-                if self._tool_names.get(cid) == name and not self._tool_filled.get(cid):
-                    self._transcript.update_message_at(idx, line)
-                    self._tool_filled[cid] = True
-                    return
-        self._transcript.append_message(line)
-        if call_id:
-            self._tool_line_at[call_id] = self._transcript.message_count() - 1
-            self._tool_names[call_id] = name
-            self._tool_filled[call_id] = bool(shown)
-
     def _enter_busy(self) -> None:
         self._is_loading = True
         self._footer.update(
@@ -2019,167 +1936,134 @@ class CircleSessionApp:
     # ── stream callbacks — mirrors IstInkApp._on_snapshot stream/thinking ─
 
     def _on_stream_update(self, update: StreamUpdate) -> None:
+        """Footer, subagent strip and extension events; the transcript comes from snapshots."""
         with self._app.lock:
             self._apply_usage(update.usage)
-            # 工具调用请求（LLM 要调工具）→ 状态灯 + 工具名(参数)
             if update.tool_calls:
                 for tc in update.tool_calls:
-                    name = str(tc.get("name", "tool"))[:40]
-                    call_id = str(tc.get("id") or "")
-                    args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
-                    if name == "task":
+                    if str(tc.get("name", "")) == "task":
                         self._note_task(tc)
-                    self._upsert_tool_line(call_id, name, args)
                 self._sync_agent_strip()
                 self._app.render()
                 return
-            # 工具结果 → 状态灯 + 摘要（折叠，ctrl+o 展开）
             if update.tool_name:
                 if update.tool_name == "task":
                     self._drop_task(update.tool_call_id)
                     self._sync_agent_strip()
-                pal = palette()
-                from circle.ink.theme import status_light
-                output = str(update.tool_output)
                 self._extensions.emit("tool_result", {
-                    "tool": update.tool_name, "output": output,
+                    "tool": update.tool_name, "output": str(update.tool_output),
                     "tool_call_id": update.tool_call_id})
-                if self._render_extension_result(update):
-                    self._app.render()
-                    return
-                lines = output.split("\n")
-                is_error = "error" in output.lower()[:200] or "Error" in output[:200]
-                is_ok = not is_error and ("exit code 0" in output or "succeeded" in output or len(output.strip()) > 0)
-                light = status_light("error" if is_error else "ok")
-                # 折叠模式：只显示首行摘要
-                if not self._tool_outputs_expanded:
-                    first = lines[0][:100] if lines else ""
-                    hidden = max(0, len(lines) - 1)
-                    hint = f" {pal.faint}(ctrl+o 展开 +{hidden}行){pal.reset}" if hidden > 3 else ""
-                    line = f" {light} {pal.faint}{first}{pal.reset}{hint}"
-                    self._transcript.append_message(line)
-                else:
-                    # 展开模式：最多 30 行
-                    shown = lines[:30]
-                    rendered = f" {light} {pal.faint}{shown[0][:120]}{pal.reset}"
-                    for ln in shown[1:]:
-                        rendered += f"\n   {pal.faint}{ln[:120]}{pal.reset}"
-                    if len(lines) > 30:
-                        rendered += f"\n   {pal.faint}… +{len(lines)-30} 行{pal.reset}"
-                    self._transcript.append_message(rendered)
                 self._app.render()
                 return
-            # Thinking-only phase (InfoTest: streaming_text is None, llm_phase=thinking)
-            if update.thinking and not update.text:
-                self._thinking_body = update.thinking
-                self._refresh_thinking_row(done=update.thinking_done)
+            if update.thinking or update.llm_phase == "thinking":
                 self._footer.update(
                     status="running",
-                    llm_phase="thinking",
+                    llm_phase="thinking" if not update.text else (update.llm_phase or "output"),
                     call_started_at=self._call_started_at or time.time(),
                     reasoning_active=not update.thinking_done,
                     reasoning_last_line=update.reasoning_last_line,
-                    reasoning_chars=update.reasoning_chars or len(update.thinking),
+                    reasoning_chars=update.reasoning_chars or len(update.thinking or ""),
                 )
-                self._app.render()
-                return
-
-            if update.thinking:
-                self._thinking_body = update.thinking
-                self._refresh_thinking_row(done=update.thinking_done)
-
             if update.text:
-                self._stream_buf = update.text
-                rendered = assistant_block(self._stream_buf)
-                if self._stream_idx < 0:
-                    self._transcript.append_message(rendered)
-                    self._stream_idx = self._transcript.message_count() - 1
-                else:
-                    self._transcript.update_message_at(self._stream_idx, rendered)
                 self._footer.update(
                     status="running",
                     llm_phase=update.llm_phase or "output",
                     call_started_at=self._call_started_at or time.time(),
-                    reasoning_active=bool(update.thinking) and not update.thinking_done,
-                    reasoning_last_line=update.reasoning_last_line,
-                    reasoning_chars=update.reasoning_chars,
                     output_token_count=max(1, len(update.text) // 4),
-                )
-            elif update.llm_phase == "thinking":
-                self._footer.update(
-                    status="running",
-                    llm_phase="thinking",
-                    call_started_at=self._call_started_at or time.time(),
-                    reasoning_active=True,
-                    reasoning_last_line=update.reasoning_last_line,
-                    reasoning_chars=update.reasoning_chars,
                 )
             self._app.render()
 
-    def _render_extension_result(self, update: StreamUpdate) -> bool:
-        """扩展为该工具注册了渲染器时由它出行；渲染器出错就回落默认折叠行。"""
-        renderer = self._extensions.renderer(str(update.tool_name))
-        if renderer is None:
-            return False
-        try:
-            lines = renderer(update)
-        except Exception:  # noqa: BLE001
-            return False
-        if not lines:
-            return False
-        for line in lines:
-            self._transcript.append_message(str(line))
-        return True
+    # ── snapshot rendering ────────────────────────────────────────────────
 
-    def _refresh_thinking_row(self, *, done: bool | None = None) -> None:
-        if not self._show_thinking:
-            if self._thinking_idx >= 0:
-                self._transcript.update_message_at(self._thinking_idx, "")
-            return
-        if not self._thinking_body:
-            return
-        is_done = True if done is None else done
-        if self._is_loading and done is None:
-            is_done = False
-        line = render_thinking_line(
-            body=self._thinking_body,
-            done=is_done,
-            expanded=self._thinking_expanded,
+    def _view_options(self) -> ViewOptions:
+        return ViewOptions(
+            width=max(40, self._transcript.node.rect.width or 100),
+            tools_expanded=self._tool_outputs_expanded,
+            thinking_expanded=self._thinking_expanded,
+            show_thinking=self._show_thinking,
+            renderer_for=self._extensions.renderer,
+            pending_calls=list(self._pending_calls),
         )
-        if self._thinking_idx < 0:
-            # Insert thinking above the streaming assistant row when possible
-            self._transcript.append_message(line)
-            self._thinking_idx = self._transcript.message_count() - 1
-            if self._stream_idx >= 0 and self._stream_idx >= self._thinking_idx:
-                self._stream_idx += 1
-            self._main_thinking_lines.append(
-                {"idx": self._thinking_idx, "body": self._thinking_body}
-            )
-        else:
-            self._transcript.update_message_at(self._thinking_idx, line)
-            for rec in self._main_thinking_lines:
-                if rec.get("idx") == self._thinking_idx:
-                    rec["body"] = self._thinking_body
-                    break
-            else:
-                self._main_thinking_lines.append(
-                    {"idx": self._thinking_idx, "body": self._thinking_body}
-                )
+
+    def _open_turn_region(self) -> None:
+        self._close_turn_region()
+        self._turn_base = self._transcript.message_count()
+        self._turn_entries = []
+        self._last_snap = None
+        self._pending_calls = []
+        self._snap_sig = None
+
+    def _close_turn_region(self) -> None:
+        if self._turn_base >= 0 and self._last_snap is not None:
+            self._turns.append({"base": self._turn_base, "entries": list(self._turn_entries),
+                                "snap": self._last_snap})
+        self._turn_base = -1
+        self._turn_entries = []
+
+    def _reset_turn_regions(self) -> None:
+        self._turns = []
+        self._turn_base = -1
+        self._turn_entries = []
+        self._last_snap = None
+        self._pending_calls = []
+        self._snap_sig = None
+
+    def _on_snapshot(self, snap: MessageSnapshot) -> None:
+        with self._app.lock:
+            self._last_snap = snap
+            # 流式 token 很密：同一形态的快照 40ms 内只画一次；消息数、状态或流式段起止一变就立刻画
+            now = time.monotonic()
+            sig = (len(snap.messages), snap.status, snap.streaming_text is None)
+            if sig == self._snap_sig and now - self._snap_rendered_at < 0.04:
+                return
+            self._snap_sig = sig
+            self._snap_rendered_at = now
+            self._render_turn_region()
+            self._app.render()
+
+    def _render_turn_region(self) -> None:
+        if self._last_snap is None:
+            return
+        if self._turn_base < 0:
+            self._turn_base = self._transcript.message_count()
+            self._turn_entries = []
+        new = render_turn(self._last_snap, self._view_options())
+        old = self._turn_entries
+        i = 0
+        while i < min(len(old), len(new)) and old[i] == new[i]:
+            i += 1
+        if i == len(old) == len(new):
+            return
+        self._transcript.replace_range(self._turn_base + i, len(old) - i, new[i:])
+        self._turn_entries = new
+
+    def _rerender_turns(self) -> None:
+        """Redraw finished turns in place (same entry count) and the current one."""
+        options = self._view_options()
+        options.pending_calls = []
+        for turn in self._turns:
+            new = render_turn(turn["snap"], options)
+            old = turn["entries"]
+            if len(new) != len(old):
+                continue
+            for i, (before, after) in enumerate(zip(old, new)):
+                if before != after:
+                    self._transcript.update_message_at(turn["base"] + i, after)
+            turn["entries"] = new
+        self._render_turn_region()
 
     def _on_done(self, text: str) -> None:
         with self._app.lock:
-            visible = (text or "").strip() or "（无输出）"
+            self._pending_calls = []
+            self._snap_sig = None
+            self._render_turn_region()
+            shown = final_text(self._last_snap) if self._last_snap is not None else ""
+            visible = shown or (text or "").strip() or "（无输出）"
+            if not shown and (text or "").strip():
+                self._transcript.append_message(assistant_block(text.strip()))
             self._last_assistant_plain = visible
             self._session_tree.add("assistant", visible)
-            rendered = assistant_block(visible)
-            if self._stream_idx >= 0:
-                self._transcript.update_message_at(self._stream_idx, rendered)
-            else:
-                self._transcript.append_message(rendered)
-            if self._thinking_body:
-                self._refresh_thinking_row(done=True)
-            self._stream_idx = -1
-            self._stream_buf = ""
+            self._close_turn_region()
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"text": visible})
@@ -2191,8 +2075,10 @@ class CircleSessionApp:
 
     def _on_error(self, exc: BaseException) -> None:
         with self._app.lock:
+            self._pending_calls = []
+            self._render_turn_region()
+            self._close_turn_region()
             self._transcript.append_message(_error_line(_format_llm_error(exc)))
-            self._stream_idx = -1
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"error": _format_llm_error(exc)})
@@ -2219,7 +2105,9 @@ class CircleSessionApp:
 
     def _begin_approvals(self, requests: list[dict[str, Any]]) -> None:
         with self._app.lock:
-            self._fill_tool_lines(requests)
+            self._pending_calls = [dict(r) for r in requests]
+            self._render_turn_region()
+            self._app.render()
         if getattr(self._bridge, "auto_approve", False):  # /yolo：全部放行，不弹面板
             self._resume_with({"decisions": [{"type": "approve"} for _ in requests]})
             return
@@ -2234,6 +2122,10 @@ class CircleSessionApp:
         self._approval_decisions.append(
             {"type": "approve"} if approved
             else {"type": "reject", "message": REJECTED_BY_USER})
+        if not approved:
+            # 被拒的调用不会执行、也就没有工具回调；补一行让它留在本回合里
+            self._bridge.announce_blocked({"name": name, "args": req.get("args") or {}},
+                                          REJECTED_BY_USER)
 
     def _next_approval(self) -> None:
         with self._app.lock:
@@ -2271,8 +2163,8 @@ class CircleSessionApp:
                 self._prompt.set_value(self._ask_saved_prompt)
             self._ask_saved_prompt = ""
             self._enter_busy()
-            self._stream_idx = -1
-            self._stream_buf = ""
+            self._pending_calls = []
+            self._render_turn_region()
             self._app.render()
         self._bridge.resume(value)
 
@@ -2347,6 +2239,10 @@ def run_circle_session(
         return 2
 
     home = home or circle_home()
+    # 日志进文件：无处理器时 WARNING 以上会经 lastResort 写到 stderr，直接画进全屏界面
+    from circle.log_setup import configure_file_logging
+
+    configure_file_logging(home)
     workspace = normalize_workspace(workspace)
     settings = load_settings(home)
 

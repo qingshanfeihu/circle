@@ -116,20 +116,28 @@ def indent_continuations(text: str, prefix: str = "   ") -> str:
     )
 
 
-def render_thinking_line(*, body: str, done: bool, expanded: bool = False) -> str:
-    """InfoTest ``_render_main_thinking_line`` (collapsed by default)."""
+def render_thinking_line(*, body: str, done: bool, expanded: bool = False,
+                         title: str | None = None, duration_s: float | None = None) -> str:
+    """InfoTest ``_render_main_thinking_line``: ``∴ Thinking[: title]`` while running,
+    ``∴ Thought[: title][ · duration]`` when settled; ctrl+t shows the body."""
+    from circle.ink.components.footer import _format_elapsed
+
     pal = palette()
+    title = str(title or "").strip()
     if done:
-        header = "∴ Thought"
+        header = "∴ Thought" + (f": {title}" if title else "")
+        if duration_s is not None:
+            try:
+                header += f" · {_format_elapsed(max(0.0, float(duration_s)))}"
+            except (TypeError, ValueError, OverflowError):
+                pass
     else:
-        header = "∴ Thinking"
-    header_sgr = sgr_join(pal.reason, "\x1b[3m")
-    reset = pal.reset
-    faint = pal.faint
-    line = f" {header_sgr}{header}{reset}"
+        header = "∴ Thinking" + (f": {title}" if title else "")
+    header_sgr = sgr_join(pal.reason_dim if expanded else pal.reason, "\x1b[3m")
+    line = f" {header_sgr}{header}{pal.reset}"
+    body = str(body or "").strip()
     if expanded and body:
-        rendered_body = indent_continuations(body, "   ")
-        line += f"\n   {faint}{rendered_body}{reset}"
+        line += f"\n   {pal.faint}{indent_continuations(body, '   ')}{pal.reset}"
     elif not expanded:
-        line += f" {faint}(ctrl+t to expand){reset}"
+        line += f" {pal.faint}(ctrl+t to expand){pal.reset}"
     return line

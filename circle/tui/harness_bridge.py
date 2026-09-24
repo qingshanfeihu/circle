@@ -14,12 +14,17 @@ from typing import Any, Callable
 
 from langgraph.types import Command
 
+from circle.events import EventBus, bind_bus, unbind_bus
 from circle.tui.content_blocks import (
     message_text,
     parse_content,
     reasoning_chars,
     thinking_preview,
 )
+from circle.tui.message_model import MessageSnapshot
+from circle.tui.progress_handler import ProgressHandler
+from circle.tool_events import announce_blocked_tool_call
+from circle.tui.sink import TuiSink
 
 
 @dataclass
@@ -75,6 +80,7 @@ class HarnessBridge:
         on_done: Callable[[str], None],
         on_error: Callable[[BaseException], None],
         on_status: Callable[[str], None] | None = None,
+        on_snapshot: Callable[[MessageSnapshot], None] | None = None,
     ) -> None:
         self._agent = agent
         self._thread_id = thread_id
@@ -83,6 +89,9 @@ class HarnessBridge:
         self._on_done = on_done
         self._on_error = on_error
         self._on_status = on_status or (lambda _s: None)
+        self._on_snapshot = on_snapshot
+        # 一个用户回合一个 sink：start 时重置，审批后 resume 沿用（工具行留在同一回合里）
+        self._sink = TuiSink(post=self._post_snapshot)
         self._worker: threading.Thread | None = None
         self._cancelled = False
         self._config: dict[str, Any] = {
@@ -105,11 +114,22 @@ class HarnessBridge:
 
     def cancel(self) -> None:
         self._cancelled = True
+        self._sink.cancel_run()
+
+    def _post_snapshot(self, snap: MessageSnapshot) -> None:
+        if self._on_snapshot is not None:
+            try:
+                self._on_snapshot(snap)
+            except Exception:  # noqa: BLE001 — a render error must not stop the run
+                import logging
+
+                logging.getLogger(__name__).exception("snapshot render failed")
 
     def start(self, user_text: str) -> None:
         if self.is_running:
             return
         self._cancelled = False
+        self._sink.reset()
         payload: Any = {"messages": [{"role": "user", "content": user_text}]}
         self._spawn(payload)
 
@@ -291,6 +311,27 @@ class HarnessBridge:
         return totals
 
     def _run(self, payload: Any) -> None:
+        bus = EventBus(run_id=uuid.uuid4().hex[:12])
+        bus.subscribe(self._sink)
+        self._bus = bus
+        config = {**self._config, "callbacks": [ProgressHandler(bus)]}
+        # 中间件拒掉的调用经这条总线补发工具行（circle.tool_events）
+        token = bind_bus(bus)
+        bus.emit("run_start")
+        try:
+            self._run_with(payload, config, bus)
+        except Exception:  # noqa: BLE001 — _run_with reports through on_error itself
+            pass
+        finally:
+            unbind_bus(token)
+
+    def announce_blocked(self, call: dict[str, Any], text: str) -> None:
+        """A call refused at the approval prompt: give it a row in this turn."""
+        bus = getattr(self, "_bus", None)
+        if bus is not None:
+            announce_blocked_tool_call(call, text, bus=bus)
+
+    def _run_with(self, payload: Any, config: dict[str, Any], bus: EventBus) -> None:
         self._on_status("thinking")
         self._on_update(
             StreamUpdate(llm_phase="thinking", thinking_done=False)
@@ -303,7 +344,7 @@ class HarnessBridge:
             try:
                 for item in self._agent.stream(
                     payload,
-                    config=self._config,
+                    config=config,
                     stream_mode="messages",
                 ):
                     if self._cancelled:
@@ -369,9 +410,11 @@ class HarnessBridge:
                 interrupts = getattr(state, "interrupts", None) or ()
                 if interrupts:
                     self._pending_action_count = self._count_action_requests(interrupts)
+                    bus.emit("run_end", payload={"awaiting_user": True})
                     self._on_interrupt(interrupts)
                     self._on_status("approval")
                     return
+                bus.emit("run_end")
                 values = getattr(state, "values", None) or {}
                 messages = values.get("messages") if isinstance(values, dict) else None
                 if messages:
@@ -388,7 +431,7 @@ class HarnessBridge:
                 self._on_status("ready")
                 return
 
-            result = self._agent.invoke(payload, config=self._config)
+            result = self._agent.invoke(payload, config=config)
             if self._cancelled:
                 self._on_status("cancelled")
                 return
@@ -396,6 +439,7 @@ class HarnessBridge:
                 interrupts = result.get("__interrupt__")
                 if interrupts:
                     self._pending_action_count = self._count_action_requests(interrupts)
+                    bus.emit("run_end", payload={"awaiting_user": True})
                     self._on_interrupt(interrupts)
                     self._on_status("approval")
                     return
@@ -405,6 +449,7 @@ class HarnessBridge:
                         message_text(getattr(messages[-1], "content", None))
                         or final_text
                     )
+            bus.emit("run_end")
             self._on_done(final_text or "（无输出）")
             self._on_status("ready")
         except Exception as exc:  # noqa: BLE001

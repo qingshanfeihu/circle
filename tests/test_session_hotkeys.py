@@ -101,18 +101,24 @@ def test_ctrl_t_toggles_thinking_row(tmp_path: Path, monkeypatch):
     )
 
     app = CircleSessionApp(settings, ws, home=home)
-    app._thinking_body = "secret thought\nsecond line"
-    app._thinking_idx = -1
-    app._thinking_expanded = False
-    app._refresh_thinking_row(done=True)
-    row = app._transcript.message_at(app._thinking_idx)
-    assert row is not None
-    assert "ctrl+t to expand" in row
+    # 思考行由快照渲染：推一条 thinking_block 事件，经 reducer 出快照再画
+    from circle.events import EventBus
+    from circle.tui.sink import TuiSink
+
+    posted = []
+    bus = EventBus(run_id="r")
+    bus.subscribe(TuiSink(post=posted.append))
+    app._open_turn_region()
+    bus.emit("run_start")
+    bus.emit("info", payload={"name": "thinking_block", "thinking": "secret thought\nsecond line",
+                              "reasoning_duration_s": 1.5})
+    app._on_snapshot(posted[-1])
+    row = "\n".join(app._transcript.snapshot())
+    assert "ctrl+t to expand" in row and "∴ Thought" in row
     assert "secret thought" not in row
 
     app._handle_key(KeyPress(key="ctrl+t", ctrl=True, char="t"))
-    row = app._transcript.message_at(app._thinking_idx)
-    assert row is not None
+    row = "\n".join(app._transcript.snapshot())
     assert "secret thought" in row
     assert "second line" in row
 

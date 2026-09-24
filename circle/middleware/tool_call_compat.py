@@ -28,6 +28,8 @@ from langchain_core.messages import ToolMessage
 from pydantic import ValidationError
 
 from circle.middleware.tool_error_boundary import validation_detail
+from circle.tool_events import announce_blocked_tool_call
+from circle.tool_recoverable import mark_recoverable
 
 logger = logging.getLogger(__name__)
 
@@ -277,9 +279,12 @@ class ToolCallCompatibilityMiddleware(AgentMiddleware):
                 self.tools_by_name[name] = tool
 
     def _reject(self, request: Any, name: str, text: str) -> ToolMessage:
+        """The model can fix these itself; the tool never ran, so announce the row."""
         call = request.tool_call
-        return ToolMessage(content=text, name=name, status="error",
-                           tool_call_id=str(call.get("id") or f"invalid-{canonical(name)}"))
+        announce_blocked_tool_call({**call, "name": name}, text, recoverable=True)
+        return mark_recoverable(ToolMessage(
+            content=text, name=name, status="error",
+            tool_call_id=str(call.get("id") or f"invalid-{canonical(name)}")))
 
     def _prepare(self, request: Any) -> tuple[Any, ToolMessage | None]:
         call = request.tool_call
@@ -318,11 +323,24 @@ class ToolCallCompatibilityMiddleware(AgentMiddleware):
                 "Re-issue the call with arguments that satisfy the declared schema.")
         return prepared, None
 
+    @staticmethod
+    def _unknown_tool_answer(prepared: Any, result: Any) -> Any:
+        """ToolNode answers an unknown tool name without running anything: give it a row."""
+        if getattr(prepared, "tool", None) is None and isinstance(result, ToolMessage):
+            call = prepared.tool_call
+            announce_blocked_tool_call(call, str(result.content), recoverable=True)
+            mark_recoverable(result)
+        return result
+
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
         prepared, rejected = self._prepare(request)
-        return rejected if rejected is not None else handler(prepared)
+        if rejected is not None:
+            return rejected
+        return self._unknown_tool_answer(prepared, handler(prepared))
 
     async def awrap_tool_call(self, request: Any,
                               handler: Callable[[Any], Awaitable[Any]]) -> Any:
         prepared, rejected = self._prepare(request)
-        return rejected if rejected is not None else await handler(prepared)
+        if rejected is not None:
+            return rejected
+        return self._unknown_tool_answer(prepared, await handler(prepared))

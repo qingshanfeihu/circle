@@ -121,3 +121,16 @@ def reset_default_bus(run_id: str | None = None) -> EventBus:
         bus = _DEFAULT_BUS
     _CURRENT_BUS.set(bus)
     return bus
+
+
+def current_bus() -> EventBus | None:
+    """The bus of the run on this thread, if a UI bound one; never the global default."""
+    return _CURRENT_BUS.get()
+
+
+def bind_bus(bus: EventBus | None) -> contextvars.Token:
+    return _CURRENT_BUS.set(bus)
+
+
+def unbind_bus(token: contextvars.Token) -> None:
+    _CURRENT_BUS.reset(token)
