@@ -102,6 +102,8 @@ def _make_app():
     obj._secret_entry = None
     obj._detail_active = False
     obj._strip_selecting = False
+    obj._ask_session = None
+    obj._approvals_page = None
     obj._strip_ids = []
     obj._strip_visible_ids = []
     return obj

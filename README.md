@@ -125,7 +125,7 @@ def register(api):
 | 询问 | 其余 | 可选「始终允许」：命令按原文精确匹配；文件改动只覆盖工作区内的路径；扩展工具覆盖该工具的全部调用 |
 
 「始终允许」按会话线程记在 `~/.circle/approvals/`（命令只存哈希），重启或 `/resume` 后仍然有效；
-`/approvals` 列出本会话的规则，`/approvals revoke <序号>` 撤销。凭据文件表可在 `settings.json` 用
+`/approvals` 打开审批管理页（←→ 选规则、enter 撤销、esc 关闭），`/approvals list` 以文字列出，`/approvals revoke <序号>` 直接撤销。凭据文件表可在 `settings.json` 用
 `"credential_files": ["*.secret", ".env*"]` 替换（按文件名通配）。命令分类只读命令文本，能覆盖常见写法，
 挡不住有意的变形。
 

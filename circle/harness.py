@@ -127,6 +127,7 @@ def create_harness(
     store: Any = None,
     extensions: ExtensionHost | None = None,
     approvals: ApprovalPolicy | None = None,
+    ask_user: bool = False,
 ):
     """Build harness with file/shell tools, explore subagent, and prompt-backed extras.
 
@@ -135,6 +136,10 @@ def create_harness(
     - built-in SummarizationMiddleware (auto compact at ~85% context)
     - SummarizationToolMiddleware → ``compact_conversation`` tool for /compact
     - ``checkpointer`` + ``store`` for short/long-term memory
+
+    ``ask_user``: the caller answers ``ask_user`` interrupts (the full-screen session),
+    so the ``question`` tool pauses for real answers instead of returning the questions
+    as text.
     """
     _ensure_tool_description_profiles()
 
@@ -159,7 +164,7 @@ def create_harness(
     explore = explore_subagent_spec()
     skills = skill_sources(cwd, home)
     memory = memory_source_paths(cwd, home)
-    tools: list[Any] = list(build_extra_tools(cwd, home, plan_mode=plan_mode))
+    tools: list[Any] = list(build_extra_tools(cwd, home, plan_mode=plan_mode, ask_user=ask_user))
     if extra_tools:
         tools.extend(extra_tools)
     if mcp_servers:

@@ -42,8 +42,9 @@ from circle.mcp_loader import format_mcp_status
 from circle.session_tree import SessionTree
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
+from circle.ink.components.ask_user_view import AskUserSession
 from circle.ink.components.dialog_frame import build_loop_frame
-from circle.ink.components.exec_approval_view import ExecApprovalSession
+from circle.ink.components.exec_approval_view import ExecApprovalSession, SessionApprovalsSession
 from circle.ink.components.footer import FooterPane
 from circle.ink.components.plan_panel import PlanPanel
 from circle.ink.components.prompt_input import PromptInput
@@ -268,6 +269,12 @@ class CircleSessionApp:
         self._approval_decisions: list[dict[str, Any]] = []
         # 非审批形态的中断按 payload["kind"] 分派（C2 的问答面板挂在这里）
         self._interrupt_handlers: dict[str, Callable[[dict[str, Any]], None]] = {}
+        # question 工具的普通题：ask_user 中断逐个问，答完一起 resume（多个并行时按中断 id）
+        self._ask_session: AskUserSession | None = None
+        self._ask_queue: list[tuple[str | None, dict[str, Any]]] = []
+        self._ask_replies: list[tuple[str | None, dict[str, Any]]] = []
+        # /approvals 管理页
+        self._approvals_page: SessionApprovalsSession | None = None
         self._ask_saved_prompt = ""
         self._last_ctrl_c = 0.0
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
@@ -314,6 +321,7 @@ class CircleSessionApp:
             mcp_servers=settings.mcp_servers,
             extensions=self._extensions,
             approvals=self._approvals,
+            ask_user=True,
         )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
@@ -340,6 +348,7 @@ class CircleSessionApp:
             mcp_servers=self.settings.mcp_servers,
             extensions=self._extensions,
             approvals=self._approvals,
+            ask_user=True,
         )
         self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
@@ -680,6 +689,13 @@ class CircleSessionApp:
             if self._exec_approval.handle_key(kp.key, kp.char):
                 return
 
+        if self._ask_session is not None and self._handle_ask_key(kp):
+            return
+
+        if self._approvals_page is not None:
+            if self._approvals_page.handle_key(kp.key, kp.char):
+                return
+
         if self._input_history.in_search_mode:
             if self._handle_search_key(kp):
                 return
@@ -712,6 +728,7 @@ class CircleSessionApp:
             now = time.time()
             if self._is_loading:
                 self._bridge.cancel()
+                self._dismiss_user_panels()
                 self._transcript.append_message(" " + _faint("(cancelled)"))
                 self._leave_busy()
                 self._app.render()
@@ -734,6 +751,7 @@ class CircleSessionApp:
         if kp.key == "escape":
             if self._is_loading:
                 self._bridge.cancel()
+                self._dismiss_user_panels()
                 self._transcript.append_message(" " + _faint("(cancelled)"))
                 self._leave_busy()
             else:
@@ -1824,6 +1842,9 @@ class CircleSessionApp:
         """/approvals — 本会话的「始终允许」规则；/approvals revoke <序号> 撤销一条。"""
         parts = (args or "").split()
         store = self._approvals.store
+        if not parts and self._exec_approval is None and self._ask_session is None:
+            self._begin_approvals_page()
+            return
         if parts[:1] == ["revoke"]:
             if len(parts) != 2 or not parts[1].isdigit():
                 self._toast("用法: /approvals revoke <序号>")
@@ -2357,8 +2378,13 @@ class CircleSessionApp:
         if self._turn_started_at:
             self._turn_elapsed += time.time() - self._turn_started_at
             self._turn_started_at = 0.0
-        first = (interrupts[0] if isinstance(interrupts, (list, tuple)) and interrupts
-                 else interrupts)
+        items = list(interrupts) if isinstance(interrupts, (list, tuple)) else [interrupts]
+        asks = [(getattr(item, "id", None), getattr(item, "value", item)) for item in items]
+        asks = [(iid, v) for iid, v in asks if isinstance(v, dict) and v.get("kind") == "ask_user"]
+        if asks and len(asks) == len(items):
+            self._begin_ask_user(asks)
+            return
+        first = items[0] if items else interrupts
         value = getattr(first, "value", first)
         if isinstance(value, dict) and value.get("action_requests"):
             self._begin_approvals([r for r in value["action_requests"] if isinstance(r, dict)])
@@ -2440,6 +2466,137 @@ class CircleSessionApp:
             self._render_turn_region()
             self._app.render()
         self._bridge.resume(value)
+
+    # ── question panel (ask_user interrupts) ────────────────────────────
+
+    def _begin_ask_user(self, asks: list[tuple[str | None, dict[str, Any]]]) -> None:
+        with self._app.lock:
+            self._ask_queue = list(asks)
+            self._ask_replies = []
+            if not self._ask_saved_prompt:
+                self._ask_saved_prompt = self._prompt.value
+            self._prompt.clear()
+        self._next_ask_user()
+
+    def _next_ask_user(self) -> None:
+        with self._app.lock:
+            while self._ask_queue:
+                _iid, value = self._ask_queue[0]
+                questions = [q for q in value.get("questions") or () if isinstance(q, dict)]
+                if not questions:
+                    self._ask_replies.append((self._ask_queue.pop(0)[0], {"answers": []}))
+                    continue
+                self._ask_session = AskUserSession(questions, render=self._render_ask_user,
+                                                   on_answer=self._finish_ask_user)
+                self._render_ask_user()
+                return
+        replies, self._ask_replies = self._ask_replies, []
+        if len(replies) == 1:
+            self._resume_with(replies[0][1])
+        else:
+            self._resume_with({iid: reply for iid, reply in replies})
+
+    def _render_ask_user(self) -> None:
+        with self._app.lock:
+            if self._ask_session is None:
+                self._ask_panel.clear()
+            else:
+                self._ask_panel.update(self._ask_session.render_lines())
+            self._app.render()
+
+    def _finish_ask_user(self, answers: list[list[str]] | None) -> None:
+        with self._app.lock:
+            session, self._ask_session = self._ask_session, None
+            self._ask_panel.clear()
+            if session is not None:
+                self._toast(_strip_ansi(session.result_summary()).strip())
+            if self._ask_queue:
+                iid, _value = self._ask_queue.pop(0)
+                self._ask_replies.append(
+                    (iid, {"answers": answers} if answers is not None else {"cancelled": True}))
+        self._next_ask_user()
+
+    def _handle_ask_key(self, kp: KeyPress) -> bool:
+        session = self._ask_session
+        if session is None:
+            return False
+        if session.in_other_input:
+            # 自己输入回答：字符进输入框，enter 交给面板，esc 回到选项
+            if kp.key == "enter":
+                text = self._prompt.value
+                self._prompt.clear()
+                session.submit_other_text(text)
+                return True
+            if kp.key == "escape":
+                self._prompt.clear()
+                session.cancel_other_input()
+                return True
+            if kp.key in ("ctrl+c", "ctrl+d"):
+                return False
+            if self._prompt.handle_key(kp.key if kp.key else "char",
+                                       kp.char if len(kp.char) == 1 else ""):
+                self._app.render()
+            return True
+        return session.handle_key(kp.key, kp.char)
+
+    def _dismiss_user_panels(self) -> None:
+        """The turn was cancelled: nothing will resume it, so no panel waits on the user."""
+        self._ask_session = None
+        self._ask_queue = []
+        self._ask_replies = []
+        self._exec_approval = None
+        self._approval_queue = []
+        self._approval_decisions = []
+        self._pending_calls = []
+        self._ask_panel.clear()
+        if self._ask_saved_prompt:
+            self._prompt.set_value(self._ask_saved_prompt)
+            self._ask_saved_prompt = ""
+
+    # ── /approvals page ──────────────────────────────────────────────────
+
+    def _begin_approvals_page(self) -> None:
+        store = self._approvals.store
+        rules = store.rules(self._thread_id)
+        lines: list[str] = []
+        options: list[dict[str, str]] = []
+        if not rules:
+            lines.append("本会话没有「始终允许」规则。")
+        for i, rule in enumerate(rules):
+            label = str(rule.get("label") or rule.get("pattern") or "")
+            lines.append(f"[always] {rule.get('tool')} · {label}")
+            options.append({"key": f"revoke:{i}", "label": f"撤销: {label[:40]}"})
+        names = {"once": "允许一次", "always": "始终允许", "reject": "拒绝", "revoke": "撤销"}
+        recent = store.log(self._thread_id)[-5:]
+        if recent:
+            lines.append("最近的审批：")
+            lines += [f"[{names.get(str(e.get('kind')), e.get('kind'))}] {e.get('tool')}"
+                      for e in recent]
+        options.append({"key": "close", "label": "关闭"})
+        with self._app.lock:
+            self._approvals_page = SessionApprovalsSession(
+                lines=lines, options=options, render=self._render_approvals_page,
+                on_finish=self._finish_approvals_page)
+            self._render_approvals_page()
+
+    def _render_approvals_page(self) -> None:
+        with self._app.lock:
+            if self._approvals_page is None:
+                self._ask_panel.clear()
+            else:
+                self._ask_panel.update(self._approvals_page.render_lines())
+            self._app.render()
+
+    def _finish_approvals_page(self, choice: str) -> None:
+        with self._app.lock:
+            self._approvals_page = None
+            self._ask_panel.clear()
+            if choice.startswith("revoke:"):
+                rule = self._approvals.store.revoke(self._thread_id, int(choice.split(":", 1)[1]))
+                if rule is not None:
+                    self._toast(f"已撤销：{rule.get('tool')} · {rule.get('label') or rule.get('pattern')}"
+                                "，下次同类调用会再问")
+            self._app.render()
 
     def _begin_exec_approval(self, payload: dict) -> None:
         if not self._ask_saved_prompt:

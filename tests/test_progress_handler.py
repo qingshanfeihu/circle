@@ -142,9 +142,17 @@ def _session(tmp_path: Path, monkeypatch, responses: list):
 
 
 def _wait_idle(app, timeout: float = 20.0) -> None:
+    """Until the turn ends or stops on a panel that waits for the user."""
     deadline = time.time() + timeout
     time.sleep(0.2)
-    while (app._bridge.is_running or app._is_loading) and time.time() < deadline:  # noqa: SLF001
+
+    def waiting_on_user() -> bool:
+        return (not app._bridge.is_running  # noqa: SLF001
+                and (app._exec_approval is not None  # noqa: SLF001
+                     or getattr(app, "_ask_session", None) is not None))
+
+    while ((app._bridge.is_running or app._is_loading) and not waiting_on_user()  # noqa: SLF001
+           and time.time() < deadline):
         time.sleep(0.05)
 
 

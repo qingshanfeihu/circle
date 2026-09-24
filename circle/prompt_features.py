@@ -220,8 +220,49 @@ class _QuestionInput(BaseModel):
     )
 
 
-def build_question_tool(home: Path | None = None) -> StructuredTool:
-    """Surface clarifying questions in the tool result for the TUI/user.
+def _panel_question(q: dict[str, Any]) -> dict[str, Any]:
+    """A question as the TUI panel takes it (label/description options, multiSelect,
+    allow_other)."""
+    options: list[dict[str, str]] = []
+    for opt in q.get("options") or q.get("choices") or []:
+        if isinstance(opt, dict):
+            label = str(opt.get("label") or opt.get("text") or "").strip()
+            desc = str(opt.get("description") or "").strip()
+        else:
+            label, desc = str(opt).strip(), ""
+        if label:
+            options.append({"label": label, "description": desc})
+    return {
+        "question": str(q.get("question") or q.get("prompt") or "").strip() or "(empty question)",
+        "header": str(q.get("header") or "").strip(),
+        "options": options,
+        "multiSelect": bool(q.get("multiple") or q.get("multiSelect")),
+        # 没有选项就只能自己输入
+        "allow_other": q.get("custom") is not False or not options,
+    }
+
+
+def _answers_text(questions: list[dict[str, Any]], reply: Any) -> str:
+    answers = reply.get("answers") if isinstance(reply, dict) else None
+    if not isinstance(answers, list):
+        return ("The user closed the question panel without answering. Do not assume an "
+                "answer: ask again in chat if you need one, and hold off on irreversible "
+                "work that depends on it.")
+    rows = []
+    for q, a in zip(questions, answers + [[]] * (len(questions) - len(answers))):
+        rows.append({"question": q["question"],
+                     "answer": [str(x) for x in a] if isinstance(a, list) else []})
+    return ("The user answered in the question panel (an empty answer means the user left "
+            "it unanswered):\n" + json.dumps(rows, ensure_ascii=False, indent=2))
+
+
+def build_question_tool(home: Path | None = None, *, interactive: bool = False) -> StructuredTool:
+    """Ask the user clarifying questions.
+
+    ``interactive`` (the full-screen session): ordinary questions pause the run with an
+    ``ask_user`` interrupt; the TUI shows the question panel and resumes with the
+    answers, which become the tool result. Without it (line mode, which does not handle
+    interrupts) the questions are returned as text for the model to ask in chat.
 
     Secret questions (``secret: true``) are answered through the harness-level
     masked-input channel (see circle.secret_prompt): the tool result contains
@@ -238,6 +279,15 @@ def build_question_tool(home: Path | None = None) -> StructuredTool:
         lines: list[str] = []
         secret_questions = [q for q in questions if q.get("secret")]
         plain_questions = [q for q in questions if not q.get("secret")]
+
+        if plain_questions and interactive:
+            from langgraph.types import interrupt
+
+            # 先问普通题：恢复时工具从头重跑，interrupt 直接返回答案，机密题只收一次
+            asked = [_panel_question(q) for q in plain_questions]
+            lines.append(_answers_text(asked, interrupt({"kind": "ask_user", "questions": asked})))
+            lines.append("")
+            plain_questions = []
 
         if secret_questions:
             if home is None:
@@ -289,7 +339,7 @@ def build_question_tool(home: Path | None = None) -> StructuredTool:
 
         if not lines:
             return "Error: no questions to ask"
-        return "\n".join(lines)
+        return "\n".join(lines).strip()
 
     return StructuredTool.from_function(
         name="question",
@@ -305,12 +355,14 @@ def build_extra_tools(
     *,
     user_home: Path | None = None,
     plan_mode: bool = False,
+    ask_user: bool = False,
 ) -> list[StructuredTool]:
     from circle.apply_patch import apply_patch_text, build_apply_patch_tool
     from circle.lsp_tool import build_lsp_tool
     from circle.websearch import build_websearch_tool
 
-    tools: list[StructuredTool] = [build_webfetch_tool(), build_question_tool(home)]
+    tools: list[StructuredTool] = [build_webfetch_tool(),
+                                   build_question_tool(home, interactive=ask_user)]
     tools.append(build_skill_tool(workspace, home, user_home=user_home))
     tools.append(build_websearch_tool())
     tools.append(build_lsp_tool(workspace))

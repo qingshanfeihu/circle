@@ -21,6 +21,7 @@ from circle.approvals import (
     default_policy,
 )
 from circle.harness import create_harness, sandbox_backend
+from circle.ink.parse_keypress import KeyPress
 from circle.oauth import start_oauth_login
 from circle.testing import ScriptedModel
 from circle.tui.controllers import InitController, TrustController
@@ -282,6 +283,11 @@ def test_panel_asks_each_call_and_resumes_with_every_decision(tmp_path, monkeypa
     assert not app._approvals.needs_approval("execute", {"command": "make test"}, thread)  # noqa: SLF001
 
     app._on_submit("/approvals")  # noqa: SLF001
+    page = "\n".join(app._approvals_page.render_lines())  # noqa: SLF001
+    assert "[always] execute · this exact command" in page
+    app._handle_key(KeyPress(key="escape"))  # noqa: SLF001
+    assert app._approvals_page is None  # noqa: SLF001
+    app._on_submit("/approvals list")  # noqa: SLF001
     snap = "\n".join(app._transcript.snapshot())  # noqa: SLF001
     assert "1. execute · this exact command" in snap
     app._on_submit("/approvals revoke 1")  # noqa: SLF001
