@@ -16,6 +16,7 @@ from deepagents import (
     create_deep_agent,
     register_harness_profile,
 )
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
@@ -47,6 +48,10 @@ _INTERRUPT_ON = {
     "edit_file": True,
     "apply_patch": True,
 }
+
+# explore 子代理只拿只读工具：文件系统只留读类，额外工具只留不改状态的
+EXPLORE_FS_TOOLS = ["ls", "read_file", "glob", "grep"]
+EXPLORE_EXTRA_TOOLS = frozenset({"webfetch", "websearch", "lsp", "skill"})
 
 # 内置工具名：扩展不得占用（deepagents 自带 + circle extras + /compact 工具）
 BUILTIN_TOOL_NAMES = frozenset({
@@ -152,6 +157,15 @@ def create_harness(
         tools.extend(mcp_tools)
     else:
         mcp_tools = []
+    backend = sandbox_backend(root_dir, plan_mode=plan_mode)
+    explore = {
+        **explore,
+        "tools": [t for t in tools if getattr(t, "name", None) in EXPLORE_EXTRA_TOOLS],
+        # 替换子代理默认的文件系统中间件：没有 write_file / edit_file / delete / execute
+        "middleware": [FilesystemMiddleware(backend=backend, tools=list(EXPLORE_FS_TOOLS))],
+        # 只读子代理不需要审批；不写这一项它会继承主代理的审批表
+        "interrupt_on": {},
+    }
     interrupt_on = dict(_INTERRUPT_ON)
     subagents: list[dict[str, Any]] = [explore]
     extension_middleware: list[Any] = []
@@ -167,8 +181,6 @@ def create_harness(
         interrupt_on.update({name: True for name in extensions.interrupt_on() if name in taken})
         subagents.extend(extensions.subagents(tools))
         extension_middleware = extensions.middleware()
-
-    backend = sandbox_backend(root_dir, plan_mode=plan_mode)
 
     # compact_conversation tool (pairs with auto SummarizationMiddleware)
     chat_model = model if not isinstance(model, str) else None
