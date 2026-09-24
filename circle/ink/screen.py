@@ -53,7 +53,9 @@ class StylePool:
         self.none: int = self.intern([])
         
         
-        self._selection_bg_codes: list[str] = ["\x1b[48;5;238m"]
+        # 选区底色由启动接线（palette().sel_bg）写入；写入前留空，
+        # with_selection_bg 走反显兜底，不写死任何色值。
+        self._selection_bg_codes: list[str] = []
         self._selection_bg_cache: dict[int, int] = {}
 
     def intern(self, codes: list[str]) -> int:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 
 from circle.ink.string_width import string_width
-from circle.ink.theme import palette
+from circle.ink.theme import palette, sgr_join
 
 
 def _elapsed(seconds: float) -> str:
@@ -62,7 +62,7 @@ def render_agent_strip(
     action_w = max(8, w - (2 + name_w + 1 + 1 + elapsed_w))
     out = [f"{pal.line}{'─' * w}{pal.reset}"]
     header = _pad(f"  在途 AGENT ─ {len(rows)}", w)
-    out.append(f"{pal.panel_bg}{pal.faint}{header}{pal.reset}")
+    out.append(f"{sgr_join(pal.panel_bg, pal.faint)}{header}{pal.reset}")
     for row in rows:
         elapsed = _elapsed(now - float(row.get("started") or now))
         body = (
@@ -70,7 +70,7 @@ def render_agent_strip(
             f"{_pad(str(row.get('action') or '运行中'), action_w)} "
             f"{_rjust(elapsed, elapsed_w)}"
         )
-        out.append(f"{pal.panel_bg}{pal.text}{_pad(body, w)}{pal.reset}")
+        out.append(f"{sgr_join(pal.panel_bg, pal.text)}{_pad(body, w)}{pal.reset}")
     hint = _pad("  子代理运行中", w)
-    out.append(f"{pal.panel_bg}{pal.faint}{hint}{pal.reset}")
+    out.append(f"{sgr_join(pal.panel_bg, pal.faint)}{hint}{pal.reset}")
     return out

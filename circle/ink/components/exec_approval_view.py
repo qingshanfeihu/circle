@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..theme import GLYPH_MILESTONE
+from ..theme import GLYPH_MILESTONE, palette
 
 _STAGE_PERMISSION = "permission"
 _STAGE_ALWAYS = "always"
@@ -50,7 +50,8 @@ class ExecApprovalSession:
         return "Permission required"
 
     def render_lines(self) -> list[str]:
-        Y, D, B, R = "\x1b[33m", "\x1b[2m", "\x1b[1m", "\x1b[0m"
+        pal = palette()
+        Y, D, B, R = pal.yellow, pal.faint, "\x1b[1m", pal.reset
         lines: list[str] = []
         lines.append(f" {Y}△{R} {B}{self._header_title()}{R}")
         if self._stage == _STAGE_ALWAYS:
@@ -151,7 +152,8 @@ class SessionApprovalsSession:
         self._focus = 0
 
     def render_lines(self) -> list[str]:
-        Y, D, B, R = "\x1b[33m", "\x1b[2m", "\x1b[1m", "\x1b[0m"
+        pal = palette()
+        Y, D, B, R = pal.yellow, pal.faint, "\x1b[1m", pal.reset
         out = [f" {Y}△{R} {B}Session approvals{R}", f"   {D}☰ /approvals{R}"]
         for ln in self._lines:
             out.append(f"   {D}{ln}{R}" if ln.startswith("[") else f"   {ln}")

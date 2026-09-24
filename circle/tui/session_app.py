@@ -49,7 +49,7 @@ from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
 from circle.ink.dom import NodeType, create_element, create_text
 from circle.ink.parse_keypress import InputEvent, KeyPress, MouseEvent, PasteEvent
-from circle.ink.theme import GLYPH_AGENT, init_palette_from_terminal, palette
+from circle.ink.theme import GLYPH_AGENT, GLYPH_ERROR, init_palette_from_terminal, palette
 from circle.model import build_chat_model, reasoning_effort_of
 from circle.model_guard import add_retry_listener
 from circle.pricing import context_window_for
@@ -135,6 +135,7 @@ class CircleSessionApp:
         init_palette_from_terminal()
 
         self._app = InkApp(alt_screen=True, mouse=True)
+        self._app.style_pool.set_selection_bg([palette().sel_bg])
         self._transcript = Transcript()
         self._ask_panel = AskUserPanel()
         self._dialog_label = ""
@@ -373,7 +374,7 @@ class CircleSessionApp:
             f" {GLYPH_AGENT} Circle · {self.workspace}"
         )
         self._transcript.append_message(
-            f" \x1b[2m{self.settings.auth.protocol} / {self.settings.auth.model}\x1b[0m"
+            " " + _faint(f"{self.settings.auth.protocol} / {self.settings.auth.model}")
         )
         self._transcript.append_message("")
         self._footer.update(status="ready")
@@ -509,7 +510,7 @@ class CircleSessionApp:
             now = time.time()
             if self._is_loading:
                 self._bridge.cancel()
-                self._transcript.append_message(" \x1b[2m(cancelled)\x1b[0m")
+                self._transcript.append_message(" " + _faint("(cancelled)"))
                 self._leave_busy()
                 self._app.render()
                 self._last_ctrl_c = now
@@ -519,7 +520,7 @@ class CircleSessionApp:
                 return
             self._last_ctrl_c = now
             self._transcript.append_message(
-                " \x1b[2m(press ctrl+c again to exit)\x1b[0m"
+                " " + _faint("(press ctrl+c again to exit)")
             )
             self._app.render()
             return
@@ -531,7 +532,7 @@ class CircleSessionApp:
         if kp.key == "escape":
             if self._is_loading:
                 self._bridge.cancel()
-                self._transcript.append_message(" \x1b[2m(cancelled)\x1b[0m")
+                self._transcript.append_message(" " + _faint("(cancelled)"))
                 self._leave_busy()
             else:
                 self._prompt.clear()
@@ -985,10 +986,10 @@ class CircleSessionApp:
 
         if self._transcript.message_count() > 0:
             w = max(40, self._transcript.node.rect.width or 80)
-            self._transcript.append_message(f"\x1b[2m{'─' * w}\x1b[0m")
+            self._transcript.append_message(_faint('─' * w))
         self._transcript.append_message("")
         for line in text.split("\n"):
-            self._transcript.append_message(f" \x1b[2m>\x1b[0m {line}")
+            self._transcript.append_message(f" {_faint('>')} {line}")
         self._transcript.append_message("")
         self._enter_busy()
         self._stream_idx = -1
@@ -1016,7 +1017,7 @@ class CircleSessionApp:
             self._start_user_turn(text)
 
     def _toast(self, msg: str) -> None:
-        self._transcript.append_message(f" \x1b[2m{msg}\x1b[0m")
+        self._transcript.append_message(f" {_faint(msg)}")
         self._app.render()
 
     def _cmd_yolo(self, args: str) -> None:
@@ -1036,12 +1037,12 @@ class CircleSessionApp:
             custom = [(c.name, c.description) for c in self._custom_commands.values()]
             custom += [(c.name, c.description) for c in self._extensions.commands().values()]
             for line in help_text(custom=custom or None).splitlines():
-                self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+                self._transcript.append_message(f" {_faint(line)}")
             self._app.render()
             return
         if name == "hotkeys":
             for line in hotkeys_text().splitlines():
-                self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+                self._transcript.append_message(f" {_faint(line)}")
             self._app.render()
             return
         if name in self._custom_commands:
@@ -1256,7 +1257,7 @@ class CircleSessionApp:
             for i, rec in enumerate(sessions, 1):
                 mark = " *" if rec.thread_id == self._thread_id else ""
                 self._transcript.append_message(
-                    f" \x1b[2m{i}. {rec.thread_id}  {rec.title[:40]}{mark}\x1b[0m"
+                    " " + _faint(f"{i}. {rec.thread_id}  {rec.title[:40]}{mark}")
                 )
             self._toast("用法: /resume <n|id>")
             return
@@ -1308,7 +1309,7 @@ class CircleSessionApp:
             self._toast(f"当前模型: {current}")
             for m in models[:40]:
                 mark = " *" if m == current else ""
-                self._transcript.append_message(f" \x1b[2m  {m}{mark}\x1b[0m")
+                self._transcript.append_message(" " + _faint(f"  {m}{mark}"))
             if len(models) > 40:
                 self._toast(f"…共 {len(models)} 个，用法 /models <name>")
             else:
@@ -1391,11 +1392,11 @@ class CircleSessionApp:
                 if err is not None:
                     self._leave_busy()
                     self._transcript.append_message(
-                        f" \x1b[31m✖ compact 失败: {_format_llm_error(err)}\x1b[0m"
+                        _error_line(f"compact 失败: {_format_llm_error(err)}")
                     )
                     self._app.render()
                     return
-                self._transcript.append_message(" \x1b[2m— compacted (same thread) —\x1b[0m")
+                self._transcript.append_message(" " + _faint("— compacted (same thread) —"))
                 for line in (summary or "COMPACT_OK").splitlines():
                     self._transcript.append_message(f" {line}")
                 self._transcript.append_message("")
@@ -1443,7 +1444,7 @@ class CircleSessionApp:
         token = (args or "").strip()
         if not token:
             for line in format_skills_slash_list(skills).splitlines():
-                self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+                self._transcript.append_message(f" {_faint(line)}")
             self._app.render()
             return
         parts = token.split(None, 1)
@@ -1469,7 +1470,7 @@ class CircleSessionApp:
         token = (args or "").strip()
         if not token:
             for line in self._session_tree.render_list().splitlines():
-                self._transcript.append_message(f" [2m{line}[0m")
+                self._transcript.append_message(f" {_faint(line)}")
             self._app.render()
             return
         if not self._session_tree.jump(token):
@@ -1498,7 +1499,7 @@ class CircleSessionApp:
         self._toast(f"已 fork 自 {token} → {self._thread_id}")
         for node in self._session_tree.path_to():
             if node.role == "user":
-                self._transcript.append_message(f" \x1b[2m>\x1b[0m {node.text.splitlines()[0][:80]}")
+                self._transcript.append_message(f" {_faint('>')} {node.text.splitlines()[0][:80]}")
         self._app.render()
 
     def _cmd_clone(self, _args: str) -> None:
@@ -1618,7 +1619,7 @@ class CircleSessionApp:
             f"  home={self.home}",
         ]
         for line in lines:
-            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+            self._transcript.append_message(f" {_faint(line)}")
         self._app.render()
 
     def _cmd_themes(self, args: str) -> None:
@@ -1646,7 +1647,7 @@ class CircleSessionApp:
             self._toast(f"MCP 已重载，工具 {len(self._mcp_tools)} 个")
             return
         for line in format_mcp_status(self.settings.mcp_servers, self._mcp_tools).splitlines():
-            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+            self._transcript.append_message(f" {_faint(line)}")
         self._app.render()
 
     def _cmd_approvals(self, args: str) -> None:
@@ -1676,7 +1677,7 @@ class CircleSessionApp:
         if rules:
             lines.append("撤销：/approvals revoke <序号>")
         for line in lines:
-            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+            self._transcript.append_message(f" {_faint(line)}")
         self._app.render()
 
     def _cmd_extensions(self, args: str) -> None:
@@ -1691,7 +1692,7 @@ class CircleSessionApp:
                 return
             self._toast(f"扩展已重载，工具 {len(self._extensions.tool_specs())} 个")
         for line in self._extensions.describe():
-            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+            self._transcript.append_message(f" {_faint(line)}")
         self._app.render()
 
     def _cmd_name(self, args: str) -> None:
@@ -1713,7 +1714,7 @@ class CircleSessionApp:
             f"  lines={n}  undo={len(self._undo_stack)}  archive={len(self._archive)}",
             f"  share={share}",
         ):
-            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+            self._transcript.append_message(f" {_faint(line)}")
         self._app.render()
 
     def _clipboard_set(self, text: str) -> bool:
@@ -2190,7 +2191,7 @@ class CircleSessionApp:
 
     def _on_error(self, exc: BaseException) -> None:
         with self._app.lock:
-            self._transcript.append_message(f" \x1b[31m✖ {_format_llm_error(exc)}\x1b[0m")
+            self._transcript.append_message(_error_line(_format_llm_error(exc)))
             self._stream_idx = -1
             self._leave_busy()
             self._app.render()
@@ -2212,7 +2213,7 @@ class CircleSessionApp:
         # 不认识的中断形态：不能替用户作答，如实说明、停在这里
         with self._app.lock:
             self._transcript.append_message(
-                f" \x1b[33m△ 收到无法处理的中断（{kind or type(value).__name__}），本回合已暂停。\x1b[0m")
+                _warn_line(f"收到无法处理的中断（{kind or type(value).__name__}），本回合已暂停。"))
             self._leave_busy()
             self._app.render()
 
@@ -2300,6 +2301,21 @@ class CircleSessionApp:
         if self._approval_queue:
             self._record_approval(str(decision.get("decision") or "reject"))
         self._next_approval()
+
+
+def _faint(text: str) -> str:
+    pal = palette()
+    return f"{pal.faint}{text}{pal.reset}"
+
+
+def _error_line(text: str) -> str:
+    pal = palette()
+    return f" {pal.red}{GLYPH_ERROR}{pal.reset} {text}"
+
+
+def _warn_line(text: str) -> str:
+    pal = palette()
+    return f" {pal.yellow}△{pal.reset} {text}"
 
 
 _PLAN_BLOCKED_TOOLS = frozenset({"execute", "write_file", "edit_file", "apply_patch", "delete"})

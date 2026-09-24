@@ -7,7 +7,7 @@ import threading
 import time
 
 from ..dom import DOMElement, NodeType, create_element, create_text
-from ..theme import GLYPH_ERROR
+from ..theme import GLYPH_ERROR, palette
 from ...display_lexicon import (
     api_error_slot,
     api_waiting_aggregate_slot,
@@ -548,13 +548,14 @@ class FooterPane:
         
         status_text = self._hold_status or self._session_summary()
         if self._sticky_error and self.status == "error":
-            status_text = (f"\x1b[31m{GLYPH_ERROR} {self._sticky_error}"
-                           f"\x1b[0m · {status_text}")
+            pal = palette()
+            status_text = (f"{pal.red}{GLYPH_ERROR} {self._sticky_error}"
+                           f"{pal.reset} · {status_text}")
         self._status_line.set_value(_FOOTER_INDENT + status_text)
         if self._obs_warning:
             self._hint_line.set_value(
                 self._hint_line_text(
-                    f"\x1b[33m{self._obs_warning}\x1b[0m"
+                    f"{palette().yellow}{self._obs_warning}{palette().reset}"
                     f" · ctrl+c abort · ctrl+d exit · / commands"
                 )
             )

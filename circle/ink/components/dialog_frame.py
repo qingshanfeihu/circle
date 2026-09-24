@@ -2,18 +2,21 @@
 
 While busy, one rainbow travels the rounded rectangle. The status text on
 the top edge takes its color from that same sweep, so the word does not run
-a second shimmer.
+a second shimmer. The rainbow is the one place colors bypass ``palette()``
+(its fixed gradient is the design); the quiet frame uses the palette, and
+``CIRCLE_TUI_SHIMMER=0`` keeps the frame quiet while busy.
 """
 
 from __future__ import annotations
 
 import re
 
+from circle.ink import shimmer
 from circle.ink.string_width import char_width, string_width
+from circle.ink.theme import palette
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-_QUIET = "\x1b[2m"
 _RESET = "\x1b[0m"
 
 # Blue → purple → red → orange, then back to blue.
@@ -91,6 +94,20 @@ def _paint(glyphs: list[str], indices: list[int], perimeter: int, elapsed: float
     return "".join(parts)
 
 
+def _quiet_frame(width: int, label: str) -> tuple[str, str, str, str]:
+    pal = palette()
+    plain = _ANSI_RE.sub("", label or "")
+    shown = _truncate_visible(plain, max(0, width - 6)) if plain else ""
+    if shown:
+        rest = "─" * max(0, width - 3 - string_width(shown))
+        top = f"{pal.faint}╭─{pal.reset}{pal.text}{shown}{pal.reset}{pal.faint}{rest}╮{pal.reset}"
+    else:
+        top = f"{pal.faint}╭{'─' * (width - 2)}╮{pal.reset}"
+    bottom = f"{pal.faint}╰{'─' * (width - 2)}╯{pal.reset}"
+    side = f"{pal.faint}│{pal.reset}"
+    return top, side, side, bottom
+
+
 def build_loop_frame(
     width: int,
     *,
@@ -103,12 +120,8 @@ def build_loop_frame(
     the loop and through the label.
     """
     width = max(4, int(width))
-    if elapsed is None:
-        rule = "─" * (width - 2)
-        top = f"{_QUIET}╭{rule}╮{_RESET}"
-        bottom = f"{_QUIET}╰{rule}╯{_RESET}"
-        side = f"{_QUIET}│{_RESET}"
-        return top, side, side, bottom
+    if elapsed is None or not shimmer.enabled():
+        return _quiet_frame(width, "" if elapsed is None else label)
 
     perimeter = 2 * (width + 1)  # height is 3: two rims + one content row
     # Drop any shimmer the caller already painted. This sweep owns the color.

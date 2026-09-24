@@ -12,7 +12,7 @@ OSC 10/11 拿真实前景/背景,其余档位按同一组混合公式从这两�
 (仍占一列保持对齐)。底部 strip、主对话行、详情页流水三层共用 ``status_light()``,
 不得各写各的图标。
 
-**行首字符：六个字形各管一件事（2026-09-05 用户裁决「已定 B」，07 章 §11.23）**——
+**行首字符：五个字形各管一件事（2026-09-05 用户裁决「已定 B」，07 章 §11.23）**——
 此前同一屏能同时出现十三个字形，其中六个各自表示「错」。方案 B 保留有独立含义的
 那几个、把重复表示「错」的收成一个:
 
@@ -23,7 +23,6 @@ OSC 10/11 拿真实前景/背景,其余档位按同一组混合公式从这两�
 ``⏺``        主 agent 说话                回答块行首，占基准列
 ``◆``        引擎里程碑                  派发/落卷/合卷/收口一类一次性事件
 ``▸``        进度                        走秒的行，配转轮 ``⠋⠙⠹…``
-``✶``        页脚工作中                  ``✶ Reflecting…`` 这一行
 ``✖``        错与止                      终帧、启动报错、页脚黏住行;**中止**用暗色
                                          ``✖`` 与失败区分，不是另一个字形
 ===========  ==========================  ==================================
@@ -35,7 +34,8 @@ OSC 10/11 拿真实前景/背景,其余档位按同一组混合公式从这两�
 守门 ``tests/tui/test_glyph_scheme_b.py``）:``❌``（启动器/CLI 的 stderr 报错行改
 ``✖``）、``◌``（页脚「无新事件」，槽位改写真实状态）、``✓``（完成改绘绿 ``●``）、
 ``✗``（并入 ``✖``）、``✉``（后台任务通知卡改 ``◆``）、``[error]``（终帧改 ``✖``）、
-``[interrupted]``（中止改暗色 ``✖`` +「已中止」）、``⚙``。
+``[interrupted]``（中止改暗色 ``✖`` +「已中止」）、``⚙``、``✶``（页脚工作中——
+2026-09-24 终版 P6 起忙碌词迁入对话框上沿，不挂字形）。
 
 用法::
 
@@ -62,6 +62,7 @@ __all__ = [
     "reset_palette",
     "init_palette_from_terminal",
     "query_terminal_colors",
+    "query_terminal_palette",
     "status_light",
     "mix",
     "relative_luminance",
@@ -75,13 +76,16 @@ __all__ = [
     "GLYPH_AGENT",
     "GLYPH_MILESTONE",
     "GLYPH_PROGRESS",
-    "GLYPH_FOOTER_BUSY",
     "GLYPH_ERROR",
     "RETIRED_GLYPHS",
     "LIGHT_GUTTER",
     "BLINK_PERIOD_SEC",
     "LIGHT_STATES",
     "SGR_MUTED_STRIKE",
+    "GLYPH_FOOTER_BUSY",
+    "marker_line",
+    "child_line",
+    "sgr_join",
 ]
 
 
@@ -109,16 +113,58 @@ LIGHT_GLYPH = "●"
 GLYPH_AGENT = "⏺"
 GLYPH_MILESTONE = "◆"
 GLYPH_PROGRESS = "▸"
-GLYPH_FOOTER_BUSY = "✶"
 GLYPH_ERROR = "✖"
+# circle 的页脚仍用 ✶ 标工作中，不随 InfoTest 退役它。
+GLYPH_FOOTER_BUSY = "✶"
 RETIRED_GLYPHS: tuple[str, ...] = ("❌", "◌", "✓", "✗", "✉", "⚙")
 LIGHT_GUTTER = 2
 BLINK_PERIOD_SEC = 1.15
 _BLINK_HALF_SEC = 0.575
 LIGHT_STATES = ("running", "ok", "error", "none")
 
+
+def marker_line(marker: str, text: str) -> str:
+    # 行首标记列契约（2026-09-24 终版）：第 1 列页边距、标记列 1、文字列 3。
+    # 只拥有间距，不拥有配色——marker/text 由调用点预着色后传入。
+    return f" {marker} {text}"
+
+
+def child_line(connector: str, text: str) -> str:
+    # 子行连接符（⎿/↳）列 3、正文列 5：连接符与主 transcript 文字列对齐。
+    # 同样只拥有间距；⎿/↳ 在全转录区只以一级子行身份出现（三级嵌套注记不用连接符）。
+    return f"   {connector} {text}"
+
+
+def sgr_join(*codes: str) -> str:
+    """多条 SGR 合成一条(ink 行内 SGR 不叠加:底色+前景必须合并成一条再写,
+    分两条写只有第一个字符有底、其余露白)。全组件唯一实现,别处不再各抄一份。"""
+    params: list[str] = []
+    for code in codes:
+        if not code or not code.startswith("\x1b[") or not code.endswith("m"):
+            continue
+        body = code[2:-1]
+        if body:
+            params.append(body)
+    return ("\x1b[" + ";".join(params) + "m") if params else ""
+
+
 DEFAULT_DARK: tuple[str, str] = ("#d6dee6", "#10151a")
 DEFAULT_LIGHT: tuple[str, str] = ("#3c4148", "#f7f8fa")
+
+# 动作类型底色槽:读=4 蓝槽、写=2 绿槽、思考=5 洋红槽、agent=14 亮青槽(浅底
+# 主题 4/6 槽同为灰青系不可辨,agent 改 14 槽;选槽依据记录在 07 章 §11.24)。
+_TYPE_TINT_SLOTS: dict[str, tuple[int, float]] = {
+    "read_bg": (4, 0.15),
+    "write_bg": (2, 0.15),
+    "think_bg": (5, 0.15),
+    "agent_bg": (14, 0.15),
+}
+_TYPE_SLOT_FALLBACK_RGB: dict[int, tuple[int, int, int]] = {
+    2: (60, 160, 90),
+    4: (92, 120, 255),
+    5: (175, 95, 175),
+    14: (0, 205, 205),
+}
 
 
 _HEX_RE = re.compile(r"\A#?([0-9a-fA-F]+)\Z")
@@ -220,13 +266,34 @@ class Palette:
     muted_strike: str = SGR_MUTED_STRIKE
     reverse: str = SGR_REVERSE
     reset: str = SGR_RESET
+    # 类型底色:hex 供 TextStyles.background_color,SGR 供行内拼装。
+    read_bg: str = ""
+    write_bg: str = ""
+    think_bg: str = ""
+    agent_bg: str = ""
+    read_bg_hex: str = ""
+    write_bg_hex: str = ""
+    think_bg_hex: str = ""
+    agent_bg_hex: str = ""
 
 
-def build_palette(fg_hex: str, bg_hex: str) -> Palette:
+def build_palette(
+    fg_hex: str,
+    bg_hex: str,
+    slot_rgb: dict[int, tuple[int, int, int]] | None = None,
+) -> Palette:
     fg = normalize_hex(fg_hex)
     bg = normalize_hex(bg_hex)
     dark = is_dark_hex(bg)
     em_target = "#ffffff" if dark else "#000000"
+    slots = slot_rgb or {}
+    tints: dict[str, str] = {}
+    tint_hexes: dict[str, str] = {}
+    for name, (slot, ratio) in _TYPE_TINT_SLOTS.items():
+        rgb = slots.get(slot, _TYPE_SLOT_FALLBACK_RGB[slot])
+        tint_hex = mix(bg, rgb_to_hex(rgb), ratio)
+        tint_hexes[name] = tint_hex
+        tints[name] = bg_sgr(tint_hex)
     return Palette(
         text=fg_sgr(fg),
         dim=fg_sgr(mix(fg, bg, 0.35)),
@@ -239,6 +306,14 @@ def build_palette(fg_hex: str, bg_hex: str) -> Palette:
         fg_hex=fg,
         bg_hex=bg,
         is_dark=dark,
+        read_bg=tints["read_bg"],
+        write_bg=tints["write_bg"],
+        think_bg=tints["think_bg"],
+        agent_bg=tints["agent_bg"],
+        read_bg_hex=tint_hexes["read_bg"],
+        write_bg_hex=tint_hexes["write_bg"],
+        think_bg_hex=tint_hexes["think_bg"],
+        agent_bg_hex=tint_hexes["agent_bg"],
     )
 
 
@@ -272,12 +347,13 @@ def reset_palette() -> None:
 def init_palette_from_terminal(timeout: float = 0.25) -> Palette:
     got = None
     try:
-        got = query_terminal_colors(timeout)
+        got = query_terminal_palette(timeout)
     except Exception:
         got = None
     if got:
         try:
-            p = build_palette(got[0], got[1])
+            fg, bg, slots = got
+            p = build_palette(fg, bg, slots)
             set_palette(p)
             return p
         except Exception:
@@ -308,9 +384,28 @@ def _colorfgbg_is_light(raw: str | None) -> bool:
 
 
 _OSC_REPLY_RE = re.compile(r"\x1b\](1[01]);([^\x07\x1b]*)(?:\x07|\x1b\\)")
+_OSC4_REPLY_RE = re.compile(r"\x1b\]4;(\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)")
+
+#: OSC 4 查询的槽号(动作类型底色用,与 OSC 10/11 同一次 raw 会话发出)。
+_QUERY_SLOTS: tuple[int, ...] = (2, 4, 5, 14)
 
 
 def query_terminal_colors(timeout: float = 0.25) -> tuple[str, str] | None:
+    """兼容旧接口:只取前景/背景。新代码用 query_terminal_palette。"""
+    got = query_terminal_palette(timeout)
+    if got:
+        return got[0], got[1]
+    return None
+
+
+def query_terminal_palette(
+    timeout: float = 0.25,
+) -> tuple[str, str, dict[int, tuple[int, int, int]]] | None:
+    """OSC 10/11 拿前景/背景 + OSC 4 拿类型色槽 RGB。
+
+    时序约束:必须抢在输入线程之前调(唯一入口是 init_palette_from_terminal,
+    在会话界面构造里、渲染循环前);非 tty(pytest/管道/Web)直接返回 None。
+    """
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             return None
@@ -326,15 +421,35 @@ def query_terminal_colors(timeout: float = 0.25) -> tuple[str, str] | None:
         old = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            sys.stdout.write("\x1b]10;?\x07\x1b]11;?\x07")
+            query = "\x1b]10;?\x07\x1b]11;?\x07" + "".join(
+                f"\x1b]4;{s};?\x07" for s in _QUERY_SLOTS)
+            sys.stdout.write(query)
             sys.stdout.flush()
-            buf = _read_replies(fd, select, timeout)
+            # 期望回复数:10/11 各一 + 每个查询槽一。
+            want = 2 + len(_QUERY_SLOTS)
+            buf = _read_replies(fd, select, timeout, want)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-        return _extract_fg_bg(buf)
+        return _extract_palette(buf)
     except Exception:
         return None
+
+
+def _extract_palette(
+    buf: str,
+) -> tuple[str, str, dict[int, tuple[int, int, int]]] | None:
+    pair = _extract_fg_bg(buf)
+    if not pair:
+        return None
+    slots: dict[int, tuple[int, int, int]] = {}
+    for idx, spec in _OSC4_REPLY_RE.findall(buf):
+        slot = int(idx)
+        if slot in _QUERY_SLOTS and slot not in slots:
+            parsed = _parse_color_spec(spec)
+            if parsed:
+                slots[slot] = hex_to_rgb(parsed)
+    return pair[0], pair[1], slots
 
 
 def _extract_fg_bg(buf: str) -> tuple[str, str] | None:
@@ -350,11 +465,16 @@ def _extract_fg_bg(buf: str) -> tuple[str, str] | None:
     return None
 
 
-def _read_replies(fd: int, select_mod, timeout: float) -> str:
+def _read_replies(fd: int, select_mod, timeout: float, want: int = 2) -> str:
     deadline = time.monotonic() + max(0.0, timeout)
     chunks: list[bytes] = []
+    last_recv = 0.0
     while True:
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        # 已有回复后只再等一个静默隙(60ms):追加的 OSC 4 查询对方不答时,
+        # 不再干等到 deadline(不答 OSC 4 的终端每次启动白等整个 timeout)。
+        cap = min(deadline, last_recv + 0.06) if chunks else deadline
+        remaining = cap - now
         if remaining <= 0:
             break
         try:
@@ -370,8 +490,10 @@ def _read_replies(fd: int, select_mod, timeout: float) -> str:
         if not data:
             break
         chunks.append(data)
+        last_recv = time.monotonic()
         text = b"".join(chunks).decode("utf-8", "replace")
-        if len(_OSC_REPLY_RE.findall(text)) >= 2:
+        got = len(_OSC_REPLY_RE.findall(text)) + len(_OSC4_REPLY_RE.findall(text))
+        if got >= want:
             return text
     return b"".join(chunks).decode("utf-8", "replace")
 

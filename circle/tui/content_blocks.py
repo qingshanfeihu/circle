@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from circle.ink.theme import GLYPH_AGENT, palette
+from circle.ink.theme import GLYPH_AGENT, palette, sgr_join
 
 
 @dataclass
@@ -123,9 +123,9 @@ def render_thinking_line(*, body: str, done: bool, expanded: bool = False) -> st
         header = "∴ Thought"
     else:
         header = "∴ Thinking"
-    header_sgr = f"{pal.reason}\x1b[3m" if hasattr(pal, "reason") else "\x1b[2m\x1b[3m"
-    reset = getattr(pal, "reset", "\x1b[0m")
-    faint = getattr(pal, "faint", "\x1b[2m")
+    header_sgr = sgr_join(pal.reason, "\x1b[3m")
+    reset = pal.reset
+    faint = pal.faint
     line = f" {header_sgr}{header}{reset}"
     if expanded and body:
         rendered_body = indent_continuations(body, "   ")
