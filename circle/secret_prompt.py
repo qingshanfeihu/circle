@@ -93,6 +93,7 @@ def create_request(
     question: str,
     key: str,
     target_file: str,
+    mask: bool = True,
 ) -> dict[str, Any]:
     """工具侧：创建待答请求。key 是写入目标文件时使用的 ENV 键名。"""
     key = (key or "").strip()
@@ -112,6 +113,7 @@ def create_request(
         "question": question.strip()[:200],
         "key": key,
         "target_file": target_file,
+        "mask": bool(mask),
     }
     path = _request_path(home, rid)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -208,10 +210,20 @@ def apply_to_target(request: Mapping[str, Any], value: str) -> Path:
         target_dir.mkdir(parents=True)
         os.chmod(target_dir, 0o700)
     key = str(request["key"])
-    with target.open("a", encoding="utf-8") as fh:
-        fh.write(f"{key}={value}\n")
-        fh.flush()
-        os.fsync(fh.fileno())
+    existing: list[str] = []
+    if target.is_file():
+        existing = target.read_text(encoding="utf-8").splitlines()
+    kept = [
+        line for line in existing
+        if not line.strip()
+        or line.strip().startswith("#")
+        or line.strip().partition("=")[0].strip() != key
+    ]
+    kept.append(f"{key}={value}")
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, target)
     os.chmod(target, 0o600)
     return target
 

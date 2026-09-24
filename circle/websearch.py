@@ -15,12 +15,14 @@ from pydantic import BaseModel, Field
 from circle.system_prompt import load_tool_prompt
 
 _USER_AGENT = "Circle/0.1 (+local coding agent)"
-_RESULT_RE = re.compile(
-    r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+# html.duckduckgo.com uses class="result__a" and https hrefs.
+# lite.duckduckgo.com uses class='result-link' and protocol-relative //duckduckgo.com/l/?uddg=
+_LINK_RE = re.compile(
+    r"""<a\b[^>]*\bhref=(["'])([^"']+)\1[^>]*>(.*?)</a>""",
     re.I | re.S,
 )
 _SNIPPET_RE = re.compile(
-    r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|td|div)>',
+    r"""class=(["'])[^"']*result(?:__snippet|-snippet)[^"']*\1[^>]*>(.*?)</(?:a|td|div|tr)>""",
     re.I | re.S,
 )
 
@@ -34,6 +36,43 @@ def _strip_tags(text: str) -> str:
     text = re.sub(r"(?is)<[^>]+>", " ", text)
     text = html_lib.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_href(href: str) -> str:
+    href = html_lib.unescape(href.strip())
+    if href.startswith("//"):
+        href = "https:" + href
+    if "uddg=" in href:
+        parsed = urllib.parse.urlparse(href)
+        qs = urllib.parse.parse_qs(parsed.query)
+        href = urllib.parse.unquote(qs.get("uddg", [href])[0])
+    return href
+
+
+def _parse_search_html(raw: str, *, query: str, num_results: int, year: int) -> str:
+    """Turn a DuckDuckGo HTML or lite page into a short result list."""
+    links: list[tuple[str, str]] = []
+    for _quote, href, title in _LINK_RE.findall(raw):
+        if "uddg=" not in href and "result" not in href and not href.startswith("http"):
+            continue
+        if "uddg=" not in href and "duckduckgo.com" in href:
+            continue
+        url = _normalize_href(href)
+        if not url.startswith("http"):
+            continue
+        title_plain = _strip_tags(title) or url
+        links.append((url, title_plain))
+    snippets = [_strip_tags(s) for _q, s in _SNIPPET_RE.findall(raw)]
+    if not links:
+        return f"No results for {query!r} (year hint: {year})."
+    lines = [f"Web search results for {query!r} (as of {year}):", ""]
+    for i, (href, title_plain) in enumerate(links[:num_results], 1):
+        lines.append(f"{i}. {title_plain}")
+        lines.append(f"   {href}")
+        if i - 1 < len(snippets) and snippets[i - 1]:
+            lines.append(f"   {snippets[i - 1]}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def web_search(query: str, *, num_results: int = 5) -> str:
@@ -70,31 +109,7 @@ def web_search(query: str, *, num_results: int = 5) -> str:
     if not raw:
         return f"Error: search failed: {last_err or 'empty body'}"
 
-    links = _RESULT_RE.findall(raw)
-    if not links:
-        # lite layout: <a rel="nofollow" href="https://...">title</a>
-        links = re.findall(
-            r'<a[^>]+rel="nofollow"[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>',
-            raw,
-            flags=re.I | re.S,
-        )
-    snippets = [_strip_tags(s) for s in _SNIPPET_RE.findall(raw)]
-    if not links:
-        return f"No results for {q!r} (year hint: {year})."
-    lines = [f"Web search results for {q!r} (as of {year}):", ""]
-    for i, (href, title) in enumerate(links[:n], 1):
-        title_plain = _strip_tags(title) or href
-        if "uddg=" in href:
-            parsed = urllib.parse.urlparse(href)
-            qs = urllib.parse.parse_qs(parsed.query)
-            href = qs.get("uddg", [href])[0]
-        snip = snippets[i - 1] if i - 1 < len(snippets) else ""
-        lines.append(f"{i}. {title_plain}")
-        lines.append(f"   {href}")
-        if snip:
-            lines.append(f"   {snip}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    return _parse_search_html(raw, query=q, num_results=n, year=year)
 
 
 def build_websearch_tool() -> StructuredTool:

@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 
 from circle.context_middleware import build_context_middleware
+from circle.host_paths import install_tilde_expansion
 from circle.mcp_loader import load_mcp_tools_sync
 from circle.memory_sources import memory_source_paths
 from circle.plan_backend import PlanGuardedBackend
@@ -75,6 +76,7 @@ def sandbox_backend(
     plan_mode: bool = False,
 ) -> PlanGuardedBackend:
     """Local sandbox: workspace-virtual paths under root; host abs paths pass through."""
+    install_tilde_expansion()
     return PlanGuardedBackend(
         root_dir=root_dir,
         virtual_mode=True,

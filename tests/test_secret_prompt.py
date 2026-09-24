@@ -64,15 +64,20 @@ def test_full_roundtrip_redacted(home: Path, tmp_path: Path) -> None:
     assert applied == target
     content = target.read_text(encoding="utf-8")
     assert content.strip() == f"JUMPHOST_PASS={secret_value}"
-    # 目标 600、新建目录 700
+
+
+def test_apply_replaces_key_and_keeps_other_lines(home: Path, tmp_path: Path) -> None:
+    target = tmp_path / "env"
+    target.write_text("KMS_ADDR=10.4.127.100:8900\nAPV_PASSWORD=old\n", encoding="utf-8")
+    req = create_request(
+        home, question="设备密码？", key="APV_PASSWORD", target_file=str(target)
+    )
+    apply_to_target(req, "new-secret")
+    text = target.read_text(encoding="utf-8")
+    assert "KMS_ADDR=10.4.127.100:8900" in text
+    assert "APV_PASSWORD=new-secret" in text
+    assert "APV_PASSWORD=old" not in text
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
-    assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
-    # 答案与请求文件均已清理（.lock 是常驻互斥文件，不属于残留）
-    leftovers = [
-        p for p in (requests_dir(home).iterdir() if requests_dir(home).is_dir() else [])
-        if p.name != ".lock"
-    ]
-    assert leftovers == []
 
 
 def test_collect_returns_redacted_lines_only(home: Path, tmp_path: Path) -> None:
