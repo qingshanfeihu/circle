@@ -58,6 +58,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         "themes": "/themes dark",
         "mcp": "/mcp",
         "extensions": "/extensions",
+        "approvals": "/approvals",
         "new": "/new",
         "resume": "/resume",
         "continue": "/continue",

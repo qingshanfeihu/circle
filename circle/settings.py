@@ -44,6 +44,8 @@ class CircleSettings:
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
     # 扩展开关：{name: {"enabled": bool}}；没写的扩展默认启用（circle/extensions.py）
     extensions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # shell 命令点名这些文件（basename 通配）即拒绝执行；为空时用 circle.approvals 的默认表
+    credential_files: list[str] = field(default_factory=list)
 
     def is_ready(self) -> bool:
         if not self.initialized:
@@ -82,6 +84,9 @@ def load_settings(home: Path | None = None) -> CircleSettings:
     extensions: dict[str, dict[str, Any]] = {
         str(name): dict(cfg) for name, cfg in ext_raw.items() if isinstance(cfg, dict)
     } if isinstance(ext_raw, dict) else {}
+    cred_raw = raw.get("credential_files") or []
+    credential_files = [str(p) for p in cred_raw if str(p).strip()] if isinstance(
+        cred_raw, list) else []
     return CircleSettings(
         version=int(raw.get("version") or SETTINGS_VERSION),
         initialized=bool(raw.get("initialized")),
@@ -90,6 +95,7 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         theme=str(raw.get("theme") or "terminal"),
         mcp_servers=mcp_servers,
         extensions=extensions,
+        credential_files=credential_files,
     )
 
 

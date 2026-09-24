@@ -104,6 +104,29 @@ def register(api):
 `/extensions` 查看状态，`/extensions reload` 重新加载；`~/.circle/settings.json` 里
 `"extensions": {"<name>": {"enabled": false}}` 关闭某个扩展。
 
+## 审批
+
+`execute`、`write_file`、`edit_file`、`apply_patch`、`delete` 和非只读的扩展工具先经审批。每次调用按内容分三类：
+
+| 判定 | 哪些调用 | 行为 |
+|------|----------|------|
+| 拒绝 | `sudo`/`su`/`doas`/`pkexec`；点名凭据文件的命令（默认 `.env*`、`*.pem`、`id_rsa`、`credentials.json`、`token.json` 等） | 不弹审批、不执行，模型收到拒绝原因；由 sandbox 后端在执行前拦截，子代理同样生效 |
+| 每次都问 | 删除（`rm`、`find -delete`、`delete` 工具、删文件的补丁）、破坏性 git（`reset --hard`、`clean -f`、强推、`branch -D`、丢弃改动）、`dd`/`mkfs`/`truncate`、无法解析的命令 | 审批面板没有「始终允许」 |
+| 询问 | 其余 | 可选「始终允许」：命令按原文精确匹配；文件改动只覆盖工作区内的路径；扩展工具覆盖该工具的全部调用 |
+
+「始终允许」按会话线程记在 `~/.circle/approvals/`（命令只存哈希），重启或 `/resume` 后仍然有效；
+`/approvals` 列出本会话的规则，`/approvals revoke <序号>` 撤销。凭据文件表可在 `settings.json` 用
+`"credential_files": ["*.secret", ".env*"]` 替换（按文件名通配）。命令分类只读命令文本，能覆盖常见写法，
+挡不住有意的变形。
+
+## 运行守卫
+
+- 工具抛出异常时，模型收到一条脱敏后的错误结果，回合继续。
+- 工具名大小写、参数键拼写、JSON 字符串字段会先修正再执行；参数仍不合 schema 时不执行，告诉模型哪些字段错。
+- 模型重复同一调用、连续拿到空结果或来回重读同一文件时，会收到换思路的提醒（`CIRCLE_LOOP_GUARD=0` 关闭；
+  阈值 `CIRCLE_LOOP_DUP_THRESHOLD` / `CIRCLE_LOOP_EMPTY_THRESHOLD` / `CIRCLE_LOOP_WINDOW` / `CIRCLE_LOOP_SOFT_BUDGET`）。
+- 长会话里较早的大段工具输出只保留开头（`CIRCLE_PRUNE_TOOL_OUTPUTS=0` 关闭，`CIRCLE_PRUNE_PROTECT_TOKENS` 调保护窗口）。
+
 ## Dev
 
 ```bash

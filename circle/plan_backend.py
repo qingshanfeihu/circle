@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from deepagents.backends.protocol import ExecuteResponse
 
@@ -21,6 +21,8 @@ class PlanGuardedBackend(CircleSandboxBackend):
     def __init__(self, *args: Any, plan_mode: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.plan_mode = plan_mode
+        # command -> refusal text ("" = allowed); set by the harness from circle.approvals
+        self.command_guard: Callable[[str], str] | None = None
 
     def set_plan_mode(self, enabled: bool) -> None:
         self.plan_mode = enabled
@@ -70,4 +72,7 @@ class PlanGuardedBackend(CircleSandboxBackend):
                 ),
                 exit_code=1,
             )
+        refusal = self.command_guard(command) if self.command_guard else ""
+        if refusal:
+            return ExecuteResponse(output=refusal, exit_code=126)
         return super().execute(command, timeout=timeout)

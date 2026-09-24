@@ -54,10 +54,9 @@ class ExecApprovalSession:
         lines: list[str] = []
         lines.append(f" {Y}△{R} {B}{self._header_title()}{R}")
         if self._stage == _STAGE_ALWAYS:
-            tool = str(self._payload.get("tool") or "tool")
-            lines.append(
-                f"   {D}This will allow {tool} until Circle is restarted.{R}"
-            )
+            scope = str(self._payload.get("scope") or self._payload.get("tool") or "this call")
+            lines.append(f"   {D}Allows {scope} for the rest of this session.{R}")
+            lines.append(f"   {D}Undo with /approvals revoke.{R}")
         else:
             icon = str(self._payload.get("icon") or GLYPH_MILESTONE)
             title = str(self._payload.get("title") or self._payload.get("tool") or "")
@@ -66,7 +65,7 @@ class ExecApprovalSession:
             for ln in body.splitlines() or [""]:
                 lines.append(f"   {ln}")
             if self._payload.get("warn_delete"):
-                lines.append(f"   {Y} This command deletes files. {R}")
+                lines.append(f"   {Y} This deletes or overwrites data. {R}")
             policy = str(self._payload.get("policy") or "")
             if policy:
                 lines.append(f"   {D}{policy}{R}")

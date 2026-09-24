@@ -16,8 +16,9 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from circle.approvals import REJECTED_BY_USER, default_policy
 from circle.checkpoint_store import (
     copy_thread_if_possible,
     make_checkpointer,
@@ -215,6 +216,11 @@ class CircleSessionApp:
         self._main_thinking_lines: list[dict[str, Any]] = []
         self._call_started_at = 0.0
         self._exec_approval: ExecApprovalSession | None = None
+        # 一次中断里的多个待审批调用逐个问，答案按顺序攒齐后一起 resume
+        self._approval_queue: list[dict[str, Any]] = []
+        self._approval_decisions: list[dict[str, Any]] = []
+        # 非审批形态的中断按 payload["kind"] 分派（C2 的问答面板挂在这里）
+        self._interrupt_handlers: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._ask_saved_prompt = ""
         self._last_ctrl_c = 0.0
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
@@ -243,6 +249,7 @@ class CircleSessionApp:
         self._secret_hint_shown = False
         self._secret_last_check = 0.0
 
+        self._approvals = default_policy(self.home, settings.credential_files or None)
         model = build_chat_model(
             settings, home=self.home, model_override=model_override
         )
@@ -259,6 +266,7 @@ class CircleSessionApp:
             plan_mode=self._plan_mode,
             mcp_servers=settings.mcp_servers,
             extensions=self._extensions,
+            approvals=self._approvals,
         )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
@@ -284,6 +292,7 @@ class CircleSessionApp:
             plan_mode=self._plan_mode,
             mcp_servers=self.settings.mcp_servers,
             extensions=self._extensions,
+            approvals=self._approvals,
         )
         self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
@@ -1025,6 +1034,7 @@ class CircleSessionApp:
             return
         _busy_ok = {
             "yolo",
+            "approvals",  # 看/撤规则不碰在跑的回合；撤销从下一次调用起生效
             "settings",
             "session",
             "themes",
@@ -1081,6 +1091,7 @@ class CircleSessionApp:
             "reload": self._cmd_reload,
             "yolo": self._cmd_yolo,
             "extensions": self._cmd_extensions,
+            "approvals": self._cmd_approvals,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -1621,6 +1632,36 @@ class CircleSessionApp:
             self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
         self._app.render()
 
+    def _cmd_approvals(self, args: str) -> None:
+        """/approvals — 本会话的「始终允许」规则；/approvals revoke <序号> 撤销一条。"""
+        parts = (args or "").split()
+        store = self._approvals.store
+        if parts[:1] == ["revoke"]:
+            if len(parts) != 2 or not parts[1].isdigit():
+                self._toast("用法: /approvals revoke <序号>")
+                return
+            rule = store.revoke(self._thread_id, int(parts[1]) - 1)
+            if rule is None:
+                self._toast(f"没有第 {parts[1]} 条规则")
+                return
+            self._toast(f"已撤销：{rule.get('tool')} · {rule.get('label')}")
+        rules = store.rules(self._thread_id)
+        lines = ["本会话的「始终允许」规则：" if rules else "本会话没有「始终允许」规则。"]
+        for i, rule in enumerate(rules, 1):
+            lines.append(f"  {i}. {rule.get('tool')} · {rule.get('label') or rule.get('pattern')}")
+        recent = store.log(self._thread_id)[-5:]
+        if recent:
+            names = {"once": "允许一次", "always": "始终允许", "reject": "拒绝", "revoke": "撤销"}
+            lines.append("最近的审批：")
+            for entry in recent:
+                lines.append(f"  {names.get(str(entry.get('kind')), entry.get('kind'))} · "
+                             f"{entry.get('tool')}")
+        if rules:
+            lines.append("撤销：/approvals revoke <序号>")
+        for line in lines:
+            self._transcript.append_message(f" \x1b[2m{line}\x1b[0m")
+        self._app.render()
+
     def _cmd_extensions(self, args: str) -> None:
         """/extensions — 列出扩展；/extensions reload 重新加载并重建 agent。"""
         if (args or "").strip().lower() in {"reload", "refresh"}:
@@ -2140,86 +2181,86 @@ class CircleSessionApp:
             self._drain_message_queue()
 
     def _on_interrupt(self, interrupts: Any) -> None:
-        # yolo 模式：直接批准，不弹审批面板
-        if getattr(self._bridge, "auto_approve", False):
-            import time as _time
-            first = (interrupts[0] if isinstance(interrupts, (list, tuple)) and interrupts
-                     else interrupts)
-            value = getattr(first, "value", first)
-            # 统计所有待审批的 tool calls（可能有多个）
-            reqs = []
-            if isinstance(value, dict):
-                reqs = value.get("action_requests") or [value]
-            elif isinstance(value, list):
-                reqs = value
-            else:
-                reqs = [value]
-            # 每个 tool call 都要有一个 decision
-            decisions = [{"type": "approve"} for _ in reqs]
-            with self._app.lock:
-                self._fill_tool_lines(reqs)
-            # 如果数量不匹配，用 bridge 的原始 resume（不走 slash 路径）
-            try:
-                from langgraph.types import Command as _Cmd
-                self._bridge._cancelled = False
-                self._bridge._spawn(_Cmd(resume={"decisions": decisions}))
-            except Exception:
-                # fallback：bridge.resume 会把决定扇出到全部挂起调用
-                self._bridge.resume({"decision": "approve"})
+        first = (interrupts[0] if isinstance(interrupts, (list, tuple)) and interrupts
+                 else interrupts)
+        value = getattr(first, "value", first)
+        if isinstance(value, dict) and value.get("action_requests"):
+            self._begin_approvals([r for r in value["action_requests"] if isinstance(r, dict)])
             return
+        kind = str(value.get("kind") or "") if isinstance(value, dict) else ""
+        handler = self._interrupt_handlers.get(kind)
+        if handler is not None:
+            handler(value)
+            return
+        # 不认识的中断形态：不能替用户作答，如实说明、停在这里
         with self._app.lock:
-            first = (
-                interrupts[0]
-                if isinstance(interrupts, (list, tuple)) and interrupts
-                else interrupts
-            )
-            value = getattr(first, "value", first)
-            action_requests = []
-            if isinstance(value, dict):
-                action_requests = value.get("action_requests") or []
-            if not action_requests and isinstance(value, dict):
-                action_requests = [value]
-            req = (
-                action_requests[0]
-                if action_requests
-                else {"name": "tool", "args": {}, "description": str(value)}
-            )
-            name = str(req.get("name") or req.get("tool") or "tool")
-            args = req.get("args") or {}
-            self._fill_tool_lines(action_requests or [req])
-            desc = str(req.get("description") or "")
-            # Plan mode: auto-reject mutating tools (backend also hard-blocks).
-            if self._plan_mode and name in {
-                "execute",
-                "write_file",
-                "edit_file",
-                "apply_patch",
-            }:
-                path = str(args.get("file_path") or args.get("path") or "")
-                if name != "write_file" or Path(path).name.lower() not in {"plan.md", "plan"}:
-                    self._toast(f"plan mode 自动拒绝 {name}")
-                    self._enter_busy()
-                    self._bridge.resume({"decision": "reject"})
-                    return
-            body = desc or "\n".join(
-                f"{k}={v!r}" for k, v in list(args.items())[:8]
-            )
-            if len(action_requests) > 1:
-                body += (
-                    f"\n（另有 {len(action_requests) - 1} 个待审批工具调用，"
-                    "本次决定将一并应用）"
-                )
-            self._begin_exec_approval(
-                {
+            self._transcript.append_message(
+                f" \x1b[33m△ 收到无法处理的中断（{kind or type(value).__name__}），本回合已暂停。\x1b[0m")
+            self._leave_busy()
+            self._app.render()
+
+    def _begin_approvals(self, requests: list[dict[str, Any]]) -> None:
+        with self._app.lock:
+            self._fill_tool_lines(requests)
+        if getattr(self._bridge, "auto_approve", False):  # /yolo：全部放行，不弹面板
+            self._resume_with({"decisions": [{"type": "approve"} for _ in requests]})
+            return
+        self._approval_queue = list(requests)
+        self._approval_decisions = []
+        self._next_approval()
+
+    def _record_approval(self, key: str) -> None:
+        req = self._approval_queue.pop(0)
+        name = str(req.get("name") or "tool")
+        approved = self._approvals.remember(self._thread_id, name, req.get("args") or {}, key)
+        self._approval_decisions.append(
+            {"type": "approve"} if approved
+            else {"type": "reject", "message": REJECTED_BY_USER})
+
+    def _next_approval(self) -> None:
+        with self._app.lock:
+            while self._approval_queue:
+                req = self._approval_queue[0]
+                name = str(req.get("name") or "tool")
+                args = req.get("args") or {}
+                if self._plan_mode and name in _PLAN_BLOCKED_TOOLS:
+                    path = str(args.get("file_path") or args.get("path") or "")
+                    if name != "write_file" or Path(path).name.lower() not in {"plan.md", "plan"}:
+                        self._toast(f"plan mode 自动拒绝 {name}")
+                        self._record_approval("reject")
+                        continue
+                review = self._approvals.review(name, args)
+                pending = len(self._approval_queue) - 1
+                body = _approval_body(name, args)
+                if pending:
+                    body += f"\n（之后还有 {pending} 个待审批调用）"
+                self._begin_exec_approval({
                     "tool": name,
                     "title": name,
                     "body": body,
-                    "allow_always": True,
-                }
-            )
+                    "policy": review.reason,
+                    "allow_always": review.allow_always,
+                    "warn_delete": review.warn_delete,
+                    "scope": review.scope,
+                })
+                return
+        decisions, self._approval_decisions = self._approval_decisions, []
+        self._resume_with({"decisions": decisions})
+
+    def _resume_with(self, value: Any) -> None:
+        with self._app.lock:
+            if self._ask_saved_prompt:
+                self._prompt.set_value(self._ask_saved_prompt)
+            self._ask_saved_prompt = ""
+            self._enter_busy()
+            self._stream_idx = -1
+            self._stream_buf = ""
+            self._app.render()
+        self._bridge.resume(value)
 
     def _begin_exec_approval(self, payload: dict) -> None:
-        self._ask_saved_prompt = self._prompt.value
+        if not self._ask_saved_prompt:
+            self._ask_saved_prompt = self._prompt.value
         self._prompt.clear()
         self._exec_approval = ExecApprovalSession(
             payload,
@@ -2239,14 +2280,25 @@ class CircleSessionApp:
     def _finish_exec_approval(self, decision: dict) -> None:
         self._exec_approval = None
         self._ask_panel.clear()
-        if self._ask_saved_prompt:
-            self._prompt.set_value(self._ask_saved_prompt)
-        self._ask_saved_prompt = ""
-        self._enter_busy()
-        self._stream_idx = -1
-        self._stream_buf = ""
-        self._app.render()
-        self._bridge.resume(decision)
+        if self._approval_queue:
+            self._record_approval(str(decision.get("decision") or "reject"))
+        self._next_approval()
+
+
+_PLAN_BLOCKED_TOOLS = frozenset({"execute", "write_file", "edit_file", "apply_patch", "delete"})
+
+
+def _approval_body(name: str, args: dict[str, Any]) -> str:
+    """审批面板正文：命令、目标路径或补丁开头；其余工具列参数。"""
+    if name == "execute":
+        return "$ " + str(args.get("command") or "")
+    if name == "apply_patch":
+        lines = str(args.get("patchText") or "").splitlines()
+        head = [ln for ln in lines if ln.startswith("*** ") and "Patch" not in ln]
+        return "\n".join(head[:12] or lines[:12])
+    if name in {"write_file", "edit_file", "delete"}:
+        return str(args.get("file_path") or args.get("path") or "")
+    return "\n".join(f"{k}={v!r}"[:200] for k, v in list(args.items())[:8])
 
 
 def run_circle_session(

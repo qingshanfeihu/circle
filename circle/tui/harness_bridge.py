@@ -113,10 +113,15 @@ class HarnessBridge:
         payload: Any = {"messages": [{"role": "user", "content": user_text}]}
         self._spawn(payload)
 
-    def resume(self, decision: dict[str, Any]) -> None:
+    def resume(self, decision: Any) -> None:
+        """``{"decision": …}`` 扇出到本次中断的全部挂起调用；其他值原样作为 resume 值。"""
         if self.is_running:
             return
         self._cancelled = False
+        if not (isinstance(decision, dict) and set(decision) == {"decision"}):
+            self._pending_action_count = 1
+            self._spawn(Command(resume=decision))
+            return
         key = str(decision.get("decision") or "reject")
         if key in {"reject", "always_cancel"}:
             one = {"type": "reject", "message": "user rejected"}

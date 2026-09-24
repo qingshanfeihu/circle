@@ -21,6 +21,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 
+from circle.approvals import ApprovalPolicy, default_policy
 from circle.context_middleware import build_context_middleware
 from circle.host_paths import install_tilde_expansion
 from circle.mcp_loader import load_mcp_tools_sync
@@ -48,12 +49,8 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = build_system_prompt()
 
-_INTERRUPT_ON = {
-    "execute": True,
-    "write_file": True,
-    "edit_file": True,
-    "apply_patch": True,
-}
+# 需要审批的内置工具；是否真的弹审批由 circle.approvals 的策略按调用判定
+GATED_TOOLS = ("execute", "write_file", "edit_file", "apply_patch", "delete")
 
 # explore 子代理只拿只读工具：文件系统只留读类，额外工具只留不改状态的
 EXPLORE_FS_TOOLS = ["ls", "read_file", "glob", "grep"]
@@ -123,6 +120,7 @@ def create_harness(
     extra_tools: list[BaseTool] | None = None,
     store: Any = None,
     extensions: ExtensionHost | None = None,
+    approvals: ApprovalPolicy | None = None,
 ):
     """Build harness with file/shell tools, explore subagent, and prompt-backed extras.
 
@@ -164,6 +162,10 @@ def create_harness(
     else:
         mcp_tools = []
     backend = sandbox_backend(root_dir, plan_mode=plan_mode)
+    policy = approvals or default_policy(home)
+    # 禁止类命令在后端拒绝执行：主代理与子代理共用这个后端，一处拦住全部
+    backend.command_guard = policy.deny_message
+    policy.bind_workspace(backend._resolve_path, backend.cwd)  # noqa: SLF001
     explore = {
         **explore,
         "tools": [t for t in tools if getattr(t, "name", None) in EXPLORE_EXTRA_TOOLS],
@@ -172,7 +174,7 @@ def create_harness(
         # 只读子代理不需要审批；不写这一项它会继承主代理的审批表
         "interrupt_on": {},
     }
-    interrupt_on = dict(_INTERRUPT_ON)
+    gated: list[str] = list(GATED_TOOLS)
     subagents: list[dict[str, Any]] = [explore]
     extension_middleware: list[Any] = []
     if extensions is not None:
@@ -184,12 +186,13 @@ def create_harness(
                 continue
             taken.add(tool.name)
             tools.append(tool)
-        interrupt_on.update({name: True for name in extensions.interrupt_on() if name in taken})
+        gated.extend(name for name in extensions.interrupt_on() if name in taken)
         subagents.extend(extensions.subagents(tools))
         extension_middleware = extensions.middleware()
 
     # 通用中间件在最前：错误边界包住其后所有工具层（含扩展的 tool_boundary），
     # 兼容层在执行前修形态；工具表要等 deepagents 组装完才齐，建完再 bind
+    interrupt_on = policy.interrupt_on(gated)
     compat = ToolCallCompatibilityMiddleware(gated=interrupt_on)
     extra_mw: list[Any] = [
         ToolErrorBoundaryMiddleware(),
@@ -230,6 +233,7 @@ def create_harness(
         logger.debug("tool table unavailable for tool-call repair", exc_info=True)
     try:
         agent._circle_backend = backend  # type: ignore[attr-defined]  # noqa: SLF001
+        agent._circle_approvals = policy  # type: ignore[attr-defined]  # noqa: SLF001
         agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]  # noqa: SLF001
     except Exception:  # noqa: BLE001
         pass

@@ -88,8 +88,8 @@ def test_skill_colon_form():
     assert p is not None
     assert p.name == "skill"
     assert p.args == "pack do-it"
-    # InfoTest-only stay out
-    for banned in ("approvals", "kms", "footprint", "engine-debt"):
+    # InfoTest-only stay out（/approvals 随 C3 审批策略进了 circle，不再在此列）
+    for banned in ("kms", "footprint", "engine-debt"):
         assert banned not in ALIAS_TO_CANONICAL
 
 
