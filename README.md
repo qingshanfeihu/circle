@@ -127,6 +127,22 @@ def register(api):
   阈值 `CIRCLE_LOOP_DUP_THRESHOLD` / `CIRCLE_LOOP_EMPTY_THRESHOLD` / `CIRCLE_LOOP_WINDOW` / `CIRCLE_LOOP_SOFT_BUDGET`）。
 - 长会话里较早的大段工具输出只保留开头（`CIRCLE_PRUNE_TOOL_OUTPUTS=0` 关闭，`CIRCLE_PRUNE_PROTECT_TOKENS` 调保护窗口）。
 
+模型请求（`circle/model_guard.py`）：
+
+- 失败按类型分别重试：限流（429）、服务端错误（408/409/5xx）、网络中断、流内报错，各有次数与总时长上限；
+  端点给了 `Retry-After` 就按它等。欠费（402、`insufficient_quota`）不重试。已经输出过内容的请求不重试，
+  避免同一段文字出现两次。等待时会话里会提示。
+- 端点以 400/422 拒收某个参数（effort、thinking、betas、stream_options 等）时，去掉它重发，本会话之后都不再发送。
+- 流只剩保活、`CIRCLE_LLM_STALL_TIMEOUT` 秒（默认 180）没有内容时断开；还没产出内容就重发一次。
+- 输出陷入复读：还没给出正文或工具调用时，附一条提醒重发（最多两次）；已经有正文就在此处结束。
+  `CIRCLE_LLM_REPEAT_GUARD=0` 关闭。
+- 流结束却没有 finish_reason：没内容就重发一次；有内容则保留，并记日志说明可能被截断。
+
+思考深度 `CIRCLE_REASONING_EFFORT`（Anthropic 协议缺省 `xhigh`）按模型族落地：
+声明了档位的模型取不超过所请求的最高档；老一代 Claude 改发思考预算；
+模型目录里还没有的 Claude 型号按新一代处理，发自适应思考加 effort。
+OpenAI 协议只有显式设置了才发送。Circle 不会关闭思考。
+
 ## Dev
 
 ```bash

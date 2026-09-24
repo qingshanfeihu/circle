@@ -51,6 +51,7 @@ from circle.ink.dom import NodeType, create_element, create_text
 from circle.ink.parse_keypress import InputEvent, KeyPress, MouseEvent, PasteEvent
 from circle.ink.theme import GLYPH_AGENT, init_palette_from_terminal, palette
 from circle.model import build_chat_model, reasoning_effort_of
+from circle.model_guard import add_retry_listener
 from circle.pricing import context_window_for
 from circle.tui.harness_bridge import format_tool_args
 from circle.paths import circle_home, ensure_home, normalize_workspace
@@ -334,6 +335,7 @@ class CircleSessionApp:
 
     def run(self) -> int:
         self._app.start()
+        remove_listener = add_retry_listener(self._on_model_retry)
         try:
             self._show_welcome()
             while self._app._running:  # noqa: SLF001
@@ -346,9 +348,24 @@ class CircleSessionApp:
                 self._footer.shutdown()
             except Exception:  # noqa: BLE001
                 pass
+            remove_listener()
             self._bridge.cancel()
             self._app.stop()
         return 0
+
+    def _on_model_retry(self, event: dict[str, Any]) -> None:
+        """模型层重试与参数降级如实上屏：用户能看到在等什么、丢了什么。"""
+        kinds = {"rate_limit": "端点限流", "server": "端点出错", "network": "网络中断",
+                 "inband": "流内出错"}
+        if event.get("event") == "retry":
+            msg = (f"{kinds.get(str(event.get('kind')), '请求失败')}，{event.get('wait_s')}s 后重试"
+                   f"（{event.get('attempt')}/{event.get('max')}）")
+        elif event.get("event") == "param_dropped":
+            msg = f"端点不接受参数 {event.get('param')}，本会话起不再发送"
+        else:
+            return
+        with self._app.lock:
+            self._toast(msg)
 
     def _show_welcome(self) -> None:
         p = palette()
