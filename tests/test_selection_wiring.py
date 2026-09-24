@@ -100,6 +100,10 @@ def _make_app():
     obj._is_loading = False
     obj._exec_approval = None
     obj._secret_entry = None
+    obj._detail_active = False
+    obj._strip_selecting = False
+    obj._strip_ids = []
+    obj._strip_visible_ids = []
     return obj
 
 
@@ -311,6 +315,7 @@ def _make_scroll_app(*, scroll_top: int = 10, rect_height: int = 5, content_rows
     obj = CircleSessionApp.__new__(CircleSessionApp)
     obj._app = _ScrollApp(screen)
     obj._transcript = _FakeTranscript(scroll_top, 0, rect_height, content_rows)
+    obj._detail_active = False
     return obj
 
 

@@ -85,11 +85,22 @@ class Transcript:
                 self._scroll_to_bottom()
 
     def replace_range(self, start_idx: int, count: int, new_lines: list[str]) -> None:
+        """Swap only the nodes in the range; the rest of the transcript stays as is."""
+        children = self._node.children
+        in_sync = len(children) == len(self._messages)
         self._messages[start_idx:start_idx + count] = new_lines
-        
-        self._node.clear_children()
-        for msg in self._messages:
-            self._node.append_child(create_text(msg))
+        if not in_sync:
+            self._node.clear_children()
+            for msg in self._messages:
+                self._node.append_child(create_text(msg))
+        else:
+            for child in children[start_idx:start_idx + count]:
+                child.parent = None
+            nodes = [create_text(msg) for msg in new_lines]
+            for node in nodes:
+                node.parent = self._node
+            children[start_idx:start_idx + count] = nodes
+            self._node.mark_dirty()
         if self._node.sticky_scroll:
             self._scroll_to_bottom()
 

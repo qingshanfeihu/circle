@@ -223,9 +223,11 @@ class ProgressHandler(BaseCallbackHandler):
         self._run_names: dict[str, str] = {}
         self._pricing_models: dict[str, str] = {}
         self._settled_usage_ids: set[str] = set()
-        self._current_task_run = ""
         # 结束回调不带 metadata：子代理标签按工具 run id 从开始时记下的那份取
         self._tool_tags: dict[str, dict[str, Any]] = {}
+        # 回调的父运行链：子代理事件沿链找到它属于哪一次 task 调用（并行子代理不串）
+        self._parents: dict[str, str] = {}
+        self._task_runs: set[str] = set()
 
     def _emit(self, kind: str, *, payload: dict[str, Any] | None = None,
               tags: dict[str, Any] | None = None, usage: dict[str, Any] | None = None) -> None:
@@ -239,14 +241,35 @@ class ProgressHandler(BaseCallbackHandler):
         rid = str(kwargs.get("run_id") or "")
         return rid or f"anon:{threading.get_ident()}"
 
+    def _note_parent(self, kwargs: dict) -> None:
+        run_id, parent = str(kwargs.get("run_id") or ""), str(kwargs.get("parent_run_id") or "")
+        if run_id and parent:
+            with self._lock:
+                self._parents[run_id] = parent
+
+    def _task_ancestor(self, run_id: str) -> str:
+        seen = 0
+        current = self._parents.get(run_id, "")
+        while current and seen < 256:
+            if current in self._task_runs:
+                return current
+            current = self._parents.get(current, "")
+            seen += 1
+        return ""
+
     def _subagent_tags(self, kwargs: dict, base: dict | None = None) -> dict:
         tags = dict(base or {})
         agent = str((kwargs.get("metadata") or {}).get("lc_agent_name") or "")
         if agent:
             tags["parent_subagent"] = agent
-            if self._current_task_run:
-                tags["parent_tool_use_id"] = self._current_task_run
+            with self._lock:
+                task_run = self._task_ancestor(str(kwargs.get("run_id") or ""))
+            if task_run:
+                tags["parent_tool_use_id"] = task_run
         return tags
+
+    def on_chain_start(self, serialized: Any, inputs: Any, **kwargs: Any) -> None:
+        self._note_parent(kwargs)
 
     @staticmethod
     def _is_internal(kwargs: dict) -> bool:
@@ -257,6 +280,7 @@ class ProgressHandler(BaseCallbackHandler):
 
     def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
         try:
+            self._note_parent(kwargs)
             key = self._key(kwargs)
             if self._is_internal(kwargs):
                 with self._lock:
@@ -346,6 +370,8 @@ class ProgressHandler(BaseCallbackHandler):
             self._emit("llm_token", payload={"name": name, "content": replay.text,
                                              "reasoning": replay.reasoning, **fields},
                        tags=tags or None)
+        if usage and tags.get("parent_subagent"):
+            self._emit("llm_end", payload={"name": "subagent_usage", **fields}, tags=tags, usage=usage)
         if usage and not tags.get("parent_subagent"):
             with self._lock:
                 duplicate = bool(rid and rid in self._settled_usage_ids)
@@ -395,14 +421,16 @@ class ProgressHandler(BaseCallbackHandler):
         run_id = str(kwargs.get("run_id") or "")
         if run_id in self._seen_tool_run_ids:
             return
+        self._note_parent(kwargs)
         if run_id:
             self._seen_tool_run_ids.add(run_id)
         self._tool_name_stack.append(name)
         cap = 4000 if name in _LARGE_INPUT_TOOLS else _INPUT_CAP
         is_main = not (kwargs.get("metadata") or {}).get("lc_agent_name")
         tags = self._subagent_tags(kwargs, {"name": name})
-        if name == "task" and is_main:
-            self._current_task_run = run_id
+        if name == "task" and is_main and run_id:
+            with self._lock:
+                self._task_runs.add(run_id)
         if run_id:
             tags["lc_tool_run_id"] = run_id
             self._tool_tags[run_id] = dict(tags)
@@ -424,8 +452,6 @@ class ProgressHandler(BaseCallbackHandler):
             if run_id:
                 tags["lc_tool_run_id"] = run_id
         name = str(tags.get("name") or name)
-        if name == "task" and not tags.get("parent_subagent"):
-            self._current_task_run = ""
         return name, tags
 
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:

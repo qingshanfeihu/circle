@@ -46,6 +46,11 @@ circle ~/code/my-project
 
 快捷键：`ctrl+t` 展开思考 · `ctrl+o` 展开工具输出 · `ctrl+r` 历史搜索 · ↑↓ 提示历史。
 
+子代理（`task`）运行时，底部在途条每行一个：名字、在做什么（思考标题，没有就是派给它的任务）、耗时、token，
+最多显示 6 行，超出的折叠并注明条数。输入框为空时按 ↓ 进入选择，↑↓ 移动，⏎（或点击该行）打开它的详情页：
+逐次工具调用与结果、每轮思考（`ctrl+t` 展开正文，只保留每轮末尾一段），←→ 切换到其他子代理，esc 返回。
+主对话里 task 行下面折叠显示子代理的调用次数、耗时、token，运行中再列最近 3 次调用，`ctrl+o` 列出全部。
+
 ## Skills
 
 Circle 兼容 [skills.sh](https://skills.sh) / Agent Skills 生态：和多数 harness 一样读 **`.agents/skills`**，并兼容 `.opencode/skills`、`.pi/skills`、`.claude/skills`。

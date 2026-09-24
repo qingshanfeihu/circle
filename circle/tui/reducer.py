@@ -2,8 +2,11 @@
 
 Ported from InfoTest ``main/ist_core/tui/reducer.py``: the run, LLM, tool, todo,
 ask-user and error branches, the per-round main thinking message, and the card
-plumbing (``_upsert_card``) that subagent cards build on. Left out: compile-engine
-cards, recompose progress, mailbox notices, IDE summaries and fork thinking bodies.
+plumbing (``_upsert_card``). Subagent cards are built here from the ``task`` call and
+the events tagged with it: calls, results, reasoning title, tokens, and the tail of
+each round's reasoning text for the detail page (one item per round, bounded, pushed
+in steps — InfoTest's fork thinking body rules). Left out: compile-engine cards,
+recompose progress, mailbox notices and IDE summaries.
 
 Everything the renderer needs to know is decided here once (e.g. whether a tool
 result is an error, whether it is recoverable), so live rendering and a ctrl+o replay
@@ -18,7 +21,7 @@ import time
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
-from circle.display_lexicon import ERROR_WITHOUT_TEXT, tool_result_is_error
+from circle.display_lexicon import ERROR_WITHOUT_TEXT, structured_args, tool_result_is_error
 from circle.display_stream import reasoning_summary
 from circle.events import CircleEvent
 from circle.pricing import UsageCostTotals
@@ -47,6 +50,9 @@ from circle.tui.message_model import (
 logger = logging.getLogger(__name__)
 
 AGENT_TRANSCRIPT_MAX = 240
+# 子代理每轮思考正文只留尾部，按字符步进推进卡片（逐 delta 推卡会把重渲抬到 token 级）
+CARD_THINKING_TAIL_CHARS = 4000
+CARD_THINKING_PUSH_STEP = 2000
 # 这些工具调用开一个子代理：其内部事件挂在它下面
 SUBAGENT_TOOLS = frozenset({"task"})
 
@@ -78,6 +84,8 @@ class MessageReducer:
         self._subagent_parent_stack: list[str] = []
         self._rev = 0
         self._agent_card_idx: dict[str, int] = {}
+        # 每张卡本轮思考的累计（尾部、总字数、已推进卡片的字数、起点）
+        self._card_thinking: dict[str, dict[str, Any]] = {}
         self._agent_board_rev = 0
         self._listeners: list[Callable[[MessageSnapshot], None]] = []
         self._lock = threading.Lock()
@@ -132,6 +140,7 @@ class MessageReducer:
             self._tool_run_id_map.clear()
             self._subagent_parent_stack.clear()
             self._agent_card_idx.clear()
+            self._card_thinking.clear()
             self._llm_waiting = {}
             self._agent_board_rev += 1
             self._rev += 1
@@ -167,9 +176,12 @@ class MessageReducer:
                     "error": f"cancelled by {reason or 'user_interrupt'}",
                     "termination_cause": "CANCELLED",
                     "current_tool": "",
-                    "current_arg": "",
+                    "current_arg": {},
                     "last_event_ts": now,
+                    "end_ts": now,
+                    "transcript": self._settled_calls(payload),
                 })
+            self._card_thinking.clear()
             if changed:
                 self._agent_board_rev += 1
             self._status = "cancelled"
@@ -271,8 +283,146 @@ class MessageReducer:
     def _is_subagent_event(event: CircleEvent) -> bool:
         return bool((event.get("tags") or {}).get("parent_subagent"))
 
+    # ── subagent cards ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _card_uuid(lc_run: str) -> str:
+        return f"agent:{lc_run}"
+
+    def _subagent_card(self, event: CircleEvent) -> str:
+        """The card this subagent event belongs to ("" when it cannot be placed)."""
+        parent = str((event.get("tags") or {}).get("parent_tool_use_id") or "")
+        uuid = self._card_uuid(parent) if parent else ""
+        return uuid if uuid and uuid in self._agent_card_idx else ""
+
+    def _open_card(self, event: CircleEvent, tool_use_id: str, input_dict: Mapping[str, Any]) -> None:
+        lc_run = str((event.get("tags") or {}).get("lc_tool_run_id") or tool_use_id)
+        args = structured_args(input_dict)
+        self._upsert_card(self._card_uuid(lc_run), {
+            "kind": "subagent",
+            "name": str(args.get("subagent_type") or "agent"),
+            "description": " ".join(str(args.get("description") or "").split()),
+            "tool_use_id": tool_use_id,
+            "status": "running",
+            "start_ts": time.time(),
+            "n_calls": 0,
+            "current_tool": "",
+            "current_arg": {},
+            "reasoning_title": "",
+            "tokens_in": 0,
+            "tokens_out": 0,
+        })
+        self._agent_board_rev += 1
+
+    def _card_event(self, kind: str, event: CircleEvent) -> None:
+        uuid = self._subagent_card(event)
+        if not uuid:
+            return
+        tags = event.get("tags") or {}
+        payload = event.get("payload") or {}
+        card = self._card_payload(uuid)
+        now = time.time()
+        if kind in ("tool_call", "tool_start"):
+            raw = payload.get("input") or {}
+            args = dict(structured_args(raw)) if isinstance(raw, Mapping) else {}
+            self._upsert_card(uuid, {
+                "n_calls": int(card.get("n_calls") or 0) + 1,
+                "current_tool": str(tags.get("name") or payload.get("name") or ""),
+                "current_arg": args,
+                "last_event_ts": now,
+                "_transcript_append": {"kind": "tool", "key": str(tags.get("lc_tool_run_id") or ""),
+                                       "tool": str(tags.get("name") or payload.get("name") or ""),
+                                       "input": args, "status": "running", "ts": now},
+            }, skip_if_finished=True)
+        elif kind in ("tool_result", "tool_end"):
+            output = str(payload.get("output") or "")
+            status = str(payload.get("status") or "")
+            error = tool_result_is_error(output, status)
+            item = {"key": str(tags.get("lc_tool_run_id") or ""),
+                    "status": "error" if error else "ok", "output": output[:400]}
+            if payload.get("recoverable") is True:
+                item["recoverable"] = True
+            self._upsert_card(uuid, {"current_tool": "", "current_arg": {}, "last_event_ts": now,
+                                     "_transcript_upsert": item}, skip_if_finished=True)
+        elif kind in ("llm_start", "llm_token"):
+            title = payload.get("reasoning_title")
+            updates: dict[str, Any] = {"last_event_ts": now}
+            if isinstance(title, str) and title.strip():
+                updates["reasoning_title"] = title.strip()
+            if kind == "llm_start":
+                round_n = int(card.get("round") or 0) + 1
+                updates["round"] = round_n
+                self._card_thinking[uuid] = {"round": round_n, "text": "", "chars": 0,
+                                             "pushed": 0, "start": now, "title": ""}
+            else:
+                item = self._thinking_step(uuid, str(payload.get("reasoning") or ""),
+                                           updates.get("reasoning_title"))
+                if item is not None:
+                    updates["_transcript_upsert"] = item
+            self._upsert_card(uuid, updates, skip_if_finished=True)
+        elif kind == "llm_end" and payload.get("name") == "subagent_usage":
+            usage = event.get("usage") or {}
+            self._upsert_card(uuid, {
+                "tokens_in": int(card.get("tokens_in") or 0) + int(usage.get("input_tokens") or 0),
+                "tokens_out": int(card.get("tokens_out") or 0) + int(usage.get("output_tokens") or 0),
+            }, skip_if_finished=True)
+        elif kind == "llm_end" and payload.get("name") in ("subagent_done", "round_error"):
+            item = self._thinking_close(uuid, now)
+            if item is not None:
+                self._upsert_card(uuid, {"_transcript_upsert": item}, skip_if_finished=True)
+        self._agent_board_rev += 1
+
+    def _thinking_item(self, state: dict[str, Any], *, done: bool, now: float) -> dict[str, Any]:
+        state["pushed"] = state["chars"]
+        item = {"kind": "thinking_body", "key": f"think:{state['round']}", "text": state["text"],
+                "chars": state["chars"], "truncated": state["chars"] > len(state["text"]),
+                "title": state["title"], "done": done}
+        if done:
+            item["duration_s"] = max(0.0, now - float(state["start"]))
+        return item
+
+    def _thinking_step(self, uuid: str, delta: str, title: Any) -> dict[str, Any] | None:
+        state = self._card_thinking.get(uuid)
+        if state is None or not delta:
+            return None
+        state["text"] = (state["text"] + delta)[-CARD_THINKING_TAIL_CHARS:]
+        state["chars"] += len(delta)
+        if isinstance(title, str) and title:
+            state["title"] = title
+        if state["chars"] - state["pushed"] < CARD_THINKING_PUSH_STEP:
+            return None
+        return self._thinking_item(state, done=False, now=time.time())
+
+    def _thinking_close(self, uuid: str, now: float) -> dict[str, Any] | None:
+        state = self._card_thinking.pop(uuid, None)
+        if state is None or not state["chars"]:
+            return None
+        return self._thinking_item(state, done=True, now=now)
+
+    def _close_card(self, event: CircleEvent, output: str, status: str) -> None:
+        lc_run = str((event.get("tags") or {}).get("lc_tool_run_id") or "")
+        uuid = self._card_uuid(lc_run) if lc_run else ""
+        if not uuid or uuid not in self._agent_card_idx:
+            return
+        error = tool_result_is_error(output, status)
+        first = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
+        self._card_thinking.pop(uuid, None)
+        self._upsert_card(uuid, {"status": "error" if error else "ok", "end_ts": time.time(),
+                                 "current_tool": "", "current_arg": {}, "summary": first[:200],
+                                 "transcript": self._settled_calls(self._card_payload(uuid))})
+        self._agent_board_rev += 1
+
+    @staticmethod
+    def _settled_calls(card: Mapping[str, Any]) -> list:
+        """A finished subagent has no running calls left: ones without a result failed."""
+        return [dict(item, status="error")
+                if isinstance(item, dict) and item.get("kind") == "tool" and item.get("status") == "running"
+                else item
+                for item in card.get("transcript") or ()]
+
     def _on_llm_start(self, event: CircleEvent | None = None) -> None:
         if event is not None and self._is_subagent_event(event):
+            self._card_event("llm_start", event)
             return
         self._llm_phase = "input"
         self._output_token_count = 0
@@ -350,6 +500,7 @@ class MessageReducer:
 
     def _on_token(self, event: CircleEvent) -> None:
         if self._is_subagent_event(event):
+            self._card_event("llm_token", event)
             return
         payload = event.get("payload") or {}
         self._merge_main_llm_fields(payload)
@@ -375,6 +526,8 @@ class MessageReducer:
     def _on_llm_end(self, event: CircleEvent) -> None:
         payload = event.get("payload") or {}
         is_subagent = self._is_subagent_event(event)
+        if is_subagent:
+            self._card_event("llm_end", event)
         if not is_subagent:
             self._merge_main_llm_fields(payload)
             if self._llm_round in self._thinking_message_idx:
@@ -417,6 +570,8 @@ class MessageReducer:
         seq = event.get("seq") or 0
         tags = event.get("tags") or {}
         payload = event.get("payload") or {}
+        if tags.get("parent_subagent"):
+            self._card_event("tool_call", event)
         if tags.get("parent_subagent") and not self._current_subagent_parent(event):
             return
         tool_name = tags.get("name") or payload.get("name") or ""
@@ -436,16 +591,21 @@ class MessageReducer:
             self._tool_run_id_map[lc_tool_run_id] = tool_use_id
         if tool_name in SUBAGENT_TOOLS and not parent_tool_use_id:
             self._subagent_parent_stack.append(tool_use_id)
+            self._open_card(event, tool_use_id, input_dict)
 
     def _on_tool_result(self, event: CircleEvent) -> None:
         tags = event.get("tags") or {}
         payload = event.get("payload") or {}
+        if tags.get("parent_subagent"):
+            self._card_event("tool_result", event)
         if tags.get("parent_subagent") and not self._current_subagent_parent(event):
             return
         tool_name = tags.get("name") or payload.get("name") or ""
         output = payload.get("output") or ""
         if not isinstance(output, str):
             output = str(output)
+        if tool_name in SUBAGENT_TOOLS and not tags.get("parent_subagent"):
+            self._close_card(event, output, str(payload.get("status") or ""))
         lc_tool_run_id = tags.get("lc_tool_run_id") or ""
         tool_use_id = ""
         if lc_tool_run_id and lc_tool_run_id in self._tool_run_id_map:
@@ -644,6 +804,17 @@ class MessageReducer:
     # ── misc ───────────────────────────────────────────────────────────────
 
     def _current_subagent_parent(self, event: CircleEvent) -> str:
+        """The task call a subagent event belongs to; "" for main-agent events (a second
+        task the main agent starts while the first still runs is its own call, not a
+        nested one)."""
+        tags = event.get("tags") or {}
+        if not tags.get("parent_subagent"):
+            return ""
+        lc_task = str(tags.get("parent_tool_use_id") or "")
+        if lc_task:
+            owner = str(self._card_payload(self._card_uuid(lc_task)).get("tool_use_id") or "")
+            if owner:
+                return owner
         return self._subagent_parent_stack[-1] if self._subagent_parent_stack else ""
 
     def _merge_usage(self, usage: dict[str, Any]) -> None:

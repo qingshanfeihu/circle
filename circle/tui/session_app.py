@@ -66,7 +66,14 @@ from circle.settings import (
     save_credentials,
     save_settings,
 )
-from circle.tui.agent_strip import render_agent_strip
+from circle.tui.agent_detail import render_detail_band, render_detail_lines
+from circle.tui.agent_strip import (
+    MAX_ROWS,
+    render_agent_strip,
+    running_cards,
+    snapshot_cards,
+    strip_window,
+)
 from circle.tui.content_blocks import assistant_block
 from circle.tui.controllers import InitController, InitStep, TrustController
 from circle.tui.harness_bridge import HarnessBridge, StreamUpdate
@@ -188,15 +195,35 @@ class CircleSessionApp:
         self._input_history = InputHistory(path=hist_path)
         self._app.before_render = self._sync_dialog_frame
 
-        self._agent_rows: list[dict] = []
         self._seen_call_ids: set[str] = set()
+        # 在途 strip 由快照里的子代理卡片喂；选中态与滚动窗口起点记在这里
         self._agent_strip = create_element(NodeType.BOX)
         self._agent_strip.style.height = 0
         self._agent_strip_text = create_text("")
         self._agent_strip.append_child(self._agent_strip_text)
+        self._strip_ids: list[str] = []
+        self._strip_visible_ids: list[str] = []
+        self._strip_selecting = False
+        self._strip_selected: str | None = None
+        self._strip_start = 0
+        # 子代理详情页：与主转录互斥显示（两个开关一起翻，否则两个 flex 节点对半分屏）
+        self._agent_detail = Transcript()
+        self._agent_detail_band = create_element(NodeType.BOX)
+        self._agent_detail_band.style.height = 0
+        self._agent_detail_band_text = create_text("")
+        self._agent_detail_band.append_child(self._agent_detail_band_text)
+        self._set_view_visible(self._agent_detail.node, False)
+        self._set_view_visible(self._agent_detail_band, False)
+        self._detail_active = False
+        self._detail_ids: list[str] = []
+        self._detail_uuid: str | None = None
+        self._detail_drawn: tuple | None = None
+        self._ticked_at = 0.0
 
         root = self._app.root
         root.append_child(self._transcript.node)
+        root.append_child(self._agent_detail_band)
+        root.append_child(self._agent_detail.node)
         root.append_child(self._ask_panel.node)
         root.append_child(self._dialog)
         root.append_child(self._footer.node)
@@ -409,59 +436,210 @@ class CircleSessionApp:
         self._dialog_left_text.set_value(left)
         self._dialog_right_text.set_value(right)
         self._dialog_bottom_text.set_value(bottom)
+        self._tick_agents()
+        self._render_agent_detail()
         self._sync_agent_strip()
 
-    def _note_task(self, call: dict) -> None:
-        if str(call.get("name") or "") != "task":
-            return
-        args = call.get("args") if isinstance(call.get("args"), dict) else {}
-        action = " ".join(str(
-            args.get("description")
-            or args.get("prompt")
-            or args.get("task")
-            or "运行中"
-        ).split())
-        name = str(args.get("subagent_type") or "task")
-        call_id = str(call.get("id") or "")
-        for row in self._agent_rows:
-            same = (call_id and row.get("id") == call_id) or (
-                not call_id and not row.get("id") and row.get("name") == name
-            )
-            if same:
-                if action != "运行中":
-                    row["action"] = action
-                    row["name"] = name
-                return
-        self._agent_rows.append({
-            "id": call_id,
-            "name": name,
-            "action": action,
-            "started": time.time(),
-        })
+    # ── subagents: strip, selection, detail page ───────────────────────────
 
-    def _drop_task(self, call_id: str) -> None:
-        if call_id:
-            kept = [row for row in self._agent_rows if row.get("id") != call_id]
-            if len(kept) != len(self._agent_rows):
-                self._agent_rows[:] = kept
-                return
-        if self._agent_rows:
-            self._agent_rows.pop(0)
+    def _tick_agents(self) -> None:
+        """While subagents run, redraw what shows their clock and lamps (twice a second)."""
+        snap = self._last_snap
+        if snap is None or not running_cards(snap):
+            return
+        now = time.monotonic()
+        if now - self._ticked_at < 0.5:
+            return
+        self._ticked_at = now
+        if self._turn_base >= 0:
+            self._render_turn_region()
+        if self._detail_active:
+            self._render_agent_detail(force=True)
 
     def _sync_agent_strip(self) -> None:
         strip = getattr(self, "_agent_strip", None)
         text = getattr(self, "_agent_strip_text", None)
         if strip is None or text is None:
             return
-        rows = getattr(self, "_agent_rows", [])
-        if not rows:
+        snap = getattr(self, "_last_snap", None)
+        cards = running_cards(snap) if snap is not None else []
+        ids = [uuid_ for uuid_, _card in cards]
+        self._strip_ids = ids
+        if self._strip_selecting and self._strip_selected not in ids:
+            self._strip_selected = ids[0] if ids else None
+            self._strip_selecting = bool(ids)
+        selected = self._detail_uuid if self._detail_active else (
+            self._strip_selected if self._strip_selecting else None)
+        self._strip_start = strip_window(ids, selected, self._strip_start, MAX_ROWS)
+        visible = cards[self._strip_start:self._strip_start + MAX_ROWS]
+        self._strip_visible_ids = [uuid_ for uuid_, _card in visible]
+        if not visible:
             strip.style.height = 0
             text.set_value("")
             return
-        width = max(40, self._app.width or 80)
-        lines = render_agent_strip(rows, width=width)
+        lines = render_agent_strip(visible, width=max(40, self._app.width or 80),
+                                   selected=selected, total=len(cards),
+                                   hidden=len(cards) - len(visible))
         strip.style.height = len(lines)
         text.set_value("\n".join(lines))
+
+    def _strip_row_at(self, row: int) -> str | None:
+        """The card of the strip row under the mouse (rule and header come first)."""
+        if not self._strip_visible_ids:
+            return None
+        at = int(row) - int(getattr(self._agent_strip.rect, "y", 0)) - 2
+        return self._strip_visible_ids[at] if 0 <= at < len(self._strip_visible_ids) else None
+
+    def _find_card(self, uuid_: str | None) -> Any:
+        """The card's payload as the snapshot holds it (a changed card is a new object)."""
+        snaps = [self._last_snap] + [turn["snap"] for turn in reversed(self._turns)]
+        for snap in snaps:
+            if snap is None:
+                continue
+            for card_id, card in snapshot_cards(snap):
+                if card_id == uuid_:
+                    return card
+        return None
+
+    @staticmethod
+    def _set_view_visible(node: Any, visible: bool) -> None:
+        # is_hidden 只挡绘制、不让布局高度；布局只看 display，两个一起翻
+        node.is_hidden = not visible
+        node.style.display = "flex" if visible else "none"
+
+    def _enter_agent_detail(self, uuid_: str | None = None) -> bool:
+        target = uuid_ or self._strip_selected
+        if not target or self._find_card(target) is None:
+            return False
+        ids = list(self._strip_ids)
+        if target not in ids:
+            ids.append(target)
+        self._detail_active = True
+        self._detail_ids = ids
+        self._detail_uuid = target
+        self._strip_selecting = target in self._strip_ids
+        self._strip_selected = target if self._strip_selecting else None
+        self._set_view_visible(self._transcript.node, False)
+        self._set_view_visible(self._agent_detail.node, True)
+        self._set_view_visible(self._agent_detail_band, True)
+        self._agent_detail.clear()
+        self._detail_drawn = None
+        self._render_agent_detail(force=True)
+        self._sync_agent_strip()
+        self._app.render()
+        return True
+
+    def _leave_agent_detail(self, *, render: bool = True) -> None:
+        current = self._detail_uuid
+        self._detail_active = False
+        self._detail_ids = []
+        self._detail_uuid = None
+        self._detail_drawn = None
+        self._set_view_visible(self._transcript.node, True)
+        self._set_view_visible(self._agent_detail.node, False)
+        self._set_view_visible(self._agent_detail_band, False)
+        self._agent_detail_band.style.height = 0
+        self._agent_detail_band_text.set_value("")
+        self._agent_detail.clear()
+        self._strip_selecting = bool(self._strip_ids)
+        self._strip_selected = (current if current in self._strip_ids
+                                else (self._strip_ids[0] if self._strip_ids else None))
+        self._sync_agent_strip()
+        if render:
+            self._app.render()
+
+    def _switch_agent_detail(self, delta: int) -> bool:
+        if not self._detail_ids or self._detail_uuid not in self._detail_ids:
+            return False
+        at = (self._detail_ids.index(self._detail_uuid) + delta) % len(self._detail_ids)
+        self._detail_uuid = self._detail_ids[at]
+        if self._detail_uuid in self._strip_ids:
+            self._strip_selecting = True
+            self._strip_selected = self._detail_uuid
+        self._agent_detail.clear()
+        self._render_agent_detail(force=True)
+        self._sync_agent_strip()
+        self._app.render()
+        return True
+
+    def _render_agent_detail(self, *, force: bool = False) -> None:
+        """Redraw the page when its card changed (or on a tick / toggle with ``force``);
+        a reader scrolled up stays where they are."""
+        if not self._detail_active:
+            return
+        card = self._find_card(self._detail_uuid)
+        width = max(40, self._app.width or 80)
+        drawn = self._detail_drawn
+        if (not force and drawn is not None and drawn[0] is card
+                and drawn[1:] == (width, self._thinking_expanded)):
+            return
+        self._detail_drawn = (card, width, self._thinking_expanded)
+        view = self._agent_detail
+        if card is None:
+            self._agent_detail_band.style.height = 0
+            self._agent_detail_band_text.set_value("")
+            view.clear()
+            view.append_message(" " + _faint("这个子代理的记录已不可用，按 esc 返回主视图"))
+            return
+        ids = self._detail_ids
+        band = render_detail_band(card, index=ids.index(self._detail_uuid) + 1, total=len(ids),
+                                  width=width)
+        self._agent_detail_band.style.height = len(band)
+        self._agent_detail_band_text.set_value("\n".join(band))
+        lines = [f" {line}" if line else "" for line in
+                 render_detail_lines(card, expanded=self._thinking_expanded)]
+        sticky, top = view.node.sticky_scroll, view.node.scroll_top
+        view.clear()
+        view.append_messages(lines)
+        if not sticky:
+            view.node.sticky_scroll = False
+            view.node.scroll_top = top
+
+    def _handle_agent_view_key(self, kp: KeyPress) -> bool:
+        """Strip selection and the detail page; True when the key was theirs."""
+        key = kp.key
+        printable = bool(kp.char and len(kp.char) == 1 and kp.char.isprintable()
+                         and not getattr(kp, "ctrl", False) and not getattr(kp, "alt", False))
+        if self._detail_active:
+            if key in ("escape", "backspace"):
+                self._leave_agent_detail()
+                return True
+            if key in ("left", "right"):
+                return self._switch_agent_detail(-1 if key == "left" else 1)
+            if printable:
+                self._leave_agent_detail(render=False)
+                self._strip_selecting = False
+                self._strip_selected = None
+                self._sync_agent_strip()
+            return False
+        if self._strip_selecting:
+            ids = self._strip_ids
+            at = ids.index(self._strip_selected) if self._strip_selected in ids else 0
+            if key == "down" and ids:
+                self._strip_selected = ids[(at + 1) % len(ids)]
+            elif key == "up" and ids:
+                self._strip_selected = ids[(at - 1) % len(ids)]
+            elif key in ("return", "enter"):
+                return self._enter_agent_detail()
+            elif key == "escape":
+                self._strip_selecting = False
+                self._strip_selected = None
+            else:
+                if printable:
+                    self._strip_selecting = False
+                    self._strip_selected = None
+                    self._sync_agent_strip()
+                return False
+            self._sync_agent_strip()
+            self._app.render()
+            return True
+        if key == "down" and self._strip_ids and not self._prompt.value:
+            self._strip_selecting = True
+            self._strip_selected = self._strip_ids[0]
+            self._sync_agent_strip()
+            self._app.render()
+            return True
+        return False
 
     # ── input ──────────────────────────────────────────────────────────
 
@@ -508,6 +686,10 @@ class CircleSessionApp:
                 self._app.notify_selection_change()
                 self._app.render()
                 return
+
+        # 选中子代理 / 详情页里的 esc 是退出这一层，不是中止回合
+        if self._handle_agent_view_key(kp):
+            return
 
         if kp.key == "ctrl+c":
             now = time.time()
@@ -687,9 +869,8 @@ class CircleSessionApp:
             self._app.render()
 
     def _handle_mouse(self, me: MouseEvent) -> None:
-        # InfoTest IstInkApp._handle_mouse — text selection, copy, wheel.
-        # Circle has no agent strip / fork-row targets, so those clicks fall
-        # through to ordinary text selection.
+        # InfoTest IstInkApp._handle_mouse — text selection, copy, wheel; a click on
+        # an in-flight strip row opens that subagent's detail page.
         col, row = self._mouse_to_screen_coords(me.x, me.y)
 
         if me.type == "wheel":
@@ -703,6 +884,10 @@ class CircleSessionApp:
             return
 
         if me.type == "press":
+            clicked = self._strip_row_at(row)
+            if clicked is not None:
+                self._enter_agent_detail(clicked)
+                return
             self._handle_left_press(col, row, alt=me.alt)
             return
 
@@ -793,10 +978,15 @@ class CircleSessionApp:
         self._app.render()
 
     def _half_viewport(self) -> int:
-        return max(1, self._transcript.viewport_height() // 2)
+        view = self._agent_detail if self._detail_active else self._transcript
+        return max(1, view.viewport_height() // 2)
 
     def _scroll_transcript(self, delta: int) -> None:
         if delta == 0:
+            return
+        if self._detail_active:
+            self._agent_detail.scroll_by(delta)
+            self._app._repaint_full()  # noqa: SLF001
             return
         old_top = self._transcript.node.scroll_top
         self._transcript.scroll_by(delta)
@@ -936,6 +1126,7 @@ class CircleSessionApp:
         self._thinking_expanded = not self._thinking_expanded
         self._show_thinking = True
         self._rerender_turns()
+        self._render_agent_detail(force=True)
         self._app.render()
 
     def _toggle_tool_outputs(self) -> None:
@@ -1913,7 +2104,6 @@ class CircleSessionApp:
             call_started_at=None,
         )
         self._update_thinking_line("")
-        self._agent_rows.clear()
         self._seen_call_ids.clear()
         self._sync_agent_strip()
         self._call_started_at = 0.0
@@ -1936,20 +2126,14 @@ class CircleSessionApp:
     # ── stream callbacks — mirrors IstInkApp._on_snapshot stream/thinking ─
 
     def _on_stream_update(self, update: StreamUpdate) -> None:
-        """Footer, subagent strip and extension events; the transcript comes from snapshots."""
+        """Footer and extension events; the transcript and the subagent strip come from
+        snapshots."""
         with self._app.lock:
             self._apply_usage(update.usage)
             if update.tool_calls:
-                for tc in update.tool_calls:
-                    if str(tc.get("name", "")) == "task":
-                        self._note_task(tc)
-                self._sync_agent_strip()
                 self._app.render()
                 return
             if update.tool_name:
-                if update.tool_name == "task":
-                    self._drop_task(update.tool_call_id)
-                    self._sync_agent_strip()
                 self._extensions.emit("tool_result", {
                     "tool": update.tool_name, "output": str(update.tool_output),
                     "tool_call_id": update.tool_call_id})
@@ -2001,6 +2185,10 @@ class CircleSessionApp:
         self._turn_entries = []
 
     def _reset_turn_regions(self) -> None:
+        if self._detail_active:
+            self._leave_agent_detail(render=False)
+        self._strip_selecting = False
+        self._strip_selected = None
         self._turns = []
         self._turn_base = -1
         self._turn_entries = []

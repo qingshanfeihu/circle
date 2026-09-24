@@ -147,7 +147,9 @@ def hotkeys_text() -> str:
             "  ctrl+r          reverse-i-search history",
             "  ctrl+l          redraw screen",
             "  up/down         prompt history",
-            "  pageup/pagedown scroll transcript",
+            "  down (empty)    select a running subagent; up/down move, enter opens it",
+            "  left/right      previous/next subagent on its detail page; esc goes back",
+            "  pageup/pagedown scroll transcript (or the detail page)",
             "  tab             slash-command complete",
             "  /               slash commands (/help)",
         ]

@@ -101,11 +101,16 @@ def test_error_and_warning_lines_use_the_palette(light_palette):
 def test_strip_rows_carry_background_and_foreground_in_one_sgr(light_palette):
     from circle.tui.agent_strip import render_agent_strip
 
-    rows = render_agent_strip([{"name": "explore", "action": "reading", "started": 0}],
-                              width=60, now=5)
+    cards = [("agent:a", {"name": "explore", "description": "reading", "start_ts": 0}),
+             ("agent:b", {"name": "explore", "description": "writing", "start_ts": 0})]
+    rows = render_agent_strip(cards, width=60, now=5, selected="agent:b")
     joined = theme.sgr_join(light_palette.panel_bg, light_palette.faint)
     assert rows[1].startswith(joined)
     assert f"{light_palette.panel_bg}{light_palette.faint}" not in "".join(rows)
+    assert rows[2].startswith(theme.sgr_join(light_palette.agent_bg, light_palette.dim))
+    assert theme.sgr_join(light_palette.agent_bg, light_palette.text) in rows[2]
+    assert rows[3].startswith(theme.sgr_join(light_palette.sel_bg, light_palette.text))
+    assert f"{light_palette.agent_bg}{light_palette.text}" not in "".join(rows)
 
 
 def test_thinking_header_merges_color_and_italic(light_palette):

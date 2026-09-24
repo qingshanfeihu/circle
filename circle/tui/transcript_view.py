@@ -9,13 +9,18 @@ Layout follows InfoTest's single tool-row form: every tool call is one row
 it succeeded, failed or was refused. A failure the model can fix itself (bad
 arguments, unknown tool name) gets no lamp and a muted strikethrough instead of red.
 Blocks are separated by one blank entry; consecutive tool rows are not.
+
+A ``task`` row carries its subagent folded underneath: one meta line (name, calls,
+elapsed, tokens) and, while it runs, its last few calls; ctrl+o lists them all. The
+whole call-by-call record is on the agent's detail page.
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from circle.display_lexicon import (
     tool_arg_summary,
@@ -24,6 +29,15 @@ from circle.display_lexicon import (
 )
 from circle.ink.components.markdown_renderer import MarkdownRenderer
 from circle.ink.theme import GLYPH_AGENT, GLYPH_ERROR, palette, status_light
+from circle.tui.agent_strip import (
+    card_calls,
+    card_elapsed,
+    card_running,
+    card_tokens,
+    format_elapsed,
+    format_tokens,
+    snapshot_cards,
+)
 from circle.tui.content_blocks import render_thinking_line
 from circle.tui.message_model import (
     BLOCK_ERROR,
@@ -38,6 +52,7 @@ from circle.tui.message_model import (
 
 COLLAPSED_HINT_MIN_HIDDEN = 1
 EXPANDED_MAX_LINES = 30
+SUBAGENT_RECENT_CALLS = 3
 _RESULT_WIDTH = 160
 _HIDDEN_TOOLS = frozenset({"write_todos"})  # 由计划面板显示，不占工具行
 
@@ -52,6 +67,8 @@ class ViewOptions:
     renderer_for: Callable[[str], Callable[[Any], Iterable[str]] | None] = lambda _name: None
     # 等待审批、尚未执行的调用（HITL 请求里的 name/args）
     pending_calls: list[dict] = field(default_factory=list)
+    # 在跑子代理的耗时与黄灯明暗相都按它算；None 取当前时间
+    now: float | None = None
 
 
 def _clip(text: str, width: int = _RESULT_WIDTH) -> str:
@@ -114,8 +131,44 @@ def _extension_lines(block: ContentBlock, result: ContentBlock, opts: ViewOption
     return lines or None
 
 
-def _tool_entry(block: ContentBlock, result: ContentBlock | None, opts: ViewOptions) -> str:
+def subagent_call_row(item: Mapping[str, Any], *, now: float | None = None) -> str:
+    """One call a subagent made, in the same form as a main tool row (no indent)."""
+    pal = palette()
+    tool = str(item.get("tool") or "tool")
+    args = item.get("input") if isinstance(item.get("input"), Mapping) else {}
+    call = f"{tool_short_name(tool)}({tool_arg_summary(tool, dict(args))})"
+    status = str(item.get("status") or "running")
+    if status == "error" and tool_result_recoverable(item):
+        return f"{status_light('none')} {pal.muted_strike}{call}{pal.reset}"
+    light = status_light(status if status in ("ok", "error") else "running", now=now)
+    return f"{light} {pal.text}{call}{pal.reset}"
+
+
+def _subagent_lines(card: Mapping[str, Any], opts: ViewOptions, now: float) -> list[str]:
+    pal = palette()
+    meta = (f"{card.get('name') or 'agent'} · {card_calls(card)} calls · "
+            f"{format_elapsed(card_elapsed(card, now))} · "
+            f"{format_tokens(card_tokens(card))} tokens")
+    lines = [f"   ⎿ {pal.faint}{meta}{pal.reset}"]
+    calls = [item for item in card.get("transcript") or ()
+             if isinstance(item, Mapping) and item.get("kind") == "tool"]
+    if opts.tools_expanded:
+        shown = calls[-EXPANDED_MAX_LINES:]
+    elif card_running(card):
+        shown = calls[-SUBAGENT_RECENT_CALLS:]
+    else:
+        shown = []
+    if shown and len(calls) > len(shown):
+        lines.append(f"     {pal.faint}… +{len(calls) - len(shown)} 更早{pal.reset}")
+    lines += [f"     {subagent_call_row(item, now=now)}" for item in shown]
+    return lines
+
+
+def _tool_entry(block: ContentBlock, result: ContentBlock | None, opts: ViewOptions,
+                card: Mapping[str, Any] | None = None) -> str:
     parts = [_tool_row(block, result)]
+    if card is not None:
+        parts += _subagent_lines(card, opts, time.time() if opts.now is None else opts.now)
     if result is not None:
         parts += _extension_lines(block, result, opts) or _result_lines(result, opts)
     return "\n".join(parts)
@@ -136,6 +189,7 @@ def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
             if block.type == BLOCK_TOOL_RESULT and block.tool_use_id:
                 results[block.tool_use_id] = block
     called = {b.tool_use_id for m in snap.messages for b in m.content if b.type == BLOCK_TOOL_USE}
+    cards = {str(card.get("tool_use_id") or ""): card for _uuid, card in snapshot_cards(snap)}
 
     entries: list[str] = []
     last_kind = ""
@@ -162,7 +216,8 @@ def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
                     add(_text_entry(block.text, opts), "text")
             elif block.type == BLOCK_TOOL_USE:
                 if block.name not in _HIDDEN_TOOLS:
-                    add(_tool_entry(block, results.get(block.tool_use_id), opts), "tool")
+                    add(_tool_entry(block, results.get(block.tool_use_id), opts,
+                                    cards.get(block.tool_use_id)), "tool")
             elif block.type == BLOCK_TOOL_RESULT:
                 if block.tool_use_id not in called and block.name not in _HIDDEN_TOOLS:
                     orphan = ContentBlock(type=BLOCK_TOOL_USE, name=block.name, status="done")
