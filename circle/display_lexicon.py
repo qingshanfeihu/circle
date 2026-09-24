@@ -93,3 +93,64 @@ def footer_worker_slot(worker_id: object, tail: str) -> str:
     name = str(worker_id or "").strip()
     head = f"{FOOTER_WORKER_PREFIX} {name}".strip() if name else FOOTER_WORKER_PREFIX
     return f"{head} · {tail}" if tail else head
+
+
+# ── 工具结果判读（移植自 InfoTest display_lexicon；reducer 与渲染共用这一处）──
+
+from collections.abc import Mapping as _Mapping  # noqa: E402
+
+ERROR_WITHOUT_TEXT = "出错了，但没有给出可读的说明"
+
+_ERROR_LEAD_TEXTS = ("error:", "错误")
+_ERROR_LEAD_GLYPHS = ("✗", "❌", "✖")
+_INBOUND_STATUS_GLYPH_RE = __import__("re").compile(r"^[✓✗❌✖●]\s*")
+
+
+def structured_args(args):
+    """Tool input as a mapping; a ``{"raw": …, "args": {…}}`` envelope yields its args."""
+    if not args:
+        return {}
+    envelope = args.get("args") if "raw" in args else None
+    if isinstance(envelope, _Mapping):
+        return envelope
+    return {k: v for k, v in args.items() if k != "raw"}
+
+
+def extract_from_raw(args, key: str) -> str:
+    import re
+
+    raw = (args or {}).get("raw") or ""
+    if not isinstance(raw, str):
+        return ""
+    m = re.search(rf"""['"]?{re.escape(key)}['"]?\s*[:=]\s*['"]([^'"]+)['"]""", raw)
+    return m.group(1) if m else ""
+
+
+def tool_arg_value(args, key: str) -> str:
+    value = structured_args(args).get(key)
+    if isinstance(value, str) and value:
+        return value
+    if value not in (None, "", (), [], {}) and not isinstance(value, (list, tuple, set, dict)):
+        return str(value)
+    return extract_from_raw(args, key)
+
+
+def strip_leading_status_glyph(text: str) -> str:
+    return _INBOUND_STATUS_GLYPH_RE.sub("", str(text or ""))
+
+
+def tool_result_is_error(output: object, status: object = "") -> bool:
+    """``status == "error"`` or a result that opens with an error marker.
+
+    The union matters: results recorded before status was carried have only the text.
+    """
+    if str(status or "").strip().lower() == "error":
+        return True
+    lead = str(output or "").lstrip()
+    if not lead:
+        return False
+    return lead.lower().startswith(_ERROR_LEAD_TEXTS) or lead.startswith(_ERROR_LEAD_GLYPHS)
+
+
+def tool_result_recoverable(payload) -> bool:
+    return isinstance(payload, _Mapping) and payload.get("recoverable") is True

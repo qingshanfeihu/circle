@@ -1,0 +1,209 @@
+{
+  "schema": "circle.fixture.typed-display-stream",
+  "openai_mimo_formal4": {
+    "source": "recorded model stream (sanitized)",
+    "record_status": "real_production_event_slice",
+    "started_at": 1788153674.791,
+    "finished_at": 1788153681.579,
+    "chunks": [
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "The"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": " user wants to compile a mind"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "map file `"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "inbox/pl"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "g.txt` with product version 1"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "0.5 and batch name `"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "demo_batch`."
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": " This matches the `demo-compile"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "` skill description."
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": " I"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": " need to invoke that"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": " skill first."
+        }
+      }
+    ],
+    "final_message": {
+      "content": "",
+      "additional_kwargs": {
+        "reasoning_content": "The user wants to compile a mindmap file `inbox/plg.txt` with product version 10.5 and batch name `demo_batch`. This matches the `demo-compile` skill description. I need to invoke that skill first."
+      }
+    }
+  },
+  "anthropic_grok_complete": {
+    "source": "recorded model stream (sanitized)",
+    "record_status": "real_production_complete_message_slice",
+    "started_at": 1787712071.113,
+    "finished_at": 1787712076.052,
+    "final_message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The user just said \"hi\" - this is a greeting. Let me check if any skill matches this request.\n",
+          "index": 0
+        },
+        {
+          "type": "text",
+          "text": "你好。需要查命令、编用例、上机验证还是评审，直接说就行。",
+          "index": 1
+        }
+      ],
+      "additional_kwargs": {}
+    }
+  },
+  "anthropic_stream_schema": {
+    "source": "langchain_anthropic chat_models._make_message_chunk_from_anthropic_event",
+    "record_status": "未确定: no raw production chunk retained; schema-shaped from installed SDK and the real complete-message slice above",
+    "chunks": [
+      {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user just said \"hi\" - this is a greeting. ",
+            "index": 0
+          }
+        ],
+        "additional_kwargs": {}
+      },
+      {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Let me check if any skill matches this request.\n",
+            "index": 0
+          }
+        ],
+        "additional_kwargs": {}
+      },
+      {
+        "content": [
+          {
+            "type": "text",
+            "text": "你好。需要查命令、编用例、上机验证还是评审，直接说就行。",
+            "index": 1
+          }
+        ],
+        "additional_kwargs": {}
+      }
+    ]
+  },
+  "openai_leading_bold_multi_heading": {
+    "source": "recorded model stream (sanitized)",
+    "record_status": "real_production_event_slice",
+    "started_at": "2026-08-29T00:35:16.367Z",
+    "settled_at": "2026-08-29T00:35:25.240Z",
+    "chunks": [
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "**Planning single engine run with subset**"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "\n\n"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "**Preparing compile_engine_run call with max rounds**"
+        }
+      },
+      {
+        "content": "",
+        "additional_kwargs": {
+          "reasoning_content": "\n\n"
+        }
+      }
+    ],
+    "final_message": {
+      "content": "环境预检正常；现在按指定批名启动一次编译闭环，最多一轮。",
+      "additional_kwargs": {
+        "reasoning_content": "**Planning single engine run with subset**\n\n**Preparing compile_engine_run call with max rounds**\n\n"
+      }
+    }
+  },
+  "grok_nonleading_case_heading": {
+    "source": "recorded model stream (sanitized)",
+    "record_status": "real_production_joined_delta_slice",
+    "reasoning_content": "Now I have all the command tree data I need. Let me summarize the command grounding results:\n\n1. `slb virtual httplist` - in_vendor_tree: true, 3 required args (virtual_service, addrlists_name, portlists_name), 2 optional\n2. `slb virtual tcplist` - in_vendor_tree: true, same signature as httplist\n3. `slb virtual addrlists` - in_vendor_tree: true, 2 required args (addrlists_name, start_ip), 1 optional\n4. `slb virtual portlists` - in_vendor_tree: true, 2 required args (portlists_name, start_port), 1 optional\n5. `slb virtual portlist` - NOT in_vendor_tree (singular form not found)\n6. `slb group method` - in_vendor_tree: true, 1 required arg (group_name), method is optional\n7. `slb real http` - in_vendor_tree: true, 2 required args (real_service, ip/domain), rest optional\n8. `slb group member` - in_vendor_tree: true, 2 required args (group_name, real_service), rest optional\n9. `slb policy default` - in_vendor_tree: true, 2 required args\n\nNow let me analyze the cases one by one.\n\nNote for case 5 (245861784181753877): The author wrote \"slb virtual portlist\" (singular) but the vendor tree only has \"slb virtual portlists\" (plural). I should note this.\n\nNow let me build each case.\n\n**Case 1: 245861784181653567** - \""
+  },
+  "legacy_sniffer_failure": {
+    "source": "recorded model stream (sanitized)",
+    "record_status": "real_production_carrier_slice",
+    "event": {
+      "event": "fork_stream",
+      "fork_id": "bdc6c9f5",
+      "tokens": 2360,
+      "current_tokens": 2348,
+      "reasoning_summary": "Case 3: 111122223333444455"
+    }
+  },
+  "legacy_bare_autoid_failure": {
+    "source": "recorded model stream (sanitized)",
+    "record_status": "real_production_carrier_slice",
+    "event": {
+      "event": "fork_stream",
+      "fork_id": "633dc686",
+      "reasoning_summary": "999988887777666655"
+    }
+  }
+}
