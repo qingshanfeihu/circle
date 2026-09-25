@@ -40,6 +40,7 @@ from circle.prompt_features import (
     explore_subagent_spec,
     plan_mode_append,
 )
+from circle.sandbox import shell_environment
 from circle.skills import skill_sources
 from circle.system_prompt import build_system_prompt, load_tool_prompt
 
@@ -108,6 +109,7 @@ def sandbox_backend(
         root_dir=root_dir,
         virtual_mode=True,
         inherit_env=False,
+        env=shell_environment(),
         plan_mode=plan_mode,
     )
 

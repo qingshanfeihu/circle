@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from circle.sandbox import CircleSandboxBackend, is_host_absolute_path
+from circle.sandbox import CircleSandboxBackend, is_host_absolute_path, shell_environment
 from circle_harness import sandbox_backend
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import SandboxBackendProtocol
@@ -16,7 +16,9 @@ def test_backend_is_the_framework_local_sandbox(tmp_path: Path):
     assert isinstance(backend, LocalShellBackend)
     assert isinstance(backend, SandboxBackendProtocol)
     assert backend.virtual_mode is True
-    assert backend._env == {}
+    # 模型跑的命令拿到用户环境去掉机密名后的副本（见 tests/test_shell_environment.py）
+    assert backend._env == shell_environment()
+    assert not any("API_KEY" in k or k.endswith("_TOKEN") for k in backend._env)
 
 
 def test_filesystem_paths_stay_inside_the_root(tmp_path: Path):

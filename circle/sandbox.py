@@ -11,11 +11,36 @@ Writes still go through HITL (``interrupt_on``).
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.filesystem import _raise_if_symlink_loop
+
+# 名字里任一段（按非字母数字切）是这些词、或以它们结尾，就当机密：API key、令牌、口令等
+_SECRET_PARTS = ("KEY", "KEYS", "TOKEN", "TOKENS", "SECRET", "SECRETS", "PASS", "PASSWORD",
+                 "PASSWD", "PASSPHRASE", "CREDENTIAL", "CREDENTIALS", "COOKIE", "COOKIES", "PRIVATE")
+
+
+def _looks_secret(name: str) -> bool:
+    parts = [p for p in re.split(r"[^A-Z0-9]+", name.upper()) if p]
+    return any(p in _SECRET_PARTS or p.endswith(("PASS", "PASSWORD", "PASSWD", "TOKEN",
+                                                  "SECRET", "APIKEY"))
+               for p in parts)
+
+
+def shell_environment(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment for commands the model runs: the user's own, minus anything named like a secret.
+
+    An empty environment (the old default) drops HOME, the user's PATH (venvs), locale and TLS
+    trust settings such as SSL_CERT_FILE, so ordinary tools break; the API key circle itself puts
+    into os.environ must still never reach model-run commands.
+    """
+    env = os.environ if source is None else source
+    return {k: v for k, v in env.items() if not _looks_secret(k)}
+
 
 _HOST_TOP_LEVEL = frozenset(
     {
