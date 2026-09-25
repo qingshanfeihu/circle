@@ -107,6 +107,8 @@ class HarnessBridge:
         # resume 时必须给每个都补一个 decision，否则 langchain 会抛
         # "Number of human decisions (N) does not match number of hanging tool calls (M)"。
         self._pending_action_count: int = 1
+        # 中断回调在本回合的工作线程里就给出的 resume（/yolo 自动放行）：本回合退出时再起
+        self._deferred_resume: Any = None
 
     @property
     def is_running(self) -> bool:
@@ -140,7 +142,14 @@ class HarnessBridge:
     def resume(self, decision: Any) -> None:
         """``{"decision": …}`` 扇出到本次中断的全部挂起调用；其他值原样作为 resume 值。"""
         if self.is_running:
+            if threading.current_thread() is self._worker:
+                # 中断回调就在本回合的工作线程上（/yolo 自动放行走这条路）：线程还活着，
+                # 直接起新一段会被当成"正在跑"丢掉，会话就永远停在忙碌；记下，_run 退出时再起
+                self._deferred_resume = decision
             return
+        self._start_resume(decision)
+
+    def _start_resume(self, decision: Any) -> None:
         self._cancelled = False
         if not (isinstance(decision, dict) and set(decision) == {"decision"}):
             self._pending_action_count = 1
@@ -328,6 +337,9 @@ class HarnessBridge:
             pass
         finally:
             unbind_bus(token)
+            deferred, self._deferred_resume = getattr(self, "_deferred_resume", None), None
+            if deferred is not None and not self._cancelled:
+                self._start_resume(deferred)
 
     def announce_blocked(self, call: dict[str, Any], text: str) -> None:
         """A call refused at the approval prompt: give it a row in this turn."""

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -244,7 +245,7 @@ def test_extension_tools_get_a_tool_wide_always_rule():
 # ── session panel ───────────────────────────────────────────────────────────
 
 
-def _session(tmp_path: Path, monkeypatch) -> CircleSessionApp:
+def _session(tmp_path: Path, monkeypatch, responses: list | None = None) -> CircleSessionApp:
     monkeypatch.setenv("CIRCLE_OAUTH_MOCK", "1")
     home, ws = tmp_path / "home", tmp_path / "ws"
     ws.mkdir()
@@ -253,8 +254,27 @@ def _session(tmp_path: Path, monkeypatch) -> CircleSessionApp:
     init.confirm()
     init.confirm()
     TrustController(init.settings, ws, home=home).confirm()
-    return CircleSessionApp(init.settings, ws, home=home,
-                            model_override=ScriptedModel(responses=[AIMessage(content="ok")]))
+    model = ScriptedModel(responses=responses or [AIMessage(content="ok")])
+    return CircleSessionApp(init.settings, ws, home=home, model_override=model)
+
+
+def test_yolo_resumes_from_the_bridge_worker_thread(tmp_path, monkeypatch):
+    """/yolo 的放行在 bridge 自己的工作线程里发生（中断回调就在那条线程上）。
+
+    resume 不能因为"本回合的线程还活着"被丢掉：真线程走一遍，写文件要落盘、会话回到空闲。
+    """
+    app = _session(tmp_path, monkeypatch, responses=[
+        _call("write_file", {"file_path": "/marker.txt", "content": "yolo"}, "c1"),
+        AIMessage(content="written"),
+    ])
+    app._on_submit("/yolo")  # noqa: SLF001
+    app._on_submit("write the marker")  # noqa: SLF001
+    deadline = time.time() + 10
+    while time.time() < deadline and (app._is_loading or app._bridge.is_running):  # noqa: SLF001
+        time.sleep(0.05)
+    assert (tmp_path / "ws" / "marker.txt").read_text(encoding="utf-8") == "yolo"
+    assert not app._bridge.is_running  # noqa: SLF001
+    assert "written" in "\n".join(app._transcript.snapshot())  # noqa: SLF001
 
 
 def test_panel_asks_each_call_and_resumes_with_every_decision(tmp_path, monkeypatch):
