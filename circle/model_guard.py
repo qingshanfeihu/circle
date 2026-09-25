@@ -374,6 +374,17 @@ def _finish_reason(chunk: Any) -> str:
     return str(meta.get("finish_reason") or meta.get("stop_reason") or "")
 
 
+_BUDGET_STOPS = frozenset({"max_tokens", "length"})
+
+
+def _report_budget_stop(finish: str, answered: bool) -> None:
+    """输出额度在给出回答前就用完（通常被思考吃光）：本轮没有任何回答，不能静默结束。"""
+    if finish in _BUDGET_STOPS and not answered:
+        logger.warning("model stopped on %s before any answer; the output budget went to "
+                       "thinking (raise max_tokens for this model)", finish)
+        _notify({"event": "output_budget_exhausted", "finish_reason": finish})
+
+
 # ── the guarded model ──────────────────────────────────────────────────────
 
 
@@ -486,6 +497,7 @@ class _GuardMixin:
         messages = list(messages)
         while True:
             yielded = substantive = answered = saw_finish = False
+            finish = ""
             last_progress = time.monotonic()
             stall_s = _stall_seconds()
             monitor = RepetitionMonitor() if _env_flag("CIRCLE_LLM_REPEAT_GUARD") else None
@@ -495,7 +507,9 @@ class _GuardMixin:
                 with contextlib.closing(upstream):
                     for chunk in upstream:
                         yielded = True
-                        saw_finish = saw_finish or bool(_finish_reason(chunk))
+                        reason = _finish_reason(chunk)
+                        if reason:
+                            saw_finish, finish = True, reason
                         if _has_substance(chunk):
                             substantive = True
                             last_progress = time.monotonic()
@@ -514,6 +528,7 @@ class _GuardMixin:
                     continue
                 if yielded and not saw_finish and _env_flag("CIRCLE_LLM_VERIFY_FINISH"):
                     logger.warning("stream ended without a finish signal; output may be cut short")
+                _report_budget_stop(finish, answered)
                 return
             except TextRepetitionLoop as loop:
                 if answered:
@@ -552,6 +567,7 @@ class _GuardMixin:
         messages = list(messages)
         while True:
             yielded = substantive = answered = saw_finish = False
+            finish = ""
             last_progress = time.monotonic()
             stall_s = _stall_seconds()
             monitor = RepetitionMonitor() if _env_flag("CIRCLE_LLM_REPEAT_GUARD") else None
@@ -561,7 +577,9 @@ class _GuardMixin:
                 async with contextlib.aclosing(upstream):
                     async for chunk in upstream:
                         yielded = True
-                        saw_finish = saw_finish or bool(_finish_reason(chunk))
+                        reason = _finish_reason(chunk)
+                        if reason:
+                            saw_finish, finish = True, reason
                         if _has_substance(chunk):
                             substantive = True
                             last_progress = time.monotonic()
@@ -579,6 +597,7 @@ class _GuardMixin:
                     continue
                 if yielded and not saw_finish and _env_flag("CIRCLE_LLM_VERIFY_FINISH"):
                     logger.warning("stream ended without a finish signal; output may be cut short")
+                _report_budget_stop(finish, answered)
                 return
             except TextRepetitionLoop:
                 if answered:

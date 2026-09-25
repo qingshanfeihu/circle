@@ -302,6 +302,39 @@ def test_anthropic_effort_follows_the_model_catalog():
     assert newer["max_tokens"] >= 32000
     other = _payload("mimo-v2.5-pro")
     assert other["output_config"] == {"effort": "xhigh"} and not other.get("thinking")
+    # 目录外的非 Claude 模型也不能停在 SDK 的 4096：思考先把额度吃光，回合以空回答结束
+    assert other["max_tokens"] >= 32000
+
+
+def test_thinking_that_uses_up_the_output_budget_is_reported(caplog):
+    events: list[dict] = []
+    remove = mg.add_retry_listener(events.append)
+    try:
+        model = mg.guard_model(Scripted(scripts=[[reasoning("step " * 40), text("", "max_tokens")]]))
+        with caplog.at_level("WARNING", logger="circle.model_guard"):
+            assert _run(model) == ""
+    finally:
+        remove()
+    assert any("before any answer" in r.getMessage() for r in caplog.records)
+    assert [e["event"] for e in events] == ["output_budget_exhausted"]
+
+
+def test_async_stream_reports_a_thinking_only_budget_stop_too(caplog):
+    model = mg.guard_model(AsyncScripted(scripts=[[reasoning("step " * 40), text("", "length")]]))
+
+    async def consume() -> list:
+        return [c async for c in model.astream("hi")]
+
+    with caplog.at_level("WARNING", logger="circle.model_guard"):
+        asyncio.run(consume())
+    assert any("before any answer" in r.getMessage() for r in caplog.records)
+
+
+def test_a_budget_stop_after_an_answer_is_not_flagged(caplog):
+    model = mg.guard_model(Scripted(scripts=[[text("partial answer"), text("", "max_tokens")]]))
+    with caplog.at_level("WARNING", logger="circle.model_guard"):
+        assert _run(model) == "partial answer"
+    assert not any("before any answer" in r.getMessage() for r in caplog.records)
 
 
 def test_openai_effort_only_when_asked(monkeypatch):

@@ -418,6 +418,8 @@ class CircleSessionApp:
                    f"（{event.get('attempt')}/{event.get('max')}）")
         elif event.get("event") == "param_dropped":
             msg = f"端点不接受参数 {event.get('param')}，本会话起不再发送"
+        elif event.get("event") == "output_budget_exhausted":
+            msg = "模型的输出额度在给出回答前就被思考用完，本轮没有回答"
         else:
             return
         with self._app.lock:

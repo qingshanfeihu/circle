@@ -110,6 +110,9 @@ def apply_reasoning(model: Any, effort: str, protocol: str) -> Any:
             model.max_tokens = 32000
     else:
         model.reasoning_effort = effort
+        # 目录外的非 Claude 模型同样拿到 SDK 的 4096 缺省：思考先把额度吃光，回合以空回答结束
+        if int(getattr(model, "max_tokens", 0) or 0) <= 4096:
+            model.max_tokens = 32000
     return model
 
 
