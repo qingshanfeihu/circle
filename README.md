@@ -39,6 +39,7 @@ circle ~/code/my-project
 | `/resume` | 恢复会话（`/sessions` 同义） |
 | `/compact` | 压缩上下文（`/summarize` 同义） |
 | `/plan` | 开关 plan mode（优先探索与写 `/plan.md`；变更仍需确认） |
+| `/yolo` | 本会话自动批准需审批的工具调用（`/auto` 同义；`/yolo off` 恢复逐项审批） |
 | `/export` `/share` | 导出 / 本地分享副本 |
 | `/undo` `/redo` | 撤销 / 重做上一回合 |
 | `/hotkeys` | 快捷键说明 |
@@ -124,6 +125,14 @@ def register(api):
 | 每次都问 | 删除（`rm`、`find -delete`、`delete` 工具、删文件的补丁）、破坏性 git（`reset --hard`、`clean -f`、强推、`branch -D`、丢弃改动）、`dd`/`mkfs`/`truncate`、无法解析的命令 | 审批面板没有「始终允许」 |
 | 询问 | 其余 | 可选「始终允许」：命令按原文精确匹配；文件改动只覆盖工作区内的路径；扩展工具覆盖该工具的全部调用 |
 
+`/yolo` 打开后，「询问」与「每次都问」两类在本会话里全部自动批准（回合进行中发起的审批也一样）；
+「拒绝」一类照旧由 sandbox 后端在执行前拦截，不受 `/yolo` 影响。
+
+模型执行的命令继承启动 circle 时的环境变量（`PATH`、`HOME`、语言、`SSL_CERT_FILE` 等），名字像机密的
+不传：变量名按非字母数字切段后，任一段是 `KEY`、`TOKEN`、`SECRET`、`PASS`/`PASSWORD`/`PASSWD`、
+`PASSPHRASE`、`CREDENTIAL`、`COOKIE`、`PRIVATE`（含复数），或以 `PASS`/`PASSWORD`/`PASSWD`/`TOKEN`/
+`SECRET`/`APIKEY` 结尾，就去掉。circle 自己放进环境的模型 API key 因此到不了这些命令里。
+
 「始终允许」按会话线程记在 `~/.circle/approvals/`（命令只存哈希），重启或 `/resume` 后仍然有效；
 `/approvals` 打开审批管理页（←→ 选规则、enter 撤销、esc 关闭），`/approvals list` 以文字列出，`/approvals revoke <序号>` 直接撤销。凭据文件表可在 `settings.json` 用
 `"credential_files": ["*.secret", ".env*"]` 替换（按文件名通配）。命令分类只读命令文本，能覆盖常见写法，
@@ -149,11 +158,15 @@ def register(api):
 - 输出陷入复读：还没给出正文或工具调用时，附一条提醒重发（最多两次）；已经有正文就在此处结束。
   `CIRCLE_LLM_REPEAT_GUARD=0` 关闭。
 - 流结束却没有 finish_reason：没内容就重发一次；有内容则保留，并记日志说明可能被截断。
+- 输出额度在给出任何回答前就用完（finish_reason 为 `max_tokens`/`length`，通常是被思考吃光）：会话里提示
+  「模型的输出额度在给出回答前就被思考用完，本轮没有回答」并记日志，不当成空回复静默结束。
 
 思考深度 `CIRCLE_REASONING_EFFORT`（Anthropic 协议缺省 `xhigh`）按模型族落地：
 声明了档位的模型取不超过所请求的最高档；老一代 Claude 改发思考预算；
 模型目录里还没有的 Claude 型号按新一代处理，发自适应思考加 effort。
 OpenAI 协议只有显式设置了才发送。Circle 不会关闭思考。
+模型目录里没有声明思考档位的模型（目录外的 Claude 型号与非 Claude 模型）拿到的是 SDK 的 4096 缺省输出
+额度，思考会先把它吃光，所以不到 4096 时提到 32000。
 
 ## Dev
 
