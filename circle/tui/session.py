@@ -84,7 +84,7 @@ class MainController:
             else:
                 out.append(f" ◆ {row.text}")
         if self.phase == "running":
-            out.append(" ✶ 正在请求模型…")
+            out.append(" ▸ 正在请求模型…")
         if self.approval is not None:
             out.append("")
             out.extend(self.approval.render_lines())

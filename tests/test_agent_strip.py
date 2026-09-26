@@ -113,3 +113,16 @@ def test_rows_never_run_past_the_width():
 
 def test_nothing_running_draws_nothing():
     assert render_agent_strip([], width=80) == []
+
+
+def test_a_long_activity_leaves_room_for_the_selected_note_and_tokens():
+    rows = [card("c1", description="一个非常长的任务描述" * 20, tokens=(8200, 0)),
+            card("c2", description="short")]
+    lines = [ANSI.sub("", ln) for ln in
+             render_agent_strip(rows, width=100, now=1500.0, selected="agent:c1", hover="agent:c2")]
+    row = next(ln for ln in lines if "← 选中" in ln)
+    assert row.rstrip().endswith("8.2k ← 选中"), row
+    raw = render_agent_strip(rows, width=100, now=1500.0, selected="agent:c1", hover="agent:c2")
+    hovered = next(ln for ln in raw if "short" in ln)
+    pal = theme.palette()
+    assert hovered.startswith(theme.sgr_join(pal.sel_bg, pal.text)) and "← 选中" not in hovered

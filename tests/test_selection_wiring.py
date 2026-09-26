@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from circle.ink.components.transcript import Transcript
 from circle.ink.parse_keypress import KeyPress, MouseEvent
 from circle.ink.screen import (
     CELL_NORMAL,
@@ -106,6 +107,13 @@ def _make_app():
     obj._approvals_page = None
     obj._strip_ids = []
     obj._strip_visible_ids = []
+    obj._strip_hover = None
+    obj._detail_buttons = []
+    obj._detail_hover = None
+    obj._autoscroll_timer = None
+    obj._autoscroll_delta = 0
+    obj._drag_point = None
+    obj._transcript = Transcript()
     return obj
 
 
@@ -250,16 +258,10 @@ def test_ctrl_c_without_selection_falls_through_to_abort_branch():
     app = _make_app()
     _attach_minimum_key_state(app)
     app._last_ctrl_c = 0.0
-    transcript_msgs = []
-
-    class _Tr:
-        def append_message(self, message):
-            transcript_msgs.append(message)
-
-    app._transcript = _Tr()
+    app._transcript = Transcript()
     app._handle_key(KeyPress(key="ctrl+c"))
     assert not app._app.terminal_writes
-    assert any("ctrl+c again" in m for m in transcript_msgs)
+    assert any("ctrl+c again" in m for m in app._transcript.snapshot())
 
 
 class _FakeRect:

@@ -1,10 +1,13 @@
 """Closed-loop composer frame.
 
-While busy, one rainbow travels the rounded rectangle. The status text on
-the top edge takes its color from that same sweep, so the word does not run
-a second shimmer. The rainbow is the one place colors bypass ``palette()``
-(its fixed gradient is the design); the quiet frame uses the palette, and
-``CIRCLE_TUI_SHIMMER=0`` keeps the frame quiet while busy.
+While busy, one rainbow travels the rounded rectangle. The busy word sits on
+the top edge from column 3 and takes its color from that same sweep, so the
+word does not run a second shimmer. When quiet the whole frame is faint and
+static. An observability alert sits on the bottom edge from column 3 in yellow
+(on a static bottom edge), so it never takes a footer row. The rainbow is the
+one place colors bypass ``palette()`` (its fixed gradient is the design); the
+quiet frame uses the palette, and ``CIRCLE_TUI_SHIMMER=0`` keeps the frame
+quiet while busy.
 """
 
 from __future__ import annotations
@@ -94,16 +97,27 @@ def _paint(glyphs: list[str], indices: list[int], perimeter: int, elapsed: float
     return "".join(parts)
 
 
-def _quiet_frame(width: int, label: str) -> tuple[str, str, str, str]:
-    pal = palette()
+def _fit_label(label: str, width: int) -> str:
+    """The label as plain text, cut to fit between ``╭──`` and at least ``──╮``."""
     plain = _ANSI_RE.sub("", label or "")
-    shown = _truncate_visible(plain, max(0, width - 6)) if plain else ""
-    if shown:
-        rest = "─" * max(0, width - 3 - string_width(shown))
-        top = f"{pal.faint}╭─{pal.reset}{pal.text}{shown}{pal.reset}{pal.faint}{rest}╮{pal.reset}"
+    return _truncate_visible(plain, max(0, width - 6)) if plain else ""
+
+
+def _alert_bottom(width: int, alert: str) -> str:
+    """Static bottom edge with the alert at column 3 in yellow; the width stays ``width``."""
+    pal = palette()
+    rest = "─" * max(0, width - 4 - string_width(alert))
+    return f"{pal.faint}╰──{pal.yellow}{alert}{pal.faint}{rest}╯{pal.reset}"
+
+
+def _quiet_frame(width: int, label: str, alert: str) -> tuple[str, str, str, str]:
+    pal = palette()
+    if label:
+        rest = "─" * max(0, width - 4 - string_width(label))
+        top = f"{pal.faint}╭──{label}{rest}╮{pal.reset}"
     else:
         top = f"{pal.faint}╭{'─' * (width - 2)}╮{pal.reset}"
-    bottom = f"{pal.faint}╰{'─' * (width - 2)}╯{pal.reset}"
+    bottom = _alert_bottom(width, alert) if alert else f"{pal.faint}╰{'─' * (width - 2)}╯{pal.reset}"
     side = f"{pal.faint}│{pal.reset}"
     return top, side, side, bottom
 
@@ -113,21 +127,22 @@ def build_loop_frame(
     *,
     elapsed: float | None,
     label: str = "",
+    bottom_label: str = "",
 ) -> tuple[str, str, str, str]:
     """Return ``(top, left, right, bottom)`` for one closed frame.
 
     ``elapsed is None`` draws a quiet frame. A number runs the rainbow around
-    the loop and through the label.
+    the loop and through the label. ``bottom_label`` (the observability alert)
+    is drawn on the bottom edge whether busy or not.
     """
     width = max(4, int(width))
+    alert = _fit_label(bottom_label, width)
     if elapsed is None or not shimmer.enabled():
-        return _quiet_frame(width, "" if elapsed is None else label)
+        return _quiet_frame(width, "" if elapsed is None else _fit_label(label, width), alert)
 
     perimeter = 2 * (width + 1)  # height is 3: two rims + one content row
     # Drop any shimmer the caller already painted. This sweep owns the color.
-    plain_label = _ANSI_RE.sub("", label or "")
-    label_w_budget = max(0, width - 6)
-    shown = _truncate_visible(plain_label, label_w_budget) if plain_label else ""
+    shown = _fit_label(label, width)
     label_w = string_width(shown)
     label_at = 3
     if label_w <= 0 or label_at + label_w > width - 3:
@@ -154,9 +169,12 @@ def build_loop_frame(
     top_parts.append(_RESET)
 
     right = _sgr(_color_at(width, perimeter, elapsed)) + "│" + _RESET
-    bottom_glyphs = ["╰", *["─"] * (width - 2), "╯"]
-    # Clockwise along the bottom runs from the right corner back to the left.
-    bottom_indices = [2 * width - col for col in range(width)]
-    bottom = _paint(bottom_glyphs, bottom_indices, perimeter, elapsed)
+    if alert:
+        bottom = _alert_bottom(width, alert)
+    else:
+        bottom_glyphs = ["╰", *["─"] * (width - 2), "╯"]
+        # Clockwise along the bottom runs from the right corner back to the left.
+        bottom_indices = [2 * width - col for col in range(width)]
+        bottom = _paint(bottom_glyphs, bottom_indices, perimeter, elapsed)
     left = _sgr(_color_at(2 * width + 1, perimeter, elapsed)) + "│" + _RESET
     return "".join(top_parts), left, right, bottom

@@ -136,6 +136,7 @@ class TextNode(DOMNode):
         self.value = _sanitize_text_value(value)
         self._rows_cache: tuple[int, int] | None = None
         self.fill_char: str | None = None
+        self.text_styles = TextStyles()
 
     def set_value(self, value: str) -> None:
         value = _sanitize_text_value(value)

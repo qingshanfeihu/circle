@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .dom import DOMElement, DOMNode, NodeType, Rect, TextNode
 from .output import Output
 from .screen import CharPool, StylePool
@@ -59,6 +61,13 @@ def _render_node(
 
 
     scroll_offset = node.scroll_top if node.style.overflow == "scroll" else 0
+    if node.style.overflow == "scroll" and node.sticky_scroll and viewport_h is not None:
+        # 吸底按本帧的真实视口在绘制时落定：审批面板、计划栏在同一帧出现把视口压矮时，
+        # 内容变更那一刻按旧视口算的 scroll_top 会把末几行挡在视口外。
+        content_rows = sum(child.wrapped_rows(content_w) for child in node.children
+                           if isinstance(child, TextNode))
+        scroll_offset = max(0, content_rows - viewport_h)
+        node.scroll_top = scroll_offset
     text_y_offset = 0
     for child in node.children:
         if isinstance(child, TextNode):
@@ -68,12 +77,11 @@ def _render_node(
             rows = child.wrapped_rows(content_w)
             top = text_y_offset - scroll_offset
             if viewport_h is None or (top + rows > 0 and top < viewport_h):
-                _render_text(child, output, style_pool, content_x, content_y - scroll_offset + text_y_offset)
+                _render_text(child, output, style_pool, content_x, content_y - scroll_offset + text_y_offset, content_w)
             text_y_offset += rows
         elif isinstance(child, DOMElement):
             _render_node(child, output, char_pool, style_pool, content_x, content_y - scroll_offset)
             text_y_offset = 0
-
     if clip_pushed:
         output.pop_clip()
 
@@ -84,18 +92,44 @@ def _render_text(
     style_pool: StylePool,
     x: int,
     y: int,
+    content_w: int = 0,
 ) -> None:
     if not node.value:
         return
-    
     style_id = _resolve_text_style(node, style_pool)
-    output.write(x, y, node.value, style_id)
+    value = node.value
+    if content_w > 0 and getattr(node.text_styles, "background_color", None):
+        value = _pad_value_to_width(value, content_w)
+    output.write(x, y, value, style_id)
+
+
+def _pad_value_to_width(value: str, width: int) -> str:
+    # 挂了背景色的行铺满到可用宽;已超宽的段不补,避免引入额外软换行。
+    import re as _re
+
+    from .string_width import string_width
+
+    ansi = _re.compile(r"\x1b\[[0-9;]*m")
+    out_lines: list[str] = []
+    for seg in value.split("\n"):
+        w = string_width(ansi.sub("", seg))
+        out_lines.append(seg if w >= width else seg + " " * (width - w))
+    return "\n".join(out_lines)
 
 
 def _resolve_text_style(node: DOMNode, style_pool: StylePool) -> int:
     codes: list[str] = []
-    current = node.parent
-    while current is not None:
+    chain: list[Any] = []
+    if getattr(node, "text_styles", None) is not None:
+        chain.append(node)
+    walk = node.parent
+    while walk is not None:
+        chain.append(walk)
+        walk = walk.parent
+    # 注:链序是节点→根,SGR 同名属性后者压前者(祖先压子孙),与 CSS 特异性相反。
+    # 现役无害:祖先只挂 dim 这类不与子节点冲突的属性;若日后给容器也挂
+    # background_color,需先把链倒成根→节点(更具体的赢)。
+    for current in chain:
         ts = current.text_styles
         if ts.bold:
             codes.append("\x1b[1m")
@@ -117,7 +151,6 @@ def _resolve_text_style(node: DOMNode, style_pool: StylePool) -> int:
             color_code = _named_color_to_sgr(ts.background_color, fg=False)
             if color_code:
                 codes.append(color_code)
-        current = current.parent
     if not codes:
         return style_pool.none
     return style_pool.intern(codes)

@@ -88,6 +88,13 @@ class InputHistory:
         self._cursor = None
         self._draft = ""
 
+    def can_go_up(self) -> bool:
+        """还能往更旧翻吗——空输入框翻尽时 ↑ 改滚转录。"""
+        return bool(self._items) and (self._cursor is None or self._cursor > 0)
+
+    def can_go_down(self) -> bool:
+        return self._cursor is not None and self._cursor < len(self._items) - 1
+
     def start_search(self, current_input: str) -> str | None:
         self._search_mode = True
         self._search_query = current_input

@@ -8,7 +8,13 @@ Layout follows InfoTest's single tool-row form: every tool call is one row
 ``{light} {Short}({summary})`` with its result on ``⎿`` lines right below it, whether
 it succeeded, failed or was refused. A failure the model can fix itself (bad
 arguments, unknown tool name) gets no lamp and a muted strikethrough instead of red.
-Blocks are separated by one blank entry; consecutive tool rows are not.
+
+Pacing and tints follow InfoTest's final display contract (07 §11.25): blocks are
+separated by exactly one blank entry and nothing inside a block — an answer block is
+its ``∴`` thinking rows plus the ``⏺`` text after them, a tool group is consecutive
+tool rows; two text entries are two blocks. A tool row and its ``⎿`` lines carry the
+tool's type tint (read blue, write green, agent bright cyan), thinking rows the
+thinking tint; answer text is never tinted.
 
 A ``task`` row carries its subagent folded underneath: one meta line (name, calls,
 elapsed, tokens) and, while it runs, its last few calls; ctrl+o lists them all. The
@@ -57,6 +63,23 @@ SUBAGENT_RECENT_CALLS = 3
 _RESULT_WIDTH = 160
 _HIDDEN_TOOLS = frozenset({"write_todos"})  # 由计划面板显示，不占工具行
 
+# 动作类型 → 底色（InfoTest 07 章 §11.25(2)，同类同色）：读＝查阅文件/代码/网页/skill，
+# 写＝改文件，agent＝子代理；执行命令、问询这类不归类的不铺底色。
+_TOOL_TYPE_READ = frozenset({"read_file", "ls", "glob", "grep", "lsp", "skill",
+                             "webfetch", "websearch"})
+_TOOL_TYPE_WRITE = frozenset({"write_file", "edit_file", "apply_patch", "delete"})
+_TOOL_TYPE_AGENT = frozenset({"task"})
+
+# 块间空行裁决表：本块紧跟在哪些块后面算同一块（不补空行）；其余一律隔 1 行。
+# text 只续 thinking（∴ → ⏺ 同一回答块）；text → text 不续，两个 ⏺ 块之间恒 1 空行。
+_BLOCK_CONTINUES: dict[str, frozenset[str]] = {
+    "text": frozenset({"thinking"}),
+    "thinking": frozenset({"thinking"}),
+    "tool": frozenset({"tool"}),
+}
+
+Row = tuple[str, str | None]
+
 
 @dataclass
 class ViewOptions:
@@ -76,8 +99,22 @@ def _clip(text: str, width: int = _RESULT_WIDTH) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
+def tool_type_bg_hex(name: str) -> str | None:
+    """The type tint (hex) for a tool's row and its ``⎿`` lines; None for no tint."""
+    pal = palette()
+    name = str(name or "")
+    if name in _TOOL_TYPE_READ:
+        return pal.read_bg_hex or None
+    if name in _TOOL_TYPE_WRITE:
+        return pal.write_bg_hex or None
+    if name in _TOOL_TYPE_AGENT:
+        return pal.agent_bg_hex or None
+    return None
+
+
 def _text_entry(text: str, opts: ViewOptions) -> str:
-    rendered = MarkdownRenderer(width=max(20, opts.width - 4)).render_streaming(text.strip())
+    # 标记占 3 列（" ⏺ "），续行同样缩 3 列：正文宽 = 总宽 - 3
+    rendered = MarkdownRenderer(width=max(20, opts.width - 3)).render_streaming(text.strip())
     lines = rendered.split("\n")
     return "\n".join([f" {GLYPH_AGENT} {lines[0]}"] + [f"   {ln}" if ln else "" for ln in lines[1:]])
 
@@ -183,7 +220,8 @@ def _pending_entry(request: dict) -> str:
     return f" {status_light('running')} {pal.text}{call}{pal.reset} {pal.faint}等待审批{pal.reset}"
 
 
-def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
+def render_turn_rows(snap: MessageSnapshot, opts: ViewOptions) -> list[Row]:
+    """The turn's entries with each one's background tint (hex, or None)."""
     results: dict[str, ContentBlock] = {}
     for msg in snap.messages:
         for block in msg.content:
@@ -191,15 +229,16 @@ def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
                 results[block.tool_use_id] = block
     called = {b.tool_use_id for m in snap.messages for b in m.content if b.type == BLOCK_TOOL_USE}
     cards = {str(card.get("tool_use_id") or ""): card for _uuid, card in snapshot_cards(snap)}
+    think_bg = palette().think_bg_hex or None
 
-    entries: list[str] = []
+    rows: list[Row] = []
     last_kind = ""
 
-    def add(entry: str, kind: str) -> None:
+    def add(entry: str, kind: str, bg: str | None = None) -> None:
         nonlocal last_kind
-        if entries and not (kind == "tool" and last_kind == "tool"):
-            entries.append("")
-        entries.append(entry)
+        if rows and last_kind not in _BLOCK_CONTINUES.get(kind, frozenset()):
+            rows.append(("", None))
+        rows.append((entry, bg or None))
         last_kind = kind
 
     for msg in snap.messages:
@@ -211,18 +250,20 @@ def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
                     add(render_thinking_line(body=block.thinking, done=block.thinking_done,
                                              expanded=opts.thinking_expanded,
                                              title=block.thinking_title,
-                                             duration_s=block.thinking_duration_s), "thinking")
+                                             duration_s=block.thinking_duration_s),
+                        "thinking", think_bg)
             elif block.type == BLOCK_TEXT:
                 if block.text.strip():
                     add(_text_entry(block.text, opts), "text")
             elif block.type == BLOCK_TOOL_USE:
                 if block.name not in _HIDDEN_TOOLS:
                     add(_tool_entry(block, results.get(block.tool_use_id), opts,
-                                    cards.get(block.tool_use_id)), "tool")
+                                    cards.get(block.tool_use_id)),
+                        "tool", tool_type_bg_hex(block.name))
             elif block.type == BLOCK_TOOL_RESULT:
                 if block.tool_use_id not in called and block.name not in _HIDDEN_TOOLS:
                     orphan = ContentBlock(type=BLOCK_TOOL_USE, name=block.name, status="done")
-                    add(_tool_entry(orphan, block, opts), "tool")
+                    add(_tool_entry(orphan, block, opts), "tool", tool_type_bg_hex(block.name))
             elif block.type == BLOCK_ERROR:
                 pal = palette()
                 text = str(block.payload.get("text") or "")
@@ -231,10 +272,14 @@ def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
                 pal = palette()
                 add(f" {pal.yellow}△{pal.reset} {block.payload.get('text') or ''}", "warn")
     for request in opts.pending_calls:
-        add(_pending_entry(request), "tool")
+        add(_pending_entry(request), "tool", tool_type_bg_hex(str(request.get("name") or "")))
     if snap.streaming_text and snap.streaming_text.strip():
         add(_text_entry(snap.streaming_text, opts), "text")
-    return entries
+    return rows
+
+
+def render_turn(snap: MessageSnapshot, opts: ViewOptions) -> list[str]:
+    return [entry for entry, _bg in render_turn_rows(snap, opts)]
 
 
 def latest_todos(snap: MessageSnapshot) -> list[dict] | None:

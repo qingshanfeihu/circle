@@ -23,6 +23,7 @@ from circle.ink.theme import palette, sgr_join
 MAX_ROWS = 6
 BADGE = "agent"
 HINT = "↓↑ 选择 · ⏎ 详情 · esc 返回"
+_SELECTED_NOTE = " ← 选中"
 _PFX_W = 7
 _NAME_W = 24
 _ELAPSED_W = 8
@@ -156,10 +157,14 @@ def render_agent_strip(
     width: int,
     now: float | None = None,
     selected: str | None = None,
+    hover: str | None = None,
     total: int | None = None,
     hidden: int = 0,
 ) -> list[str]:
-    """``rows`` is the visible window; ``total`` counts every running subagent."""
+    """``rows`` is the visible window; ``total`` counts every running subagent.
+
+    The selected row and the row under the mouse sit on ``sel_bg`` (the selected one
+    also says ``← 选中``); other rows carry the agent tint."""
     if not rows:
         return []
     now = time.time() if now is None else now
@@ -173,6 +178,8 @@ def render_agent_strip(
     elapsed_w = min(_ELAPSED_W, max(6, max(string_width(s) for s in elapses)))
     token_w = min(_TOKENS_W, max(6, max(string_width(s) for s in tokens)))
     fixed = (2 + _PFX_W) + (2 + name_w + 1) + (elapsed_w + 1 + token_w) + 1
+    if selected in {uuid for uuid, _card in rows}:
+        fixed += string_width(_SELECTED_NOTE)  # 注记不挤掉令牌列
     action_w = max(0, min(max(string_width(s) for s in actions), w - fixed))
 
     out = [f"{pal.line}{'─' * w}{pal.reset}"]
@@ -180,14 +187,15 @@ def render_agent_strip(
     out.append(f"{sgr_join(pal.panel_bg, pal.faint)}{header}{pal.reset}")
     for (uuid, _card), name, action, elapsed, token in zip(rows, names, actions, elapses, tokens):
         is_selected = uuid == selected
+        hovered = not is_selected and uuid == hover
         badge = f"  {_pad(BADGE, _PFX_W)}"
         left = f"  {_pad(name, name_w)} {_pad(action, action_w)}"
         right = f"{_rjust(elapsed, elapsed_w)} {_rjust(token, token_w)}"
         if is_selected:
-            right += " ← 选中"
+            right += _SELECTED_NOTE
         gap = max(1, w - string_width(badge) - string_width(left) - string_width(right))
         rest = f"{left}{' ' * gap}{right}"
-        if is_selected:
+        if is_selected or hovered:
             out.append(f"{sgr_join(pal.sel_bg, pal.text)}{_pad(badge + rest, w)}{pal.reset}")
             continue
         out.append(f"{sgr_join(pal.agent_bg, pal.dim)}{badge}"

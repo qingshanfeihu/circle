@@ -1,11 +1,13 @@
 """One subagent's detail page, in the InfoTest layout
 (``ist_app._render_agent_detail_band`` / ``_render_agent_detail_lines``).
 
-A three-line band (name, position among siblings, status, calls, tokens, elapsed,
-keys) and the subagent's whole record top to bottom: one line per tool call —
-``{light} {Short}({summary}) {result summary}`` — and each round's reasoning at the
-point it happened (``∴ Thinking`` → ``∴ Thought · duration``, ctrl+t shows the text;
-only its tail is kept, and the page says so only when it is expanded).
+A three-line band (name, position among siblings, status, calls, tokens, elapsed, and
+the text buttons ``主视图 / 上一个 / 下一个``) and the subagent's whole record top to
+bottom: one line per tool call — ``{light} {Short}({summary}) {result summary}`` — and
+each round's reasoning at the point it happened (``∴ Thinking`` → ``∴ Thought ·
+duration``, ctrl+t shows the text; only its tail is kept, and the page says so only
+when it is expanded). Call rows carry their tool's type tint and reasoning rows the
+thinking tint, the same mapping as the main transcript.
 """
 
 from __future__ import annotations
@@ -25,9 +27,10 @@ from circle.tui.agent_strip import (
     format_elapsed,
     format_tokens,
 )
-from circle.tui.transcript_view import subagent_call_row
+from circle.tui.transcript_view import subagent_call_row, tool_type_bg_hex
 
-KEYS = "esc 返回 · ←→ 切换"
+# 顶栏纯文字按钮（InfoTest 07 §11.25(6)，图标退役）：(动作, 文字)；键盘 esc/⌫、←→ 不变
+BUTTONS = (("back", "主视图"), ("prev", "上一个"), ("next", "下一个"))
 NO_STEPS = "暂时还没有工具调用"
 
 
@@ -59,10 +62,14 @@ def format_chars(n: int) -> str:
     return f"{n} 字"
 
 
-def render_detail_band(card: Mapping[str, Any], *, index: int, total: int,
-                       width: int, now: float | None = None) -> list[str]:
-    """Identity on the left, keys on the right; identity segments drop from the end
-    on a narrow screen, the keys stay."""
+def render_detail_band(card: Mapping[str, Any], *, index: int, total: int, width: int,
+                       now: float | None = None,
+                       hover: str | None = None) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """Identity on the left, the text buttons on the right; identity segments drop from
+    the end on a narrow screen, the buttons stay (they are the page's mouse exit).
+
+    Returns the three lines and each button's ``(start_col, end_col, action)`` on the
+    middle line. A button sits on ``panel_bg``; the hovered one on ``sel_bg``, brighter."""
     now = time.time() if now is None else now
     pal = palette()
     inner = max(40, int(width or 0) or 80) - 2
@@ -74,25 +81,38 @@ def render_detail_band(card: Mapping[str, Any], *, index: int, total: int,
         (f" · ↑{format_tokens(card_tokens(card))}", pal.dim),
         (f" · {format_elapsed(card_elapsed(card, now))}", pal.dim),
     ]
-    keys = f"{KEYS} "
+    buttons_w = string_width("  ".join(f" {text} " for _act, text in BUTTONS) + " ")
     keep = len(segments)
-    while keep > 1 and sum(string_width(t) for t, _c in segments[:keep]) + 1 + string_width(keys) > inner:
+    while keep > 1 and sum(string_width(t) for t, _c in segments[:keep]) + 1 + buttons_w > inner:
         keep -= 1
-    room = inner - 1 - string_width(keys)
+    room = inner - 1 - buttons_w
     if keep == 1 and string_width(segments[0][0]) > room:
         name = segments[0][0]
         while name and string_width(name) > room - 1:
             name = name[:-1]
         segments[0] = (name + "…", segments[0][1])
     left_plain = "".join(t for t, _c in segments[:keep])
-    show_keys = string_width(left_plain) + 1 + string_width(keys) <= inner
-    gap = max(1, inner - string_width(left_plain) - (string_width(keys) if show_keys else 0))
-    left = "".join(f"{sgr_join(pal.panel_bg, color)}{text}" for text, color in segments[:keep])
-    body = f"{left}{sgr_join(pal.panel_bg, pal.dim)}{' ' * gap}{keys if show_keys else ''}"
+    show_buttons = string_width(left_plain) + 1 + buttons_w <= inner
+    gap = max(1, inner - string_width(left_plain) - (buttons_w if show_buttons else 0))
+    on_panel = sgr_join(pal.panel_bg, pal.dim)
+    body = "".join(f"{sgr_join(pal.panel_bg, color)}{text}" for text, color in segments[:keep])
+    body += f"{on_panel}{' ' * gap}"
+    spans: list[tuple[int, int, str]] = []
+    if show_buttons:
+        cursor = 1 + string_width(left_plain) + gap  # 第 0 列是左边框
+        styled: list[str] = []
+        for action, text in BUTTONS:
+            label = f" {text} "
+            spans.append((cursor, cursor + string_width(label), action))
+            cursor += string_width(label) + 2
+            hovered = action == hover
+            styled.append(f"{sgr_join(pal.sel_bg if hovered else pal.panel_bg, pal.em if hovered else pal.text)}"
+                          f"{label}")
+        body += f"{on_panel}  ".join(styled) + f"{on_panel} "
     rule = "─" * inner
-    return [f"{pal.line}╭{rule}╮{pal.reset}",
-            f"{pal.line}│{body}{pal.line}│{pal.reset}",
-            f"{pal.line}╰{rule}╯{pal.reset}"]
+    return ([f"{pal.line}╭{rule}╮{pal.reset}",
+             f"{pal.line}│{body}{pal.line}│{pal.reset}",
+             f"{pal.line}╰{rule}╯{pal.reset}"], spans)
 
 
 def _call_line(item: Mapping[str, Any], pal: Any, now: float) -> str:
@@ -137,42 +157,51 @@ def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool) -> lis
     return lines
 
 
-def render_detail_lines(card: Mapping[str, Any], *, now: float | None = None,
-                        expanded: bool = False) -> list[str]:
+def render_detail_rows(card: Mapping[str, Any], *, now: float | None = None,
+                       expanded: bool = False) -> list[tuple[str, str | None]]:
+    """The page's lines with each one's background tint (hex, or None)."""
     now = time.time() if now is None else now
     pal = palette()
-    lines: list[str] = []
+    think_bg = pal.think_bg_hex or None
+    rows: list[tuple[str, str | None]] = []
     description = " ".join(str(card.get("description") or "").split())
     if description:
-        lines.append(f"{pal.faint}任务: {_clip(description, 400)}{pal.reset}")
-    lines.append("")
+        rows.append((f"{pal.faint}任务: {_clip(description, 400)}{pal.reset}", None))
+    rows.append(("", None))
     steps = thinking = 0
     for item in card.get("transcript") or ():
         if not isinstance(item, Mapping):
             continue
         if item.get("kind") == "tool":
-            lines.append(_call_line(item, pal, now))
+            rows.append((_call_line(item, pal, now), tool_type_bg_hex(str(item.get("tool") or ""))))
             steps += 1
         elif item.get("kind") == "thinking_body" and (item.get("text") or item.get("title")):
-            lines += _thinking_lines(item, pal, expanded=expanded)
+            rows += [(line, think_bg) for line in _thinking_lines(item, pal, expanded=expanded)]
             steps += 1
             thinking += 1
     if not steps:
-        lines.append(f"{pal.dim}{NO_STEPS}{pal.reset}")
+        rows.append((f"{pal.dim}{NO_STEPS}{pal.reset}", None))
     idle = format_elapsed(max(0.0, now - float(card.get("last_event_ts") or card.get("start_ts") or now)))
-    lines.append("")
+    rows.append(("", None))
     facts = f"工具 {card_calls(card)} 次" + (f" · 思考 {thinking} 段" if thinking else "")
     if card_running(card):
         facts += f" · 距上次事件 {idle}"
-    lines.append(f"{pal.faint}{facts}{pal.reset}")
+    rows.append((f"{pal.faint}{facts}{pal.reset}", None))
     if not card_running(card):
-        lines.append(f"{pal.dim}{GLYPH_MILESTONE} 结果：{_status_cn(card)} · {card_calls(card)} calls · "
-                     f"↑{format_tokens(card_tokens(card))} · "
-                     f"{format_elapsed(card_elapsed(card, now))}{pal.reset}")
+        result = (f"{pal.dim}{GLYPH_MILESTONE} 结果：{_status_cn(card)} · {card_calls(card)} calls · "
+                  f"↑{format_tokens(card_tokens(card))} · "
+                  f"{format_elapsed(card_elapsed(card, now))}{pal.reset}")
+        rows.append((result, None))
         summary = str(card.get("summary") or "").strip()
         if summary:
-            lines.append(f"   ⎿ {pal.faint}{_clip(summary, 200)}{pal.reset}")
-    return lines
+            rows.append((f"   ⎿ {pal.faint}{_clip(summary, 200)}{pal.reset}", None))
+    return rows
 
 
-__all__ = ["KEYS", "NO_STEPS", "format_chars", "render_detail_band", "render_detail_lines"]
+def render_detail_lines(card: Mapping[str, Any], *, now: float | None = None,
+                        expanded: bool = False) -> list[str]:
+    return [line for line, _bg in render_detail_rows(card, now=now, expanded=expanded)]
+
+
+__all__ = ["BUTTONS", "NO_STEPS", "format_chars", "render_detail_band", "render_detail_lines",
+           "render_detail_rows"]

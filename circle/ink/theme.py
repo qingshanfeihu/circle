@@ -82,7 +82,6 @@ __all__ = [
     "BLINK_PERIOD_SEC",
     "LIGHT_STATES",
     "SGR_MUTED_STRIKE",
-    "GLYPH_FOOTER_BUSY",
     "marker_line",
     "child_line",
     "sgr_join",
@@ -114,9 +113,8 @@ GLYPH_AGENT = "⏺"
 GLYPH_MILESTONE = "◆"
 GLYPH_PROGRESS = "▸"
 GLYPH_ERROR = "✖"
-# circle 的页脚仍用 ✶ 标工作中，不随 InfoTest 退役它。
-GLYPH_FOOTER_BUSY = "✶"
-RETIRED_GLYPHS: tuple[str, ...] = ("❌", "◌", "✓", "✗", "✉", "⚙")
+# ✶ 于 2026-09-24 终版 P6 退役：忙碌词迁入对话框上沿后无岗位（InfoTest 07 章 §11.23）。
+RETIRED_GLYPHS: tuple[str, ...] = ("❌", "◌", "✓", "✗", "✉", "⚙", "✶")
 LIGHT_GUTTER = 2
 BLINK_PERIOD_SEC = 1.15
 _BLINK_HALF_SEC = 0.575

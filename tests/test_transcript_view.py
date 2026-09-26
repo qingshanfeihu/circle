@@ -107,15 +107,15 @@ def test_running_and_pending_calls_have_rows():
     assert text[1].endswith("Write(/a.txt) 等待审批")
 
 
-def test_thinking_answer_and_streaming_blocks_are_separated():
+def test_thinking_and_its_answer_are_one_block_two_answers_are_two():
     s = snap(make_assistant_message(uuid="t", content=make_thinking_block(
         "**Planning**\n\nsome steps", title="Planning", duration_s=2.0, done=True)),
         make_assistant_message(uuid="x", content=make_text_block("Done **now**.")),
         streaming="still typing")
     text = plain(render_turn(s, ViewOptions()))
     assert text[0].startswith(" ∴ Thought: Planning · 2")
-    assert text[1] == "" and text[2].startswith(f" {theme.GLYPH_AGENT} Done now.")
-    assert text[-1].endswith("still typing")
+    assert text[1].startswith(f" {theme.GLYPH_AGENT} Done now."), "∴ then ⏺ is one answer block"
+    assert text[2] == "" and text[3].endswith("still typing"), "two ⏺ entries are two blocks"
     expanded = plain(render_turn(s, ViewOptions(thinking_expanded=True)))
     assert "some steps" in expanded[0]
     assert not any("∴" in e for e in plain(render_turn(s, ViewOptions(show_thinking=False))))

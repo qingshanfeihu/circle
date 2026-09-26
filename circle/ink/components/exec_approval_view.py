@@ -51,7 +51,7 @@ class ExecApprovalSession:
 
     def render_lines(self) -> list[str]:
         pal = palette()
-        Y, D, B, R = pal.yellow, pal.faint, "\x1b[1m", pal.reset
+        Y, D, B, R = pal.yellow, pal.faint, pal.em, pal.reset
         lines: list[str] = []
         lines.append(f" {Y}△{R} {B}{self._header_title()}{R}")
         if self._stage == _STAGE_ALWAYS:
@@ -153,7 +153,7 @@ class SessionApprovalsSession:
 
     def render_lines(self) -> list[str]:
         pal = palette()
-        Y, D, B, R = pal.yellow, pal.faint, "\x1b[1m", pal.reset
+        Y, D, B, R = pal.yellow, pal.faint, pal.em, pal.reset
         out = [f" {Y}△{R} {B}Session approvals{R}", f"   {D}☰ /approvals{R}"]
         for ln in self._lines:
             out.append(f"   {D}{ln}{R}" if ln.startswith("[") else f"   {ln}")

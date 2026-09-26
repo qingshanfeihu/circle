@@ -7,7 +7,7 @@ import threading
 import time
 
 from ..dom import DOMElement, NodeType, create_element, create_text
-from ..theme import GLYPH_ERROR, palette
+from ..theme import GLYPH_ERROR, palette, sgr_join
 from ...display_lexicon import (
     api_error_slot,
     api_waiting_aggregate_slot,
@@ -39,6 +39,10 @@ _PHASE_STATE_TEXT = {
 _FOOTER_INDENT = " "
 
 _PHASE_STALE_S = 90.0
+
+# 字重不是颜色、不进调色板：yolo 前缀＝bold + pal.reason，经 sgr_join 合成一条
+# （ink 行内 SGR 不叠加，分两条写 bold 会被颜色顶掉）。
+_SGR_BOLD = "\x1b[1m"
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -76,19 +80,19 @@ class FooterPane:
 
     def __init__(self, *, render_callback=None, thinking_text_cb=None) -> None:
         self._node = create_element(NodeType.BOX)
-        self._node.style.height = 2
+        # 单行页脚（InfoTest 07 §11.25(4)）：只留计量行；键位说明收进 welcome，
+        # 忙碌词交给对话框上沿，可观测性告警交给对话框下沿。
+        self._node.style.height = 1
         self._node.text_styles.dim = True
         self._status_line = create_text("")
-        self._hint_line = create_text("")
         self._node.append_child(self._status_line)
-        self._node.append_child(self._hint_line)
         self._engine_line = create_text("")
         self._node.append_child(self._engine_line)
         self._engine_text = ""
         self._max_thinking = False
 
         self._render_cb = render_callback
-        self._thinking_cb = thinking_text_cb
+        self._label_cb = thinking_text_cb
         self.status: str = "ready"
         self.tokens_used: int = 0
         self.tokens_budget: int = 128_000
@@ -156,11 +160,11 @@ class FooterPane:
         self._yolo_enabled = bool(enabled)
         self._refresh()
 
-    def _hint_line_text(self, tail: str) -> str:
-        prefix = ""
-        if self._yolo_enabled:
-            prefix = "\x1b[1;34myolo · \x1b[0m"
-        return _FOOTER_INDENT + prefix + tail
+    def _yolo_prefix(self) -> str:
+        if not self._yolo_enabled:
+            return ""
+        pal = palette()
+        return f"{sgr_join(_SGR_BOLD, pal.reason)}yolo{pal.reset} · "
 
     def set_status(self, *, phase: str = "", model: str = "") -> None:
         """Gate UI helper used by CircleApp._rebuild (init/trust screens)."""
@@ -282,7 +286,7 @@ class FooterPane:
             return
         self._engine_text = text
         self._engine_line.set_value(text)
-        self._node.style.height = 3 if text else 2
+        self._node.style.height = 2 if text else 1
 
     def set_max_thinking(self, on: bool) -> None:
         on = bool(on)
@@ -346,7 +350,13 @@ class FooterPane:
         one_line = " ".join(str(text or "").split())[:60]
         if one_line != self._obs_warning:
             self._obs_warning = one_line
-            self._refresh()
+            if self._render_cb:
+                self._render_cb()
+
+    @property
+    def obs_warning(self) -> str:
+        """The observability alert; the composer frame shows it on its bottom edge."""
+        return self._obs_warning
 
     def set_sticky_error(self, text: str) -> None:
         one_line = " ".join(str(text or "").split())
@@ -512,48 +522,27 @@ class FooterPane:
         return f"{self._verb}… · {elapsed_str} · {tok}{wait}{max_tag}"
 
     def _refresh(self) -> None:
+        # 忙碌词属于对话框上沿，不属于状态行：toast / search 接管状态行时不清它，
+        # 只有计时器停才熄。
+        label = None
+        if self._timer_running and self._busy_since:
+            label = self._busy_label(time.time() - self._busy_since)
+        if self._label_cb:
+            self._label_cb(label)
+
         if self._search_query is not None:
             match_disp = self._search_match if self._search_match else ""
-            status_text = f"(reverse-i-search) '{self._search_query}': {match_disp}"
-            self._status_line.set_value(_FOOTER_INDENT + status_text)
-            self._hint_line.set_value(
-                self._hint_line_text("ctrl+r next · enter accept · esc cancel")
-            )
+            status_text = (f"(reverse-i-search) '{self._search_query}': {match_disp}"
+                           f" · ctrl+r next · enter accept · esc cancel")
+            self._status_line.set_value(_FOOTER_INDENT + self._yolo_prefix() + status_text)
             return
         if self._toast_text is not None:
             self._status_line.set_value(_FOOTER_INDENT + self._toast_text)
-
-            self._hint_line.set_value(
-                self._hint_line_text("ctrl+c abort · ctrl+d exit · / commands · ↑↓ history")
-            )
             return
-        if self._timer_running and self._busy_since:
-            # Plain text. The composer frame paints this label with the same
-            # rainbow as the border, so the word is not a second flow.
-            thinking_text = self._busy_label(time.time() - self._busy_since)
-            if self._thinking_cb:
-                self._thinking_cb(thinking_text)
-        else:
-            
-            if self._thinking_cb:
-                self._thinking_cb(None)
-        
+
         status_text = self._hold_status or self._session_summary()
         if self._sticky_error and self.status == "error":
             pal = palette()
             status_text = (f"{pal.red}{GLYPH_ERROR} {self._sticky_error}"
                            f"{pal.reset} · {status_text}")
-        self._status_line.set_value(_FOOTER_INDENT + status_text)
-        if self._obs_warning:
-            self._hint_line.set_value(
-                self._hint_line_text(
-                    f"{palette().yellow}{self._obs_warning}{palette().reset}"
-                    f" · ctrl+c abort · ctrl+d exit · / commands"
-                )
-            )
-        else:
-            self._hint_line.set_value(
-                self._hint_line_text(
-                    "ctrl+c abort · ctrl+d exit · / commands · ↑↓ history"
-                )
-            )
+        self._status_line.set_value(_FOOTER_INDENT + self._yolo_prefix() + status_text)

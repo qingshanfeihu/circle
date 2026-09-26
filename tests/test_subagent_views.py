@@ -13,7 +13,12 @@ from circle.ink import theme
 from circle.ink.components.transcript import Transcript
 from circle.ink.parse_keypress import KeyPress
 from circle.ink.string_width import string_width
-from circle.tui.agent_detail import render_detail_band, render_detail_lines
+from circle.tui.agent_detail import (
+    BUTTONS,
+    render_detail_band,
+    render_detail_lines,
+    render_detail_rows,
+)
 from circle.tui.agent_strip import snapshot_cards
 from circle.tui.reducer import (
     CARD_THINKING_PUSH_STEP,
@@ -226,14 +231,47 @@ def test_detail_marks_the_recoverable_failure_muted_and_the_end_result():
     assert "距上次事件" not in text
 
 
-def test_detail_band_keeps_the_keys_on_a_narrow_screen():
+def test_detail_band_keeps_the_text_buttons_on_a_narrow_screen():
     card = _detail_feed().card()
     for width in (40, 60, 120):
-        band = [plain(ln) for ln in render_detail_band(card, index=2, total=3, width=width)]
+        lines, spans = render_detail_band(card, index=2, total=3, width=width)
+        band = [plain(ln) for ln in lines]
         assert len(band) == 3 and all(string_width(ln) == width for ln in band)
-        assert "esc 返回 · ←→ 切换" in band[1]
-    wide = plain(render_detail_band(card, index=2, total=3, width=120)[1])
+        assert [action for _s, _e, action in spans] == ["back", "prev", "next"]
+        for start, end, action in spans:
+            label = dict(BUTTONS)[action]
+            assert band[1][_col_to_index(band[1], start):_col_to_index(band[1], end)] == f" {label} "
+    wide = plain(render_detail_band(card, index=2, total=3, width=120)[0][1])
     assert "general-purpose·" in wide and "(2 of 3)" in wide and "运行中" in wide
+    assert "⌫" not in wide and "←" not in wide, "the icon buttons are retired"
+
+
+def _col_to_index(line: str, col: int) -> int:
+    width = 0
+    for index, ch in enumerate(line):
+        if width >= col:
+            return index
+        width += string_width(ch)
+    return len(line)
+
+
+def test_detail_button_hover_is_sel_bg_and_brighter():
+    card = _detail_feed().card()
+    pal = theme.palette()
+    plain_line = render_detail_band(card, index=1, total=1, width=100)[0][1]
+    hovered = render_detail_band(card, index=1, total=1, width=100, hover="prev")[0][1]
+    assert f"{theme.sgr_join(pal.panel_bg, pal.text)} 上一个 " in plain_line
+    assert f"{theme.sgr_join(pal.sel_bg, pal.em)} 上一个 " in hovered
+    assert f"{theme.sgr_join(pal.panel_bg, pal.text)} 主视图 " in hovered
+
+
+def test_detail_rows_carry_type_and_thinking_tints():
+    card = _detail_feed().card()
+    pal = theme.palette()
+    rows = render_detail_rows(card, now=float(card["start_ts"]) + 5)
+    assert any("Read(/a.py)" in plain(line) and bg == pal.read_bg_hex for line, bg in rows)
+    assert any("∴ Thought" in plain(line) and bg == pal.think_bg_hex for line, bg in rows)
+    assert all(bg is None for line, bg in rows if "任务:" in plain(line) or not line)
 
 
 # ── transcript node order ──────────────────────────────────────────────────

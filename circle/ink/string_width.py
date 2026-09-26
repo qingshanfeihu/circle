@@ -6,7 +6,9 @@ import unicodedata
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-_LINE_MARKERS = frozenset("●◆⏺✖✶✓✗⚠↳⎿⤷›•▸-?∴>")
+# 行首标记闭集：output.py 按它算软换行续接列（标记列 1、文字列 3 契约的算法侧）。
+# 盲文转轮帧是进度运行行的行首标记，不入闭集会让其软换行续接落错列。
+_LINE_MARKERS = frozenset("●◆⏺✖✓✗⚠↳⎿⤷›•▸-?∴>⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 
 def string_width(s: str) -> int:

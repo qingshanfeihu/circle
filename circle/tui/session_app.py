@@ -50,13 +50,13 @@ from circle.ink.components.plan_panel import PlanPanel
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
 from circle.ink.dom import NodeType, create_element, create_text
-from circle.ink.parse_keypress import InputEvent, KeyPress, MouseEvent, PasteEvent
-from circle.ink.theme import GLYPH_AGENT, GLYPH_ERROR, init_palette_from_terminal, palette
+from circle.ink.parse_keypress import InputEvent, InputParser, KeyPress, MouseEvent, PasteEvent
+from circle.ink.theme import GLYPH_ERROR, init_palette_from_terminal, palette
 from circle.model import build_chat_model, reasoning_effort_of
 from circle.model_guard import add_retry_listener
 from circle.pricing import context_window_for
 from circle.paths import circle_home, ensure_home, normalize_workspace
-from circle import secret_prompt
+from circle import __version__, secret_prompt
 from circle.settings import (
     CircleSettings,
     ModelAuth,
@@ -68,7 +68,7 @@ from circle.settings import (
     save_credentials,
     save_settings,
 )
-from circle.tui.agent_detail import render_detail_band, render_detail_lines
+from circle.tui.agent_detail import render_detail_band, render_detail_rows
 from circle.tui.agent_strip import (
     MAX_ROWS,
     format_elapsed,
@@ -86,7 +86,7 @@ from circle.tui.transcript_view import (
     ViewOptions,
     final_text,
     latest_todos,
-    render_turn,
+    render_turn_rows,
     turn_had_output,
 )
 from circle.tui.input_history import InputHistory
@@ -110,6 +110,58 @@ class _SessionRecord:
     thread_id: str
     title: str
     lines: list[str] = field(default_factory=list)
+    bgs: list[str | None] = field(default_factory=list)  # 每行的类型底色，与 lines 等长
+
+
+class _StandaloneEscapeInputParser:
+    """A lone ESC is the Esc key (InfoTest ``ist_app._StandaloneEscapeInputParser``).
+
+    Terminals send the Esc key as a bare ``\x1b``, which is also how every escape
+    sequence starts, so the tokenizer holds it waiting for more. If nothing follows
+    within ``_DELAY_S`` it is emitted as ``escape``. A sequence tail that still turns up
+    shortly after (a split read on a slow link) gets its ESC back instead of being
+    typed into the prompt."""
+
+    _DELAY_S = 0.25
+    _STRAY_WINDOW_S = 1.0
+    _STRAY_TAIL_RE = re.compile(r"^\[(?:<\d+;\d+;\d+[Mm]|[0-9;?]*[A-Za-z~])$")
+
+    def __init__(self, delegate: InputParser, emit: Callable[[InputEvent], None]) -> None:
+        self._delegate = delegate
+        self._emit = emit
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+        self._stray_escape_at: float | None = None
+
+    def feed(self, text: str) -> list[InputEvent]:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            stray_at, self._stray_escape_at = self._stray_escape_at, None
+            if (stray_at is not None and time.monotonic() - stray_at <= self._STRAY_WINDOW_S
+                    and self._STRAY_TAIL_RE.match(text)):
+                text = "\x1b" + text
+            events = self._delegate.feed(text)
+            tokenizer = getattr(self._delegate, "_tokenizer", None)
+            if tokenizer is not None and tokenizer.buffer == "\x1b":
+                timer = threading.Timer(self._DELAY_S, self._emit_pending_escape)
+                timer.daemon = True
+                self._timer = timer
+                timer.start()
+            return events
+
+    def _emit_pending_escape(self) -> None:
+        should_emit = False
+        with self._lock:
+            tokenizer = getattr(self._delegate, "_tokenizer", None)
+            if tokenizer is not None and tokenizer.buffer == "\x1b":
+                tokenizer.reset()
+                should_emit = True
+                self._stray_escape_at = time.monotonic()
+            self._timer = None
+        if should_emit:
+            self._emit(KeyPress(key="escape"))
 
 
 def _format_llm_error(exc: BaseException) -> str:
@@ -154,6 +206,8 @@ class CircleSessionApp:
 
         self._app = InkApp(alt_screen=True, mouse=True)
         self._app.style_pool.set_selection_bg([palette().sel_bg])
+        self._app._input_parser = _StandaloneEscapeInputParser(  # noqa: SLF001
+            self._app._input_parser, self._handle_input)  # noqa: SLF001
         self._transcript = Transcript()
         self._ask_panel = AskUserPanel()
         self._dialog_label = ""
@@ -215,6 +269,7 @@ class CircleSessionApp:
         self._strip_visible_ids: list[str] = []
         self._strip_selecting = False
         self._strip_selected: str | None = None
+        self._strip_hover: str | None = None
         self._strip_start = 0
         # 子代理详情页：与主转录互斥显示（两个开关一起翻，否则两个 flex 节点对半分屏）
         self._agent_detail = Transcript()
@@ -228,6 +283,13 @@ class CircleSessionApp:
         self._detail_ids: list[str] = []
         self._detail_uuid: str | None = None
         self._detail_drawn: tuple | None = None
+        self._detail_buttons: list[tuple[int, int, str]] = []  # 顶栏按钮 (起列, 止列, 动作)
+        self._detail_hover: str | None = None
+        # 划选拖到转录视口边缘时的定时滚动
+        self._autoscroll_timer: threading.Timer | None = None
+        self._autoscroll_delta = 0
+        self._drag_point: tuple[int, int] | None = None
+        self._welcome_shown = False
         self._ticked_at = 0.0
         # write_todos 的计划面板（对话框上方）
         self._plan_panel = PlanPanel()
@@ -253,10 +315,10 @@ class CircleSessionApp:
         self._show_thinking = True
         self._tool_outputs_expanded = False
         self._show_details = False  # alias of tool_outputs_expanded (InfoTest verbose)
-        # 本回合在转录里占的区域：从 _turn_base 起的 _turn_entries 条，由快照整体渲染；
-        # 已结束的回合留在 _turns 里，ctrl+o / ctrl+t 时按各自的最后快照原位重画
+        # 本回合在转录里占的区域：从 _turn_base 起的 _turn_entries 条（正文, 底色），由快照
+        # 整体渲染；已结束的回合留在 _turns 里，ctrl+o / ctrl+t 时按各自的最后快照原位重画
         self._turn_base = -1
-        self._turn_entries: list[str] = []
+        self._turn_entries: list[tuple[str, str | None]] = []
         self._turns: list[dict[str, Any]] = []
         self._last_snap: MessageSnapshot | None = None
         self._pending_calls: list[dict[str, Any]] = []
@@ -426,15 +488,21 @@ class CircleSessionApp:
             self._toast(msg)
 
     def _show_welcome(self) -> None:
-        p = palette()
-        self._transcript.append_message(
-            f" {GLYPH_AGENT} Circle · {self.workspace}"
-        )
-        self._transcript.append_message(
-            " " + _faint(f"{self.settings.auth.protocol} / {self.settings.auth.model}")
-        )
-        self._transcript.append_message("")
         self._footer.update(status="ready")
+        if not self._welcome_shown:
+            # InfoTest 终版 welcome（07 §11.25(5)）：单条消息一次落，空行由消息内 \n 承载；
+            # 键位说明只在这里出现这一次（页脚不再常驻键位行）。
+            pal = palette()
+            auth = self.settings.auth
+            self._transcript.append_message(
+                f"\n {pal.em}Circle v{__version__}{pal.reset}"
+                f"\n {pal.dim}{auth.protocol} / {auth.model} · {self.workspace}{pal.reset}"
+                f"\n"
+                f"\n {pal.text}终端里的 AI coding agent，在项目目录里读改跑。{pal.reset}"
+                f"\n {pal.dim}/help 查看命令 · /init 初始化项目 · /models 切换模型 · "
+                f"ctrl+c 中断 · ctrl+d 退出 · ↑↓ 历史{pal.reset}"
+            )
+            self._welcome_shown = True
         self._app.render()
         self._extensions.emit("session_start", {"workspace": str(self.workspace)})
 
@@ -458,6 +526,7 @@ class CircleSessionApp:
             width,
             elapsed=elapsed,
             label=self._dialog_label,
+            bottom_label=self._footer.obs_warning,
         )
         self._dialog_top_text.set_value(top)
         self._dialog_left_text.set_value(left)
@@ -505,8 +574,9 @@ class CircleSessionApp:
             strip.style.height = 0
             text.set_value("")
             return
+        hover = self._strip_hover if self._strip_hover in self._strip_visible_ids else None
         lines = render_agent_strip(visible, width=max(40, self._app.width or 80),
-                                   selected=selected, total=len(cards),
+                                   selected=selected, hover=hover, total=len(cards),
                                    hidden=len(cards) - len(visible))
         strip.style.height = len(lines)
         text.set_value("\n".join(lines))
@@ -563,6 +633,8 @@ class CircleSessionApp:
         self._detail_ids = []
         self._detail_uuid = None
         self._detail_drawn = None
+        self._detail_buttons = []
+        self._detail_hover = None
         self._set_view_visible(self._transcript.node, True)
         self._set_view_visible(self._agent_detail.node, False)
         self._set_view_visible(self._agent_detail_band, False)
@@ -598,30 +670,31 @@ class CircleSessionApp:
         card = self._find_card(self._detail_uuid)
         width = max(40, self._app.width or 80)
         drawn = self._detail_drawn
-        if (not force and drawn is not None and drawn[0] is card
-                and drawn[1:] == (width, self._thinking_expanded)):
+        state = (width, self._thinking_expanded, self._detail_hover)
+        if not force and drawn is not None and drawn[0] is card and drawn[1:] == state:
             return
-        self._detail_drawn = (card, width, self._thinking_expanded)
+        self._detail_drawn = (card, *state)
         view = self._agent_detail
         if card is None:
             self._agent_detail_band.style.height = 0
             self._agent_detail_band_text.set_value("")
+            self._detail_buttons = []
             view.clear()
             view.append_message(" " + _faint("这个子代理的记录已不可用，按 esc 返回主视图"))
             return
         ids = self._detail_ids
-        band = render_detail_band(card, index=ids.index(self._detail_uuid) + 1, total=len(ids),
-                                  width=width)
+        band, self._detail_buttons = render_detail_band(
+            card, index=ids.index(self._detail_uuid) + 1, total=len(ids), width=width,
+            hover=self._detail_hover)
         self._agent_detail_band.style.height = len(band)
         self._agent_detail_band_text.set_value("\n".join(band))
-        lines = [f" {line}" if line else "" for line in
-                 render_detail_lines(card, expanded=self._thinking_expanded)]
+        rows = render_detail_rows(card, expanded=self._thinking_expanded)
+        # 重建不丢读者的位置：往上翻过的留在原处，贴底的继续贴底
         sticky, top = view.node.sticky_scroll, view.node.scroll_top
-        view.clear()
-        view.append_messages(lines)
+        view.restore([f" {line}" if line else "" for line, _bg in rows], [bg for _line, bg in rows])
         if not sticky:
             view.node.sticky_scroll = False
-            view.node.scroll_top = top
+            view.node.scroll_top = min(top, view.max_top())
 
     def _handle_agent_view_key(self, kp: KeyPress) -> bool:
         """Strip selection and the detail page; True when the key was theirs."""
@@ -731,7 +804,7 @@ class CircleSessionApp:
             if self._is_loading:
                 self._bridge.cancel()
                 self._dismiss_user_panels()
-                self._transcript.append_message(" " + _faint("(cancelled)"))
+                self._notice([" " + _faint("(cancelled)")])
                 self._leave_busy()
                 self._app.render()
                 self._last_ctrl_c = now
@@ -740,9 +813,7 @@ class CircleSessionApp:
                 self._app._running = False  # noqa: SLF001
                 return
             self._last_ctrl_c = now
-            self._transcript.append_message(
-                " " + _faint("(press ctrl+c again to exit)")
-            )
+            self._notice([" " + _faint("(press ctrl+c again to exit)")])
             self._app.render()
             return
 
@@ -754,7 +825,7 @@ class CircleSessionApp:
             if self._is_loading:
                 self._bridge.cancel()
                 self._dismiss_user_panels()
-                self._transcript.append_message(" " + _faint("(cancelled)"))
+                self._notice([" " + _faint("(cancelled)")])
                 self._leave_busy()
             else:
                 self._prompt.clear()
@@ -773,23 +844,38 @@ class CircleSessionApp:
             self._app._force_full_render()  # noqa: SLF001
             return
 
-        if kp.key == "pageup":
-            self._scroll_transcript(-self._half_viewport())
-            return
-        if kp.key == "pagedown":
-            self._scroll_transcript(self._half_viewport())
-            return
+        # 转录滚动键只在输入框为空时接管；非空时 home/end 归输入框的光标
+        if not self._prompt.value:
+            if kp.key == "pageup":
+                self._scroll_transcript(-self._half_viewport())
+                return
+            if kp.key == "pagedown":
+                self._scroll_transcript(self._half_viewport())
+                return
+            if kp.key == "home":
+                self._scroll_transcript_to(0)
+                return
+            if kp.key == "end":
+                self._scroll_transcript_to(None)
+                return
 
         if kp.key == "ctrl+r":
             self._enter_or_advance_search()
             return
 
+        # 输入框为空且历史翻尽时 ↑↓ 滚转录；有历史可翻或框里有字时仍是输入历史
         if kp.key == "up":
-            self._history_up()
+            if not self._prompt.value and not self._input_history.can_go_up():
+                self._scroll_transcript(-3)
+            else:
+                self._history_up()
             self._app.render()
             return
         if kp.key == "down":
-            self._history_down()
+            if not self._prompt.value and not self._input_history.can_go_down():
+                self._scroll_transcript(3)
+            else:
+                self._history_down()
             self._app.render()
             return
 
@@ -911,19 +997,22 @@ class CircleSessionApp:
         col, row = self._mouse_to_screen_coords(me.x, me.y)
 
         if me.type == "wheel":
+            # 划选中滚轮同样扩选：选区锚点随内容走、落点留在鼠标下
             if me.button == 0:
                 self._scroll_transcript(-3)
             elif me.button == 1:
                 self._scroll_transcript(3)
             return
 
+        if me.type == "move" and me.button != 0:
+            self._handle_hover(col, row)
+            return
+
         if me.button != 0:
             return
 
         if me.type == "press":
-            clicked = self._strip_row_at(row)
-            if clicked is not None:
-                self._enter_agent_detail(clicked)
+            if self._handle_ui_click(col, row):
                 return
             self._handle_left_press(col, row, alt=me.alt)
             return
@@ -932,14 +1021,8 @@ class CircleSessionApp:
             sel = self._app.selection
             if not sel.is_dragging:
                 return
-            if sel.anchor_span is not None:
-                from circle.ink.selection import extend_selection
-
-                extend_selection(sel, self._app._curr_screen, col, row)
-            else:
-                from circle.ink.selection import update_selection
-
-                update_selection(sel, col, row)
+            self._drag_to(col, row)
+            self._start_selection_autoscroll(row)
             self._app.notify_selection_change()
             self._app.render()
             return
@@ -947,6 +1030,8 @@ class CircleSessionApp:
         if me.type == "release":
             from circle.ink.selection import finish_selection, has_selection
 
+            self._stop_selection_autoscroll()
+            self._drag_point = None
             sel = self._app.selection
             was_dragging = sel.is_dragging
             finish_selection(sel)
@@ -954,6 +1039,99 @@ class CircleSessionApp:
                 self._copy_selection(clear_after=False)
             self._app.notify_selection_change()
             self._app.render()
+
+    def _drag_to(self, col: int, row: int) -> None:
+        from circle.ink.selection import extend_selection, update_selection
+
+        sel = self._app.selection
+        self._drag_point = (col, row)
+        if sel.anchor_span is not None:
+            extend_selection(sel, self._app._curr_screen, col, row)  # noqa: SLF001
+        else:
+            update_selection(sel, col, row)
+
+    def _start_selection_autoscroll(self, row: int) -> None:
+        """Dragging a selection to the transcript's top or bottom edge keeps scrolling
+        it (every 0.12s, two rows) and the selection grows onto the revealed rows."""
+        view = self._agent_detail if self._detail_active else self._transcript
+        rect = view.node.rect
+        delta = 0
+        if rect.height > 2:
+            if row <= rect.y + 1:
+                delta = -2
+            elif row >= rect.y + rect.height - 2:
+                delta = 2
+        if delta == 0:
+            self._stop_selection_autoscroll()
+            return
+        if self._autoscroll_timer is not None and self._autoscroll_delta == delta:
+            return
+        self._stop_selection_autoscroll()
+        self._autoscroll_delta = delta
+        self._arm_autoscroll()
+
+    def _arm_autoscroll(self) -> None:
+        def _step() -> None:
+            with self._app.lock:
+                if self._autoscroll_timer is not timer:
+                    return
+                if not self._app.selection.is_dragging or self._autoscroll_delta == 0:
+                    self._stop_selection_autoscroll()
+                    return
+                self._scroll_transcript(self._autoscroll_delta)
+                self._arm_autoscroll()
+
+        timer = threading.Timer(0.12, _step)
+        timer.daemon = True
+        self._autoscroll_timer = timer
+        timer.start()
+
+    def _stop_selection_autoscroll(self) -> None:
+        timer = self._autoscroll_timer
+        self._autoscroll_timer = None
+        self._autoscroll_delta = 0
+        if timer is not None:
+            timer.cancel()
+
+    def _detail_button_at(self, col: int, row: int) -> str | None:
+        """The detail band's button under the mouse (buttons sit on the band's middle line)."""
+        if not self._detail_active or not self._detail_buttons:
+            return None
+        if int(row) != int(getattr(self._agent_detail_band.rect, "y", 0)) + 1:
+            return None
+        return next((action for start, end, action in self._detail_buttons
+                     if start <= int(col) < end), None)
+
+    def _handle_hover(self, col: int, row: int) -> None:
+        strip_hover = self._strip_row_at(row)
+        button = self._detail_button_at(col, row)
+        changed = False
+        if strip_hover != self._strip_hover:
+            self._strip_hover = strip_hover
+            self._sync_agent_strip()
+            changed = True
+        if button != self._detail_hover:
+            self._detail_hover = button
+            self._render_agent_detail()
+            changed = True
+        if changed:
+            self._app.render()
+
+    def _handle_ui_click(self, col: int, row: int) -> bool:
+        """A click on a detail button or a strip row; True when the click was theirs."""
+        action = self._detail_button_at(col, row)
+        if action == "back":
+            self._leave_agent_detail()
+            return True
+        if action in ("prev", "next"):
+            self._switch_agent_detail(-1 if action == "prev" else 1)
+            return True
+        clicked = self._strip_row_at(row)
+        if clicked is not None:
+            self._strip_hover = None
+            self._enter_agent_detail(clicked)
+            return True
+        return False
 
     def _handle_left_press(self, col: int, row: int, *, alt: bool) -> None:
         now = time.monotonic()
@@ -978,6 +1156,7 @@ class CircleSessionApp:
         sel.scrolled_off_below_sw = []
 
         screen = self._app._curr_screen
+        self._drag_point = (col, row)
         if click_count == 1:
             start_selection(sel, col, row, alt=alt)
         elif click_count == 2:
@@ -1021,13 +1200,21 @@ class CircleSessionApp:
     def _scroll_transcript(self, delta: int) -> None:
         if delta == 0:
             return
-        if self._detail_active:
-            self._agent_detail.scroll_by(delta)
-            self._app._repaint_full()  # noqa: SLF001
-            return
-        old_top = self._transcript.node.scroll_top
-        self._transcript.scroll_by(delta)
-        actual = self._transcript.node.scroll_top - old_top
+        view = self._agent_detail if self._detail_active else self._transcript
+        old_top = view.node.scroll_top
+        view.scroll_by(delta)
+        actual = view.node.scroll_top - old_top
+        if actual != 0:
+            self._shift_selection_for_scroll(actual)
+        self._app._repaint_full()  # noqa: SLF001
+
+    def _scroll_transcript_to(self, top: int | None) -> None:
+        """Home / End: to the first row, or back to the bottom (None); the detail page
+        when it is open."""
+        view = self._agent_detail if self._detail_active else self._transcript
+        old_top = view.node.scroll_top
+        view.scroll_to(top)
+        actual = view.node.scroll_top - old_top
         if actual != 0:
             self._shift_selection_for_scroll(actual)
         self._app._repaint_full()  # noqa: SLF001
@@ -1037,13 +1224,15 @@ class CircleSessionApp:
             capture_scrolled_rows,
             has_selection,
             selection_bounds,
+            shift_anchor,
             shift_selection,
         )
 
         sel = self._app.selection
         if not has_selection(sel):
             return
-        rect = self._transcript.node.rect
+        view = self._agent_detail if self._detail_active else self._transcript
+        rect = view.node.rect
         if rect.height <= 0:
             return
         min_row = rect.y
@@ -1064,13 +1253,19 @@ class CircleSessionApp:
                 sel, screen, max(min_row, max_row - span + 1), max_row,
                 side="below",
             )
-        shift_selection(
-            sel,
-            d_row=-scroll_delta,
-            min_row=min_row,
-            max_row=max_row,
-            width=screen.width,
-        )
+        if sel.is_dragging:
+            # 拖着划选时只有锚点随内容走，落点留在鼠标下——选区扩到新露出的行
+            shift_anchor(sel, -scroll_delta, min_row, max_row)
+            if self._drag_point is not None:
+                self._drag_to(*self._drag_point)
+        else:
+            shift_selection(
+                sel,
+                d_row=-scroll_delta,
+                min_row=min_row,
+                max_row=max_row,
+                width=screen.width,
+            )
         self._app.notify_selection_change()
 
     def _history_up(self) -> None:
@@ -1204,10 +1399,9 @@ class CircleSessionApp:
         if self._transcript.message_count() > 0:
             w = max(40, self._transcript.node.rect.width or 80)
             self._transcript.append_message(_faint('─' * w))
-        self._transcript.append_message("")
-        for line in text.split("\n"):
-            self._transcript.append_message(f" {_faint('>')} {line}")
-        self._transcript.append_message("")
+        self._transcript.ensure_block_gap()
+        self._transcript.append_messages([f" {_faint('>')} {line}" for line in text.split("\n")])
+        self._transcript.ensure_block_gap()
         self._open_turn_region()
         self._turn_elapsed = 0.0
         self._turn_started_at = time.time()
@@ -1232,8 +1426,15 @@ class CircleSessionApp:
             self._msg_queue = followups[1:]
             self._start_user_turn(text)
 
+    def _notice(self, lines: list[str]) -> None:
+        """One block of notice lines, one blank line away from the block above."""
+        if not lines:
+            return
+        self._transcript.ensure_block_gap()
+        self._transcript.append_messages(list(lines))
+
     def _toast(self, msg: str) -> None:
-        self._transcript.append_message(f" {_faint(msg)}")
+        self._notice([f" {_faint(msg)}"])
         self._app.render()
 
     def _cmd_yolo(self, args: str) -> None:
@@ -1252,13 +1453,11 @@ class CircleSessionApp:
         if name == "help":
             custom = [(c.name, c.description) for c in self._custom_commands.values()]
             custom += [(c.name, c.description) for c in self._extensions.commands().values()]
-            for line in help_text(custom=custom or None).splitlines():
-                self._transcript.append_message(f" {_faint(line)}")
+            self._notice([f" {_faint(line)}" for line in help_text(custom=custom or None).splitlines()])
             self._app.render()
             return
         if name == "hotkeys":
-            for line in hotkeys_text().splitlines():
-                self._transcript.append_message(f" {_faint(line)}")
+            self._notice([f" {_faint(line)}" for line in hotkeys_text().splitlines()])
             self._app.render()
             return
         if name in self._custom_commands:
@@ -1336,11 +1535,7 @@ class CircleSessionApp:
     def _archive_current(self) -> None:
         if self._transcript.message_count() <= 3 and self._session_title == "new":
             return
-        rec = _SessionRecord(
-            thread_id=self._thread_id,
-            title=self._session_title or self._thread_id,
-            lines=self._transcript.snapshot(),
-        )
+        rec = self._snapshot_record()
         for i, existing in enumerate(self._archive):
             if existing.thread_id == rec.thread_id:
                 self._archive[i] = rec
@@ -1349,14 +1544,15 @@ class CircleSessionApp:
             self._archive.append(rec)
         self._previous_thread_id = self._thread_id
 
-    def _switch_thread(self, thread_id: str, *, lines: list[str] | None = None) -> None:
+    def _switch_thread(self, thread_id: str, *, lines: list[str] | None = None,
+                       bgs: list[str | None] | None = None) -> None:
         self._archive_current()
         self._previous_thread_id = self._thread_id
         self._thread_id = thread_id
         self._bridge = self._make_bridge()
         self._reset_turn_regions()
         if lines is not None:
-            self._transcript.restore(lines)
+            self._transcript.restore(lines, bgs)
             for rec in self._archive:
                 if rec.thread_id == thread_id:
                     self._session_title = rec.title
@@ -1451,13 +1647,7 @@ class CircleSessionApp:
         # Always include current at end if not already archived this turn
         if not any(s.thread_id == self._thread_id for s in sessions):
             if self._transcript.message_count() > 3:
-                sessions.append(
-                    _SessionRecord(
-                        self._thread_id,
-                        self._session_title,
-                        self._transcript.snapshot(),
-                    )
-                )
+                sessions.append(self._snapshot_record())
         if not sessions:
             self._toast("没有可恢复的会话（先聊几轮或 /new 归档当前）")
             return
@@ -1487,7 +1677,7 @@ class CircleSessionApp:
         if chosen.thread_id == self._thread_id:
             self._toast("已在该会话")
             return
-        self._switch_thread(chosen.thread_id, lines=chosen.lines)
+        self._switch_thread(chosen.thread_id, lines=chosen.lines, bgs=chosen.bgs)
         self._toast(f"已恢复 {chosen.thread_id} · {chosen.title[:40]}")
 
     def _cmd_continue(self, _args: str) -> None:
@@ -1502,13 +1692,15 @@ class CircleSessionApp:
             self._toast("没有上一会话")
             return
         lines = None
+        bgs = None
         title = prev
         for rec in self._archive:
             if rec.thread_id == prev:
                 lines = rec.lines
+                bgs = rec.bgs
                 title = rec.title
                 break
-        self._switch_thread(prev, lines=lines or [])
+        self._switch_thread(prev, lines=lines or [], bgs=bgs)
         self._toast(f"已继续 {prev} · {title[:40]}")
 
     def _cmd_models(self, args: str) -> None:
@@ -1606,10 +1798,8 @@ class CircleSessionApp:
                     )
                     self._app.render()
                     return
-                self._transcript.append_message(" " + _faint("— compacted (same thread) —"))
-                for line in (summary or "COMPACT_OK").splitlines():
-                    self._transcript.append_message(f" {line}")
-                self._transcript.append_message("")
+                self._notice([" " + _faint("— compacted (same thread) —")]
+                             + [f" {line}" for line in (summary or "COMPACT_OK").splitlines()])
                 self._leave_busy()
                 self._app.render()
 
@@ -1708,9 +1898,8 @@ class CircleSessionApp:
         self._transcript.clear()
         self._show_welcome()
         self._toast(f"已 fork 自 {token} → {self._thread_id}")
-        for node in self._session_tree.path_to():
-            if node.role == "user":
-                self._transcript.append_message(f" {_faint('>')} {node.text.splitlines()[0][:80]}")
+        self._notice([f" {_faint('>')} {node.text.splitlines()[0][:80]}"
+                      for node in self._session_tree.path_to() if node.role == "user"])
         self._app.render()
 
     def _cmd_clone(self, _args: str) -> None:
@@ -1742,6 +1931,7 @@ class CircleSessionApp:
             thread_id=self._thread_id,
             title=self._session_title or self._thread_id,
             lines=self._transcript.snapshot(),
+            bgs=self._transcript.snapshot_bgs(),
         )
 
     def _push_undo_checkpoint(self) -> None:
@@ -1755,7 +1945,7 @@ class CircleSessionApp:
         self._session_title = rec.title
         self._bridge = self._make_bridge()
         self._reset_turn_regions()
-        self._transcript.restore(rec.lines)
+        self._transcript.restore(rec.lines, rec.bgs)
 
     def _cmd_undo(self, _args: str) -> None:
         if not self._undo_stack:
@@ -2274,14 +2464,16 @@ class CircleSessionApp:
     def _render_turn_region(self) -> None:
         if self._last_snap is None or self._turn_base < 0:
             return
-        new = render_turn(self._last_snap, self._view_options())
+        new = render_turn_rows(self._last_snap, self._view_options())
         old = self._turn_entries
         i = 0
         while i < min(len(old), len(new)) and old[i] == new[i]:
             i += 1
         if i == len(old) == len(new):
             return
-        self._transcript.replace_range(self._turn_base + i, len(old) - i, new[i:])
+        self._transcript.replace_range(self._turn_base + i, len(old) - i,
+                                       [text for text, _bg in new[i:]],
+                                       bgs=[bg for _text, bg in new[i:]])
         self._turn_entries = new
 
     def _rerender_turns(self) -> None:
@@ -2292,11 +2484,12 @@ class CircleSessionApp:
         shift = 0
         for turn in self._turns:
             turn["base"] += shift
-            new = render_turn(turn["snap"], options)
+            new = render_turn_rows(turn["snap"], options)
             old = turn["entries"]
             if new == old:
                 continue
-            self._transcript.replace_range(turn["base"], len(old), new)
+            self._transcript.replace_range(turn["base"], len(old), [text for text, _bg in new],
+                                           bgs=[bg for _text, bg in new])
             shift += len(new) - len(old)
             turn["entries"] = new
         if self._turn_base >= 0:
@@ -2312,6 +2505,7 @@ class CircleSessionApp:
             said = "" if (text or "").strip() == NO_OUTPUT else (text or "").strip()
             visible = shown or said or NO_OUTPUT
             if not shown:
+                self._transcript.ensure_block_gap()
                 self._transcript.append_message(assistant_block(said or NO_OUTPUT))
             self._last_assistant_plain = visible
             self._session_tree.add("assistant", visible)

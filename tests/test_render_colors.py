@@ -158,7 +158,9 @@ def test_footer_sticky_error_and_warning_render_with_the_palette(light_palette):
     footer.set_sticky_error("endpoint refused the request")
     footer.set_obs_warning("tracing off")
     status = footer._status_line.value  # noqa: SLF001
-    hint = footer._hint_line.value  # noqa: SLF001
     assert f"{light_palette.red}{theme.GLYPH_ERROR} endpoint refused" in status
-    assert f"{light_palette.yellow}tracing off" in hint
+    assert "tracing off" not in status, "the alert sits on the composer frame, not the footer"
+    _top, _left, _right, bottom = dialog_frame.build_loop_frame(
+        40, elapsed=None, bottom_label=footer.obs_warning)
+    assert f"{light_palette.yellow}tracing off" in bottom
     footer.shutdown()
