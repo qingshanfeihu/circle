@@ -116,8 +116,8 @@ def _fake_session(tmp_path: Path, monkeypatch):
         def stream(self, *a, **k):
             return iter(())
 
-    monkeypatch.setattr("circle.tui.session_app.create_harness", lambda *a, **k: _FakeAgent())
-    monkeypatch.setattr("circle.tui.session_app.build_chat_model", lambda *a, **k: object())
+    monkeypatch.setattr("circle.runtime.create_harness", lambda *a, **k: _FakeAgent())
+    monkeypatch.setattr("circle.runtime.build_chat_model", lambda *a, **k: object())
     return CircleSessionApp(settings, ws, home=home)
 
 

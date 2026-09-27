@@ -92,11 +92,11 @@ def test_ctrl_t_toggles_thinking_row(tmp_path: Path, monkeypatch):
             return {"messages": []}
 
     monkeypatch.setattr(
-        "circle.tui.session_app.create_harness",
+        "circle.runtime.create_harness",
         lambda *a, **k: _FakeAgent(),
     )
     monkeypatch.setattr(
-        "circle.tui.session_app.build_chat_model",
+        "circle.runtime.build_chat_model",
         lambda *a, **k: object(),
     )
 

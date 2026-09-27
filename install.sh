@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Circle 一键安装：从 GitHub Releases 拉取 PyInstaller onedir 资产。
+# Circle 一键安装：从 GitHub Releases 拉取自带 Python/Node/uv 的运行时资产。
 #
 #   curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
 #
@@ -82,9 +82,10 @@ install_binary() {
     local version asset url tmp
     version="$(resolve_version)"
     asset="$(detect_asset)"
-    url="https://github.com/${CIRCLE_REPO}/releases/download/v${version}/${asset}"
+    url="${CIRCLE_DOWNLOAD_BASE_URL:-https://github.com/${CIRCLE_REPO}/releases/download/v${version}}/${asset}"
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
+    INSTALL_TEMP="$tmp"
+    trap 'rm -rf "$INSTALL_TEMP"' EXIT
 
     log "下载 $url"
     curl -fsSL "$url" -o "$tmp/$asset"
@@ -95,8 +96,9 @@ install_binary() {
         (cd "$tmp" && sha256sum -c "${asset}.sha256") || die "资产校验失败"
     fi
     mkdir -p "$PREFIX" "$BIN_DIR" "$HOME_DIR"
-    local generation="${PREFIX}/versions/${version}-${asset%.tar.gz}-$(date +%s)"
-    mkdir -p "$generation"
+    mkdir -p "${PREFIX}/versions"
+    local generation
+    generation="$(mktemp -d "${PREFIX}/versions/${version}-${asset%.tar.gz}-XXXXXX")"
     tar -xzf "$tmp/$asset" -C "$generation"
     # onedir 内预期为 circle/circle 或顶层 circle
     local exe

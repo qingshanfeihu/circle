@@ -80,3 +80,54 @@ def test_export_import_preserves_full_structured_history(tmp_path):
     restored = graph.import_session(graph.export("s"))
     turn(graph, restored, "continue")
     assert text in model.inputs[-1]
+
+
+def test_tree_keeps_alternative_branch_selectable_after_restart(tmp_path):
+    graph, model = setup(tmp_path)
+    turn(graph, "s", "first")
+    first = graph.sessions.get("s")["ref"]
+    turn(graph, "s", "discarded-branch")
+    old_head = graph.sessions.get("s")["ref"]
+    graph.sessions.select("s", first)
+    turn(graph, "s", "alternative-branch")
+    restarted = SessionService(tmp_path / "home", tmp_path / "ws").bind(graph.raw)
+    tree = restarted.project_tree("s")
+    assert {"discarded-branch", "alternative-branch"} <= {node.text for node in tree.nodes.values()}
+    assert "discarded-branch" in tree.render_list()
+    imported = graph.import_session(graph.export("s"))
+    imported_tree = graph.project_tree(imported)
+    assert {"discarded-branch", "alternative-branch"} <= {node.text for node in imported_tree.nodes.values()}
+    assert not graph.get_state({"configurable": {"thread_id": imported}}).next
+    restarted.sessions.select("s", old_head)
+    turn(restarted, "s", "continue-original")
+    assert "discarded-branch" in model.inputs[-1]
+    assert "alternative-branch" not in model.inputs[-1]
+
+
+def test_portable_compaction_preserves_next_model_input(tmp_path):
+    from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
+    graph, model = setup(tmp_path)
+    turn(graph, "s", "old detail")
+    summary = HumanMessage(content="PORTABLE_SUMMARY", additional_kwargs={"lc_source": "summarization"})
+    graph.update_state({"configurable": {"thread_id": "s"}}, {
+        SUMMARIZATION_EVENT_KEY: {"cutoff_index": 2, "summary_message": summary, "file_path": "/old-host/history.md"}
+    }, as_node="model")
+    turn(graph, "s", "settle")
+    payload = graph.export("s")
+    imported = graph.import_session(payload)
+    turn(graph, imported, "continue")
+    assert "PORTABLE_SUMMARY" in model.inputs[-1]
+    assert "old detail" not in model.inputs[-1]
+    assert graph.export(imported)["state"][SUMMARIZATION_EVENT_KEY]["file_path"] is None
+
+
+def test_concurrent_session_writer_and_selection_are_rejected(tmp_path):
+    import pytest
+    graph, _ = setup(tmp_path)
+    turn(graph, "s", "first")
+    another = SessionService(tmp_path / "home", tmp_path / "ws").bind(graph.raw)
+    with graph.sessions.run_guard("s"):
+        with pytest.raises(RuntimeError, match="already running"):
+            turn(another, "s", "overlap")
+        with pytest.raises(RuntimeError, match="already running"):
+            another.sessions.select("s", another.sessions.get("s")["ref"])

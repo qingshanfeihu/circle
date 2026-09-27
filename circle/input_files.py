@@ -3,16 +3,50 @@ from __future__ import annotations
 
 import base64
 import difflib
-import uuid
 import fnmatch
+import io
 import mimetypes
 import re
 import subprocess
+import uuid
 from pathlib import Path
 
 from circle.approvals import DEFAULT_CREDENTIAL_FILES
 
 REFERENCES = re.compile(r'(?<!\S)@(?:"([^"]+)"|\'([^\']+)\'|(\S+))')
+
+
+def prepare_image(data: bytes, mime: str):
+    """Use Pillow's image transforms, with the same bounds as Pi's input path."""
+    from PIL import Image, ImageOps, UnidentifiedImageError
+    try:
+        with Image.open(io.BytesIO(data)) as original:
+            before = original.size
+            orientation = original.getexif().get(274, 1)
+            max_payload = int(4.5 * 1024 * 1024)
+            if (max(before) <= 2000 and (len(data) + 2) // 3 * 4 <= max_payload
+                    and mime in {"image/png", "image/jpeg", "image/gif", "image/webp"}
+                    and orientation == 1):
+                return data, mime, None
+            image = ImageOps.exif_transpose(original)
+            image.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            encoded, result_mime = output.getvalue(), "image/png"
+            if (len(encoded) + 2) // 3 * 4 > max_payload:
+                # JPEG bounds the transport size. Composite transparency on white.
+                rgb = Image.new("RGB", image.size, "white")
+                rgba = image.convert("RGBA")
+                rgb.paste(rgba, mask=rgba.getchannel("A"))
+                output = io.BytesIO()
+                rgb.save(output, format="JPEG", quality=80)
+                encoded, result_mime = output.getvalue(), "image/jpeg"
+            if (len(encoded) + 2) // 3 * 4 > max_payload:
+                raise ValueError("Image cannot fit the provider payload limit")
+            note = f"Image resized/oriented: original {before[0]}x{before[1]}, submitted {image.width}x{image.height}. Coordinates refer to the submitted image."
+            return encoded, result_mime, note
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("Unsupported or invalid image attachment") from exc
 
 
 def clipboard_image(home: Path) -> Path | None:
@@ -55,14 +89,19 @@ def prepare_content(text: str, workspace: Path, *, files=(), credential_files=No
             raise ValueError("Credential files cannot be attached")
         if not path.is_file():
             raise FileNotFoundError(f"Attachment not found: {source}")
-        data = path.read_bytes()
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        size = path.stat().st_size
+        if not mime.startswith("image/") and size > 50_000:
+            blocks.append({"type": "text", "text": f"Referenced file: {path} ({size} bytes). Content is not truncated or attached; use read_file pagination."})
+            continue
+        if size > 50_000_000:
+            raise ValueError("Image exceeds the 50 MB input limit")
+        data = path.read_bytes()
         if mime.startswith("image/"):
-            if len(data) > 10_000_000:
-                raise ValueError("Image exceeds 10 MB; resize before attaching")
+            data, mime, note = prepare_image(data, mime)
+            if note:
+                blocks.append({"type": "text", "text": note})
             blocks.append({"type": "image", "base64": base64.b64encode(data).decode(), "mime_type": mime})
-        elif len(data) > 50_000:
-            blocks.append({"type": "text", "text": f"Referenced file: {path} ({len(data)} bytes). Content is not truncated or attached; use read_file pagination."})
         else:
             blocks.append({"type": "text", "text": f"File: {path}\n{data.decode('utf-8')}"})
     return blocks

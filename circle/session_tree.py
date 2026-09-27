@@ -81,15 +81,35 @@ class SessionTree:
         return forked or SessionTree()
 
     def render_list(self, *, limit: int = 40) -> str:
-        path = self.path_to()
-        lines = ["Session tree (active branch):", ""]
-        for i, node in enumerate(path[-limit:], start=max(1, len(path) - limit + 1)):
+        # Show alternative branches too so their durable IDs remain selectable.
+        children: dict[str, list[TreeNode]] = {}
+        for node in self.nodes.values():
+            if node.parent_id is not None:
+                children.setdefault(node.parent_id, []).append(node)
+        pending = [(root, 0) for root in reversed(self.root_ids)]
+        rows = []
+        seen = set()
+        while pending:
+            node_id, depth = pending.pop()
+            if node_id in seen or node_id not in self.nodes:
+                continue
+            seen.add(node_id)
+            node = self.nodes[node_id]
+            rows.append((node, depth))
+            pending.extend((child.id, depth + 1) for child in reversed(children.get(node_id, [])))
+        lines = ["Session tree (all branches):", ""]
+        # Include the active tip even when a long tree needs a bounded display.
+        visible = rows[-limit:]
+        if self.active_id and all(node.id != self.active_id for node, _ in visible):
+            visible = [(self.nodes[self.active_id], 0), *visible[:limit - 1]]
+        for i, (node, depth) in enumerate(visible, start=1):
             mark = "●" if node.id == self.active_id else "○"
             kids = self.children_of(node.id)
             branch = f" (+{len(kids) - 1} branches)" if len(kids) > 1 else ""
             label = f" [{node.label}]" if node.label else ""
             preview = node.text.strip().replace("\n", " ")[:60]
-            lines.append(f"  {mark} {i}. {node.id} {node.role}{label}{branch}")
+            indent = "  " * min(depth, 6)
+            lines.append(f"  {indent}{mark} {i}. {node.id} {node.role}{label}{branch}")
             lines.append(f"      {preview}")
         lines.append("")
         lines.append("Jump: /tree <id>   Fork: /fork <id>   Clone: /clone")

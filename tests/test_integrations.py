@@ -90,5 +90,14 @@ def test_plugin_installs_dependencies_and_loads_standard_entry_point(tmp_path):
     host = ExtensionHost(home=home, workspace=tmp_path, trusted=False).load()
     assert host.tools()[0].invoke({}) == "PLUGIN_OK"
     old = manager.read()["generation"]
+    manifest = project / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace('version="1.0.0"', 'version="2.0.0"'))
+    source = project / "audit_plugin.py"
+    source.write_text(source.read_text().replace("PLUGIN_OK", "PLUGIN_V2"))
+    manager.install(str(project))
+    updated = ExtensionHost(home=home, workspace=tmp_path, trusted=False).load()
+    assert updated.tools()[0].invoke({}) == "PLUGIN_V2"
+    assert manager.list()[0]["version"] == "2.0.0"
+    assert (manager.root / old).is_dir()
     manager.remove(str(project))
     assert manager.read()["generation"] != old and not manager.list()

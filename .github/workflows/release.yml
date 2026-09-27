@@ -46,6 +46,8 @@ jobs:
           LANGCHAIN_TRACING_V2: 'false'
       - name: Build, smoke and relocate artifact
         run: uv run --frozen --all-extras python scripts/build_runtime_release.py --python ${{ matrix.python }} --target-arch ${{ matrix.arch }}
+      - name: Install, upgrade and reject a corrupt checksum
+        run: uv run --frozen --all-extras python scripts/check_runtime_install.py
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-${{ matrix.runner }}

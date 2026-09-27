@@ -2,7 +2,9 @@ param(
     [string]$Version = $env:CIRCLE_VERSION,
     [string]$Repository = "qingshanfeihu/circle",
     [string]$Prefix = "$env:LOCALAPPDATA\Programs\Circle",
-    [string]$BinDirectory = "$env:LOCALAPPDATA\Programs\Circle\bin"
+    [string]$BinDirectory = "$env:LOCALAPPDATA\Programs\Circle\bin",
+    [string]$DownloadBaseUrl = $env:CIRCLE_DOWNLOAD_BASE_URL,
+    [switch]$NoPathUpdate
 )
 $ErrorActionPreference = "Stop"
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
@@ -12,13 +14,16 @@ if (-not $Version) {
 }
 $Version = $Version.TrimStart('v')
 $asset = "circle-windows-$arch.tar.gz"
-$url = "https://github.com/$Repository/releases/download/v$Version/$asset"
+if (-not $DownloadBaseUrl) { $DownloadBaseUrl = "https://github.com/$Repository/releases/download/v$Version" }
+$url = "$DownloadBaseUrl/$asset"
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory $temporary | Out-Null
 try {
     $download = Join-Path $temporary $asset
     Invoke-WebRequest $url -OutFile $download
-    $expected = ((Invoke-WebRequest "$url.sha256").Content -split '\s+')[0]
+    $checksum = Join-Path $temporary "$asset.sha256"
+    Invoke-WebRequest "$url.sha256" -OutFile $checksum
+    $expected = ((Get-Content $checksum -Raw) -split '\s+')[0]
     if ((Get-FileHash $download -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) {
         throw "Release checksum mismatch"
     }
@@ -39,7 +44,7 @@ try {
         [System.IO.File]::Move($next, $target)
     }
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (($userPath -split ';') -notcontains $BinDirectory) {
+    if (-not $NoPathUpdate -and ($userPath -split ';') -notcontains $BinDirectory) {
         [Environment]::SetEnvironmentVariable("Path", "$BinDirectory;$userPath", "User")
     }
     Write-Output "Circle installed. Open a new terminal and run circle."

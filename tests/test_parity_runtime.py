@@ -81,6 +81,37 @@ def test_tui_clone_retains_history_and_new_resets_tree(tmp_path):
     assert not app._session_tree.nodes
 
 
+def test_tui_uses_registered_provider_from_shared_runtime(tmp_path):
+    app, _ = app_at(tmp_path)
+    extension = app.home / "extensions" / "provider"
+    extension.mkdir(parents=True)
+    (extension / "extension.py").write_text(
+        "from circle.testing import ScriptedModel\n"
+        "from langchain_core.messages import AIMessage\n"
+        "def register(api):\n"
+        "    api.register_provider('audit_provider', lambda auth: ScriptedModel(responses=[AIMessage(content='PROVIDER_OK')]))\n")
+    app.settings.auth.provider = "audit_provider"
+    app.model_override = None
+    app._extensions = app._load_extensions()
+    app._rebuild_agent()
+    app._on_submit("test the custom provider")
+    idle(app)
+    assert "PROVIDER_OK" in app._last_assistant_plain
+
+
+def test_tui_cannot_select_tree_node_while_a_turn_is_busy(tmp_path):
+    app, _ = app_at(tmp_path)
+    app._on_submit("first")
+    idle(app)
+    selected = app._session_tree.active_id
+    previous = dict(app._sessions.get(app._thread_id)["ref"])
+    target = next(node.id for node in app._session_tree.nodes.values() if node.role == "user")
+    app._is_loading = True
+    app._on_submit("/tree " + target)
+    assert app._session_tree.active_id == selected
+    assert app._sessions.get(app._thread_id)["ref"] == previous
+
+
 def test_plan_blocks_external_same_basename(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()

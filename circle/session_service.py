@@ -14,9 +14,11 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
 
@@ -39,6 +41,7 @@ class SessionService:
             updated REAL NOT NULL, status TEXT NOT NULL DEFAULT 'idle')""")
         self._db.commit()
         self._db.execute("CREATE TABLE IF NOT EXISTS message_refs (thread TEXT, message_key TEXT, ref TEXT, PRIMARY KEY(thread,message_key))")
+        self._db.execute("CREATE TABLE IF NOT EXISTS session_heads (session TEXT, checkpoint TEXT, ref TEXT, PRIMARY KEY(session,checkpoint))")
         self._db.commit()
 
     def ensure(self, session_id: str, *, ref: dict | None = None, title: str = "new") -> dict:
@@ -76,7 +79,9 @@ class SessionService:
         # No checkpoint denotes the empty conversation, not the latest state
         # of a physical thread which may since have been populated.
         selected = dict(ref) if ref.get("checkpoint_id") else {"thread_id": _fresh_thread(), "checkpoint_ns": ""}
-        self.save(session_id, ref=selected)
+        with self.run_guard(session_id, mark_running=False):
+            self.remember_head(session_id, self.get(session_id)["ref"])
+            self.save(session_id, ref=selected)
 
     def fork(self, source: str, *, ref: dict | None = None, title: str | None = None) -> str:
         parent = self.get(source)
@@ -85,7 +90,44 @@ class SessionService:
             selected = {"thread_id": _fresh_thread(), "checkpoint_ns": ""}
         sid = "circle-" + uuid.uuid4().hex[:12]
         self.ensure(sid, ref=selected, title=title or parent["title"] + " (fork)")
+        self.remember_head(sid, selected)
         return sid
+
+    def remember_head(self, session_id: str, ref: dict, previous: dict | None = None) -> None:
+        """Keep branch tips as native checkpoint pointers, not copied history."""
+        if not ref.get("checkpoint_id"):
+            return
+        ref = {k: ref[k] for k in ("thread_id", "checkpoint_ns", "checkpoint_id") if k in ref}
+        def key(value):
+            return value["thread_id"] + ":" + value["checkpoint_id"]
+        with self._lock, self._db:
+            if previous and previous.get("checkpoint_id"):
+                self._db.execute("DELETE FROM session_heads WHERE session=? AND checkpoint=?",
+                                 (session_id, key(previous)))
+            self._db.execute("INSERT OR REPLACE INTO session_heads VALUES(?,?,?)",
+                             (session_id, key(ref), json.dumps(ref)))
+
+    def heads(self, session_id: str) -> list[dict]:
+        with self._lock:
+            return [json.loads(row[0]) for row in self._db.execute(
+                "SELECT ref FROM session_heads WHERE session=? ORDER BY checkpoint", (session_id,))]
+
+    @contextmanager
+    def run_guard(self, session_id: str, *, mark_running: bool = True):
+        """One active writer per logical session, including other processes."""
+        locks = self.home / "session-locks"
+        locks.mkdir(exist_ok=True)
+        lock = FileLock(locks / (hashlib.sha256(session_id.encode()).hexdigest() + ".lock"))
+        try:
+            lock.acquire(timeout=0)
+        except Timeout:
+            raise RuntimeError(f"Session {session_id} is already running") from None
+        try:
+            if mark_running:
+                self.save(session_id, status="running")
+            yield
+        finally:
+            lock.release()
 
     def bind(self, agent: Any) -> SessionGraph:
         return SessionGraph(agent, self)
@@ -104,6 +146,7 @@ class SessionService:
         if not state.values:
             raise ValueError("Legacy thread has no readable state")
         self.ensure(thread_id, ref=dict(state.config["configurable"]), title="legacy " + thread_id)
+        self.remember_head(thread_id, dict(state.config["configurable"]))
 
     def close(self) -> None:
         with self._lock:
@@ -143,23 +186,32 @@ class SessionGraph:
         state = next(iter(history), None)
         if state is not None:
             ref = {k: state.config["configurable"][k] for k in ("thread_id", "checkpoint_ns", "checkpoint_id")}
-            self.sessions.save(sid, ref=ref, status="awaiting_user" if state.interrupts else "idle")
+            self.sessions.remember_head(sid, ref, config["configurable"])
+            self.sessions.save(sid, ref=ref, status=self._status(state))
+        else:
+            self.sessions.save(sid, status="interrupted")
+
+    @staticmethod
+    def _status(state):
+        return "awaiting_user" if state.interrupts else ("interrupted" if state.next else "idle")
 
     def invoke(self, input: Any, config: dict | None = None, **kwargs: Any) -> Any:
         sid, resolved = self._resolve(config)
-        self.sessions.save(sid, status="running")
-        try:
-            return self.raw.invoke(input, config=resolved, **kwargs)
-        finally:
-            self._record(sid, resolved)
+        with self.sessions.run_guard(sid):
+            _, resolved = self._resolve(config)
+            try:
+                return self.raw.invoke(input, config=resolved, **kwargs)
+            finally:
+                self._record(sid, resolved)
 
     def stream(self, input: Any, config: dict | None = None, **kwargs: Any) -> Iterator:
         sid, resolved = self._resolve(config)
-        self.sessions.save(sid, status="running")
-        try:
-            yield from self.raw.stream(input, config=resolved, **kwargs)
-        finally:
-            self._record(sid, resolved)
+        with self.sessions.run_guard(sid):
+            _, resolved = self._resolve(config)
+            try:
+                yield from self.raw.stream(input, config=resolved, **kwargs)
+            finally:
+                self._record(sid, resolved)
 
     def get_state(self, config: dict, **kwargs: Any) -> Any:
         _, resolved = self._resolve(config)
@@ -167,10 +219,13 @@ class SessionGraph:
 
     def update_state(self, config: dict, values: Any, **kwargs: Any) -> dict:
         sid, resolved = self._resolve(config)
-        result = self.raw.update_state(resolved, values, **kwargs)
-        self.sessions.save(sid, ref={k: v for k, v in result["configurable"].items()
-                                    if k in {"thread_id", "checkpoint_id", "checkpoint_ns"}})
-        return result
+        with self.sessions.run_guard(sid, mark_running=False):
+            _, resolved = self._resolve(config)
+            result = self.raw.update_state(resolved, values, **kwargs)
+            self.sessions.save(sid, ref={k: v for k, v in result["configurable"].items()
+                                        if k in {"thread_id", "checkpoint_id", "checkpoint_ns"}})
+            self.sessions.remember_head(sid, result["configurable"], resolved["configurable"])
+            return result
 
     def get_state_history(self, config: dict, **kwargs: Any) -> Iterator:
         _, resolved = self._resolve(config)
@@ -181,23 +236,30 @@ class SessionGraph:
         async for state in self.raw.aget_state_history({"configurable": {"thread_id": physical,
                                                                       "checkpoint_ns": config["configurable"].get("checkpoint_ns", "")}},
                                                        filter={"circle_session_id": sid}, limit=1):
-            self.sessions.save(sid, ref=dict(state.config["configurable"]),
-                               status="awaiting_user" if state.interrupts else "idle")
+            ref = {k: state.config["configurable"][k] for k in ("thread_id", "checkpoint_ns", "checkpoint_id")}
+            self.sessions.remember_head(sid, ref, config["configurable"])
+            self.sessions.save(sid, ref=ref, status=self._status(state))
+            return
+        self.sessions.save(sid, status="interrupted")
 
     async def ainvoke(self, input, config=None, **kwargs):
         sid, resolved = self._resolve(config)
-        try:
-            return await self.raw.ainvoke(input, resolved, **kwargs)
-        finally:
-            await self._arecord(sid, resolved)
+        with self.sessions.run_guard(sid):
+            _, resolved = self._resolve(config)
+            try:
+                return await self.raw.ainvoke(input, resolved, **kwargs)
+            finally:
+                await self._arecord(sid, resolved)
 
     async def astream(self, input, config=None, **kwargs):
         sid, resolved = self._resolve(config)
-        try:
-            async for event in self.raw.astream(input, resolved, **kwargs):
-                yield event
-        finally:
-            await self._arecord(sid, resolved)
+        with self.sessions.run_guard(sid):
+            _, resolved = self._resolve(config)
+            try:
+                async for event in self.raw.astream(input, resolved, **kwargs):
+                    yield event
+            finally:
+                await self._arecord(sid, resolved)
 
     async def astream_native(self, input, config=None, **kwargs):
         """Use the SDK's async saver on the same database; no custom saver."""
@@ -226,20 +288,25 @@ class SessionGraph:
 
     async def aupdate_state(self, config, values, **kwargs):
         sid, resolved = self._resolve(config)
-        result = await self.raw.aupdate_state(resolved, values, **kwargs)
-        self.sessions.save(sid, ref={k: v for k, v in result["configurable"].items()
-                                    if k in {"thread_id", "checkpoint_id", "checkpoint_ns"}})
-        return result
+        with self.sessions.run_guard(sid, mark_running=False):
+            _, resolved = self._resolve(config)
+            result = await self.raw.aupdate_state(resolved, values, **kwargs)
+            self.sessions.save(sid, ref={k: v for k, v in result["configurable"].items()
+                                        if k in {"thread_id", "checkpoint_id", "checkpoint_ns"}})
+            self.sessions.remember_head(sid, result["configurable"], resolved["configurable"])
+            return result
 
     def wire_events(self, input, config, **kwargs):
         """Forward the SDK's v3 JSON-RPC stream without a new event schema."""
         sid, resolved = self._resolve(config)
-        stream = self.raw.stream_events(input, resolved, version="v3", **kwargs)
-        try:
-            with stream:
-                yield from stream
-        finally:
-            self._record(sid, resolved)
+        with self.sessions.run_guard(sid):
+            _, resolved = self._resolve(config)
+            stream = self.raw.stream_events(input, resolved, version="v3", **kwargs)
+            try:
+                with stream:
+                    yield from stream
+            finally:
+                self._record(sid, resolved)
 
     def close(self):
         self.sessions.close()
@@ -249,9 +316,22 @@ class SessionGraph:
 
     def project_tree(self, session_id):
         from circle.session_tree import SessionTree
+        ref = self.sessions.get(session_id)["ref"]
+        tree = SessionTree()
+        for head in self.sessions.heads(session_id):
+            branch = self._project_ref(head)
+            tree.nodes.update(branch.nodes)
+            tree.root_ids.extend(root for root in branch.root_ids if root not in tree.root_ids)
+        active = self._project_ref(ref)
+        tree.nodes.update(active.nodes)
+        tree.root_ids.extend(root for root in active.root_ids if root not in tree.root_ids)
+        tree.active_id = active.active_id
+        return tree
+
+    def _project_ref(self, ref):
+        from circle.session_tree import SessionTree
         from circle.tui.content_blocks import message_text
         tree = SessionTree()
-        ref = self.sessions.get(session_id)["ref"]
         if not ref.get("checkpoint_id"):
             return tree
         state = self.raw.get_state({"configurable": ref})
@@ -300,23 +380,63 @@ class SessionGraph:
         return tree
 
     def export(self, session_id: str) -> dict:
+        with self.sessions.run_guard(session_id, mark_running=False):
+            return self._export_settled(session_id)
+
+    def _export_settled(self, session_id: str) -> dict:
         row = self.sessions.get(session_id)
         state = self.get_state({"configurable": {"thread_id": session_id}})
+        portable = self._portable_state(state)
+        branches = [self._portable_state(self.raw.get_state({"configurable": ref}))
+                    for ref in self.sessions.heads(session_id) if ref != row["ref"]]
+        return {"format": "circle-session", "version": 3, "title": row["title"],
+                "state": portable, "branches": branches}
+
+    @staticmethod
+    def _portable_state(state):
         if state.next:
             raise ValueError("A pending run must settle before portable export")
         values = dict(state.values)
         values["messages"] = messages_to_dict(values.get("messages", []))
-        # Framework-owned auxiliary state uses its serializer; the portable
-        # format carries conversation, todos and summary text, not executables.
         portable = {k: values[k] for k in ("messages", "todos") if k in values}
-        return {"format": "circle-session", "version": 1, "title": row["title"], "state": portable}
+        from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
+        event = values.get(SUMMARIZATION_EVENT_KEY)
+        if event:
+            portable[SUMMARIZATION_EVENT_KEY] = {**event,
+                "summary_message": messages_to_dict([event["summary_message"]])[0]}
+        return portable
+
+    @staticmethod
+    def _import_values(portable):
+        from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
+        values = {k: v for k, v in portable.items() if k in {"messages", "todos", SUMMARIZATION_EVENT_KEY}}
+        values["messages"] = messages_from_dict(values.get("messages", []))
+        if values.get(SUMMARIZATION_EVENT_KEY):
+            event = dict(values[SUMMARIZATION_EVENT_KEY])
+            cutoff = event.get("cutoff_index")
+            if type(cutoff) is not int or not 0 <= cutoff <= len(values["messages"]):
+                raise ValueError("Invalid summarization cutoff")
+            event["summary_message"] = messages_from_dict([event["summary_message"]])[0]
+            # Offloaded files belong to the original host. The original messages
+            # and summary are portable; a new invocation allocates its own file.
+            event["file_path"] = None
+            values[SUMMARIZATION_EVENT_KEY] = event
+        return values
 
     def import_session(self, payload: dict) -> str:
-        if payload.get("format") != "circle-session" or payload.get("version") != 1:
+        if payload.get("format") != "circle-session" or payload.get("version") not in {1, 2, 3}:
             raise ValueError("Unsupported session format")
-        values = dict(payload["state"])
-        values["messages"] = messages_from_dict(values.get("messages", []))
+        # Validate every branch before creating a session. Only framework message
+        # objects and known state fields are accepted, never saver internals.
+        states = [self._import_values(branch) for branch in payload.get("branches", [])]
+        states.append(self._import_values(payload["state"]))
         sid = "circle-" + uuid.uuid4().hex[:12]
         self.sessions.ensure(sid, title=str(payload.get("title") or "imported"))
-        self.update_state({"configurable": {"thread_id": sid}}, values, as_node="model")
+        # Portable import is a settled conversation. Clear scheduled nodes
+        # through LangGraph's public API so import itself never replays tools.
+        from langgraph.graph import END
+        for values in states:
+            self.sessions.select(sid, {"thread_id": _fresh_thread(), "checkpoint_ns": ""})
+            self.update_state({"configurable": {"thread_id": sid}}, values, as_node="model")
+            self.update_state({"configurable": {"thread_id": sid}}, None, as_node=END)
         return sid

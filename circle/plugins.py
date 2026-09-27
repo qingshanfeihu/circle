@@ -1,6 +1,7 @@
 """Versioned plugin environments built by uv, activated after validation."""
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
@@ -30,7 +31,7 @@ class PluginManager:
                 for dist in metadata.distributions(path=[str(self.root / generation)])
                 if any(ep.group == "circle.extensions" for ep in dist.entry_points)]
 
-    def reconcile(self, sources: list[str]) -> None:
+    def reconcile(self, sources: list[str], *, preserve_versions: bool = False) -> None:
         uv = os.environ.get("CIRCLE_UV") or shutil.which("uv")
         if not uv:
             raise RuntimeError("uv is required to manage plugin dependencies")
@@ -39,9 +40,15 @@ class PluginManager:
         target = self.root / generation
         target.mkdir()
         constraints = target / "core-constraints.txt"
-        constraints.write_text("\n".join(sorted(f'{dist.metadata["Name"]}=={dist.version}'
-                                                for dist in metadata.distributions()
-                                                if dist.metadata["Name"] != "circle")) + "\n")
+        host_versions = {dist.metadata["Name"]: dist.version for dist in metadata.distributions()
+                         if dist.metadata["Name"] != "circle"
+                         and not Path(dist.locate_file("")).resolve().is_relative_to(self.root.resolve())}
+        if preserve_versions and self.read()["generation"]:
+            active = self.root / self.read()["generation"]
+            plugin_versions = {dist.metadata["Name"]: dist.version for dist in metadata.distributions(path=[str(active)])
+                               if dist.metadata["Name"] != "circle"}
+            host_versions = {**plugin_versions, **host_versions}
+        constraints.write_text("\n".join(sorted(f'{name}=={version}' for name, version in host_versions.items())) + "\n")
         try:
             if sources:
                 core = os.environ.get("CIRCLE_WHEEL")
@@ -73,21 +80,32 @@ class PluginManager:
 
     def install(self, source: str) -> None:
         sources = self.read()["sources"]
+        replacing = source in sources
         if source not in sources:
             sources.append(source)
-        self.reconcile(sources)
+        self.reconcile(sources, preserve_versions=not replacing)
 
     def remove(self, source: str) -> None:
         sources = self.read()["sources"]
         if source not in sources:
             raise ValueError("Remove by the exact installed source")
-        self.reconcile([item for item in sources if item != source])
+        self.reconcile([item for item in sources if item != source], preserve_versions=True)
 
     def entry_points(self):
         generation = self.read()["generation"]
         if not generation:
             return []
         path = str(self.root / generation)
+        # At an idle reload, remove previous plugin imports and paths. Otherwise
+        # Python's module cache keeps executing the old generation after update.
+        root = self.root.resolve()
+        def owned(filename):
+            return bool(filename) and Path(filename).resolve().is_relative_to(root)
+        for name, module in list(sys.modules.items()):
+            if owned(getattr(module, "__file__", None)):
+                sys.modules.pop(name, None)
+        sys.path[:] = [entry for entry in sys.path if not owned(entry)]
+        importlib.invalidate_caches()
         if path not in sys.path:
             # Core modules take precedence; solver constraints prevent incompatible
             # plugin dependencies from replacing the host's framework versions.

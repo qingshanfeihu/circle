@@ -30,9 +30,7 @@ def main():
     if not uv or not node:
         raise SystemExit("Build requires uv and Node >=22.19")
     os_tag = {"Darwin": "darwin", "Linux": "linux", "Windows": "windows"}[platform.system()]
-    arch = {"aarch64": "arm64", "arm64": "arm64", "AMD64": "x86_64", "x86_64": "x86_64"}[platform.machine()]
-    if args.target_arch:
-        arch = args.target_arch
+    arch = args.target_arch or {"aarch64": "arm64", "arm64": "arm64", "amd64": "x86_64", "x86_64": "x86_64"}[platform.machine().lower()]
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="circle-release-") as temp:
         staging = (Path(temp) / "circle").resolve()
@@ -45,6 +43,13 @@ def main():
         if not candidates:
             raise RuntimeError("Managed runtime has no Python executable")
         python = candidates[0].resolve()
+        # uv creates Windows directory junctions for minor-version aliases.
+        # They keep absolute targets after relocation and tarfile treats them
+        # as directories. The launcher uses the resolved version directory.
+        if os_tag == "windows":
+            for alias in python_dir.iterdir():
+                if alias.is_junction():
+                    alias.rmdir()
         run([uv, "build", "--wheel", "--out-dir", str(staging / "wheels")], cwd=ROOT)
         wheel = next((staging / "wheels").glob("circle-*.whl"))
         locked = staging / "requirements.lock.txt"
@@ -76,15 +81,19 @@ def main():
                     directory = target.is_dir()
                     link.unlink()
                     link.symlink_to(relative, target_is_directory=directory)
+        python_platform = subprocess.check_output([str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_platform())"], text=True).strip()
+        python_arch = "x86_64" if python_platform == "win-amd64" else ("arm64" if python_platform == "win-arm64" else platform.machine().lower())
         manifest = {"version": json.loads((ROOT / "circle" / "node" / "package.json").read_text())["version"],
                     "platform": os_tag, "arch": arch,
-                    "python_arch": subprocess.check_output([str(python), "-I", "-c", "import platform; print(platform.machine())"], text=True).strip(),
+                    "python_arch": python_arch,
+                    "python_platform": python_platform,
                     "python": str(python.relative_to(staging)),
                     "node": "runtime/node/node.exe" if os_tag == "windows" else "runtime/node/bin/node",
                     "uv": "runtime/uv.exe" if os_tag == "windows" else "runtime/uv",
                     "wheel": str(wheel.relative_to(staging)),
                     "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
                     "node_version": subprocess.check_output([node, "--version"], text=True).strip(),
+                    "node_arch": subprocess.check_output([node, "-p", "process.arch"], text=True).strip(),
                     "head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()}
         (staging / "runtime.json").write_text(json.dumps(manifest, indent=2))
         notices = []

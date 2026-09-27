@@ -42,7 +42,7 @@ from circle.context_middleware import (
     thread_config,
 )
 from circle.extensions import CommandContext, ExtensionHost
-from circle.harness import BUILTIN_TOOL_NAMES, create_harness
+from circle.harness import BUILTIN_TOOL_NAMES
 from circle.mcp_loader import format_mcp_status
 from circle.session_tree import SessionTree
 from circle.ink.app import InkApp
@@ -381,56 +381,31 @@ class CircleSessionApp:
         self._secret_last_check = 0.0
 
         self._approvals = default_policy(self.home, settings.credential_files or None)
-        model = build_chat_model(
-            settings, home=self.home, model_override=model_override
-        )
-        self._chat_model = model
+        self._agent = self._create_runtime(model_override)
+        self._chat_model = self._agent._circle_model
         self._sync_model_meter()
-        self._agent = create_harness(
-            model,
-            root_dir=self.workspace,
-            home=self.home,
-            checkpointer=self._checkpointer,
-            store=self._store,
-            model_id=settings.auth.model,
-            protocol=settings.auth.protocol,
-            plan_mode=self._plan_mode,
-            mcp_servers=settings.mcp_servers,
-            extensions=self._extensions,
-            approvals=self._approvals,
-            ask_user=True,
-        )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
-        self._agent = self._sessions.bind(self._agent)
         self._bridge = self._make_bridge()
+
+    def _create_runtime(self, model_override=None):
+        from circle.runtime import create_session_runtime
+        return create_session_runtime(
+            self.settings, self.workspace, home=self.home, model_override=model_override,
+            checkpointer=self._checkpointer, store=self._store, sessions=self._sessions,
+            plan_mode=self._plan_mode, extensions=self._extensions,
+            approvals=self._approvals, ask_user=True,
+        )
 
     def _rebuild_agent(self, *, model: Any | None = None) -> None:
         """Rebuild harness with current settings / plan mode."""
-        chat = model or build_chat_model(
-            self.settings, home=self.home, model_override=self.model_override
-        )
         self._custom_commands = {
             c.name: c
             for c in discover_custom_commands(self.workspace, self.home)
         }
-        self._chat_model = chat
-        self._agent = create_harness(
-            chat,
-            root_dir=self.workspace,
-            home=self.home,
-            checkpointer=self._checkpointer,
-            store=self._store,
-            model_id=self.settings.auth.model,
-            protocol=self.settings.auth.protocol,
-            plan_mode=self._plan_mode,
-            mcp_servers=self.settings.mcp_servers,
-            extensions=self._extensions,
-            approvals=self._approvals,
-            ask_user=True,
-        )
+        self._agent = self._create_runtime(model if model is not None else self.model_override)
+        self._chat_model = self._agent._circle_model
         self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
-        self._agent = self._sessions.bind(self._agent)
         self._bridge = self._make_bridge()
         backend = getattr(self._agent, "_circle_backend", None)
         if backend is not None and hasattr(backend, "set_plan_mode"):
@@ -1532,15 +1507,6 @@ class CircleSessionApp:
             self._notice([f" {_faint(line)}" for line in hotkeys_text().splitlines()])
             self._app.render()
             return
-        if name in self._custom_commands:
-            cmd = self._custom_commands[name]
-            try:
-                expanded = expand_command_template(cmd.template, args, cwd=self.workspace, execute=self._expand_shell)
-            except PermissionError as exc:
-                self._toast(str(exc))
-                return
-            self._start_user_turn(expanded)
-            return
         _busy_ok = {
             "yolo",
             "approvals",  # 看/撤规则不碰在跑的回合；撤销从下一次调用起生效
@@ -1557,8 +1523,18 @@ class CircleSessionApp:
             "name",
             "tree",
         }
-        if name not in _busy_ok and (self._bridge.is_running or self._is_loading):
+        mutates_context = (name in {"tree", "thinking"} and bool(args.strip())) or (name == "mcp" and args.strip().lower() in {"reload", "refresh", "connect"})
+        if (name not in _busy_ok or mutates_context) and (self._bridge.is_running or self._is_loading):
             self._toast("(busy — 等待当前回合完成)")
+            return
+        if name in self._custom_commands:
+            cmd = self._custom_commands[name]
+            try:
+                expanded = expand_command_template(cmd.template, args, cwd=self.workspace, execute=self._expand_shell)
+            except PermissionError as exc:
+                self._toast(str(exc))
+                return
+            self._start_user_turn(expanded)
             return
         ext_command = self._extensions.commands().get(name)
         if ext_command is not None:
@@ -1615,7 +1591,7 @@ class CircleSessionApp:
         review = self._approvals.review("execute", {"command": command})
         if review.verdict == "DENY":
             raise PermissionError(review.message)
-        if not self._bridge.auto_approve and self._approvals.needs_approval("execute", {"command": command}, self._thread_id):
+        if not getattr(self._bridge, "auto_approve", False) and self._approvals.needs_approval("execute", {"command": command}, self._thread_id):
             raise PermissionError("模板命令需要审批；先批准相同的 execute 命令，再重试此模板")
         result = backend.execute(command, timeout=30)
         if result.exit_code:
@@ -1661,6 +1637,8 @@ class CircleSessionApp:
             self._transcript.clear()
             self._session_title = "new"
             self._show_welcome()
+        if state.interrupts:
+            self._on_interrupt(state.interrupts)
 
     def _cmd_login(self, args: str) -> None:
         import os
@@ -1905,11 +1883,10 @@ class CircleSessionApp:
         # Explicit /models switch leaves the scripted/test override behind.
         self.model_override = None
         try:
-            model = build_chat_model(self.settings, home=self.home)
+            self._rebuild_agent()
         except Exception as exc:  # noqa: BLE001
             self._toast(f"切换失败: {exc}")
             return
-        self._rebuild_agent(model=model)
         self._footer.update(model=name)
         self._toast(f"模型 → {name}")
 
@@ -1925,46 +1902,7 @@ class CircleSessionApp:
             self._toast("对话太短，无需压缩")
             return
         self._toast("正在压缩上下文（deepagents compact_conversation）…")
-        self._enter_busy()
-        self._app.render()
-
-        def _work() -> None:
-            summary = ""
-            err: BaseException | None = None
-            try:
-                result = self._agent.invoke(
-                    {"messages": [{"role": "user", "content": compact_prompt(hint=hint)}]},
-                    config=thread_config(self._thread_id),
-                )
-                out_msgs = result.get("messages") or []
-                last = out_msgs[-1] if out_msgs else None
-                content = getattr(last, "content", "") if last is not None else ""
-                if isinstance(content, list):
-                    parts = []
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            parts.append(str(block.get("text") or ""))
-                        else:
-                            parts.append(str(block))
-                    summary = "\n".join(parts).strip()
-                else:
-                    summary = str(content or "").strip()
-            except BaseException as exc:  # noqa: BLE001
-                err = exc
-            with self._app.lock:
-                if err is not None:
-                    self._leave_busy()
-                    self._transcript.append_message(
-                        _error_line(f"compact 失败: {_format_llm_error(err)}")
-                    )
-                    self._app.render()
-                    return
-                self._notice([" " + _faint("— compacted (same thread) —")]
-                             + [f" {line}" for line in (summary or "COMPACT_OK").splitlines()])
-                self._leave_busy()
-                self._app.render()
-
-        threading.Thread(target=_work, name="circle-compact", daemon=True).start()
+        self._start_user_turn(compact_prompt(hint=hint))
 
     def _cmd_plan(self, args: str) -> None:
         token = (args or "").strip().lower()
@@ -2033,6 +1971,9 @@ class CircleSessionApp:
             for line in self._session_tree.render_list().splitlines():
                 self._transcript.append_message(f" {_faint(line)}")
             self._app.render()
+            return
+        if self._bridge.is_running or self._is_loading:
+            self._toast("(busy — 等待当前回合完成)")
             return
         if not self._session_tree.jump(token):
             self._toast(f"未知节点 {token}")
@@ -2355,11 +2296,17 @@ class CircleSessionApp:
                 path = self.workspace / path
         else:
             path = self.home / "exports" / f"circle-{self._thread_id}-{stamp}.md"
+        payload = None
+        if path.suffix.lower() in {".json", ".html"}:
+            try:
+                payload = self._agent.export(self._thread_id)
+            except (ValueError, RuntimeError) as exc:
+                self._toast(f"导出失败: {exc}")
+                return
         if path.suffix.lower() == ".json":
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(self._agent.export(self._thread_id), ensure_ascii=False, indent=2))
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         elif path.suffix.lower() == ".html":
-            payload = self._agent.export(self._thread_id)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("<!doctype html><meta charset=utf-8><title>Circle session</title><pre>" +
                             html.escape(json.dumps(payload, ensure_ascii=False, indent=2)) + "</pre>")
