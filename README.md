@@ -178,7 +178,7 @@ OpenAI 协议只有显式设置了才发送。Circle 不会关闭思考。
 
 新增的共用运行服务、Pi 模型适配、ACP、插件及发行方式见
 [实现与验收记录](docs/PI_PARITY_IMPLEMENTATION.md)。模型目录覆盖不等于服务连通验收；
-当前仍需补充订阅账号与六平台的最终产物验证。
+六平台产物、搬迁和安装升级已通过验收；真实订阅账号、视觉模型及各交互终端的实际表现仍需单独验证。
 
 自动化入口：`circle -p '任务'`、`circle -p '任务' --mode json`、`circle --mode rpc`（ACP）。
 用 `--session <id>` 延续会话、`--file <路径>` 附加文件或图片、`--connection <名称>` 选择
