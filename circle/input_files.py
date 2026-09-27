@@ -11,7 +11,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from circle.approvals import DEFAULT_CREDENTIAL_FILES
+from circle.approvals import DEFAULT_CREDENTIAL_FILES, INTERNAL_CREDENTIAL_FILES
 
 REFERENCES = re.compile(r'(?<!\S)@(?:"([^"]+)"|\'([^\']+)\'|(\S+))')
 
@@ -61,6 +61,30 @@ def clipboard_image(home: Path) -> Path | None:
     return path
 
 
+def image_previews(content, *, width: int = 60) -> list[str]:
+    """Rich Pixels supplies an inline preview using ordinary terminal cells."""
+    if not isinstance(content, list) or not any(block.get("type") == "image" for block in content):
+        return []
+    from PIL import Image
+    from rich.console import Console
+    from rich_pixels import Pixels
+    lines = []
+    for block in content:
+        if block.get("type") != "image":
+            continue
+        try:
+            with Image.open(io.BytesIO(base64.b64decode(block["base64"]))) as image:
+                image.thumbnail((max(1, min(width, 60)), 40))
+                output = io.StringIO()
+                console = Console(file=output, width=max(1, width), force_terminal=True,
+                                  color_system="truecolor", no_color=False, legacy_windows=False)
+                console.print(Pixels.from_image(image))
+                lines.extend(output.getvalue().splitlines())
+        except (ValueError, OSError):
+            lines.append("（图片预览不可用，附件仍保留）")
+    return lines
+
+
 def file_candidates(workspace: Path, prefix: str) -> list[str]:
     try:
         output = subprocess.check_output(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -85,7 +109,8 @@ def prepare_content(text: str, workspace: Path, *, files=(), credential_files=No
         if path in seen:
             continue
         seen.add(path)
-        if any(fnmatch.fnmatchcase(path.name, pattern) for pattern in (credential_files or DEFAULT_CREDENTIAL_FILES)):
+        patterns = (*INTERNAL_CREDENTIAL_FILES, *(credential_files or DEFAULT_CREDENTIAL_FILES))
+        if any(fnmatch.fnmatchcase(path.name, pattern) for pattern in patterns):
             raise ValueError("Credential files cannot be attached")
         if not path.is_file():
             raise FileNotFoundError(f"Attachment not found: {source}")

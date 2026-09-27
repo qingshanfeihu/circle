@@ -88,6 +88,7 @@ class HarnessBridge:
         on_error: Callable[[BaseException], None],
         on_status: Callable[[str], None] | None = None,
         on_snapshot: Callable[[MessageSnapshot], None] | None = None,
+        on_exit: Callable[[], None] | None = None,
     ) -> None:
         self._agent = agent
         self._thread_id = thread_id
@@ -97,6 +98,7 @@ class HarnessBridge:
         self._on_error = on_error
         self._on_status = on_status or (lambda _s: None)
         self._on_snapshot = on_snapshot
+        self._on_exit = on_exit or (lambda: None)
         # 一个用户回合一个 sink：start 时重置，审批后 resume 沿用（工具行留在同一回合里）
         self._sink = TuiSink(post=self._post_snapshot)
         self._worker: threading.Thread | None = None
@@ -358,6 +360,7 @@ class HarnessBridge:
             deferred, self._deferred_resume = getattr(self, "_deferred_resume", None), None
             if deferred is not None and not self._cancelled:
                 self._start_resume(deferred)
+            self._on_exit()
 
     def announce_blocked(self, call: dict[str, Any], text: str) -> None:
         """A call refused at the approval prompt: give it a row in this turn."""

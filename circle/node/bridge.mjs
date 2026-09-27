@@ -1,7 +1,9 @@
 // Model/auth adapter only. Deep Agents owns all agent and tool execution.
 import { JSONRPCServer } from "json-rpc-2.0";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, chmod } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { renderImage, getImageDimensions } from "@earendil-works/pi-tui";
@@ -10,11 +12,25 @@ const send = (record) => process.stdout.write(JSON.stringify(record) + "\n");
 const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
 let activeId;
 const answers = new Map();
+const exec = promisify(execFile);
+let account;
+async function privateFile(path) {
+  if (process.platform === "win32") {
+    account ??= exec("whoami", []).then(result => result.stdout.trim());
+    await exec("icacls", [path, "/inheritance:r", "/grant:r", (await account) + ":(F)"]);
+  } else {
+    await chmod(path, 0o600);
+  }
+}
 
 class FileCredentials {
   constructor(home) { this.path = join(home, "provider-credentials.json"); }
   async all() {
-    try { return JSON.parse(await readFile(this.path, "utf8")); }
+    try {
+      const data = await readFile(this.path, "utf8");
+      await privateFile(this.path);
+      return JSON.parse(data);
+    }
     catch (err) { if (err.code === "ENOENT") return {}; throw err; }
   }
   async read(id) { return (await this.all())[id]; }
@@ -23,6 +39,7 @@ class FileCredentials {
     await mkdir(join(this.path, ".."), { recursive: true });
     try { await writeFile(this.path, "{}", { flag: "wx", mode: 0o600 }); }
     catch (err) { if (err.code !== "EEXIST") throw err; }
+    await privateFile(this.path);
     const release = await lockfile.lock(this.path, { retries: { retries: 30, minTimeout: 100, maxTimeout: 1000 } });
     try {
       const data = await this.all();
@@ -30,7 +47,9 @@ class FileCredentials {
       if (value === null) delete data[id];
       else if (value !== undefined) data[id] = value;
       const temporary = this.path + ".tmp-" + process.pid;
-      await writeFile(temporary, JSON.stringify(data), { mode: 0o600 });
+      await writeFile(temporary, "", { flag: "wx", mode: 0o600 });
+      await privateFile(temporary);
+      await writeFile(temporary, JSON.stringify(data));
       await rename(temporary, this.path);
       return data[id];
     } finally { await release(); }

@@ -35,3 +35,16 @@ def test_large_image_is_resized_with_coordinate_disclosure(tmp_path):
     with Image.open(io.BytesIO(base64.b64decode(attached["base64"]))) as image:
         assert image.size == (2000, 1500)
     assert any("original 4000x3000, submitted 2000x1500" in block.get("text", "") for block in blocks)
+
+
+def test_inline_preview_is_bounded_and_keeps_model_attachment(tmp_path):
+    from PIL import Image
+    from circle.input_files import image_previews
+    from circle.ink.string_width import string_width
+    Image.new("RGB", (160, 80), "red").save(tmp_path / "preview.png")
+    content = prepare_content("@preview.png", tmp_path)
+    before = next(block["base64"] for block in content if block["type"] == "image")
+    lines = image_previews(content, width=30)
+    assert lines and all(string_width(line) <= 30 for line in lines)
+    assert len(lines) <= 20 and any("\x1b[" in line for line in lines)
+    assert next(block["base64"] for block in content if block["type"] == "image") == before

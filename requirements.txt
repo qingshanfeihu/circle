@@ -11,3 +11,4 @@ mcp==1.30.0
 langchain-mcp-adapters==0.3.2
 prompt-toolkit>=3.0.52,<4
 filelock>=3.20,<4
+psutil==7.2.2

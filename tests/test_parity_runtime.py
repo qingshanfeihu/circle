@@ -122,6 +122,23 @@ def test_plan_blocks_external_same_basename(tmp_path):
     assert backend.write("/plan.md", "allowed").error is None
 
 
+def test_provider_credentials_are_guarded_even_with_custom_patterns(tmp_path):
+    from circle.approvals import default_policy
+    from circle.input_files import prepare_content
+    import pytest
+    path = tmp_path / "provider-credentials.json"
+    path.write_text("SYNTHETIC_CREDENTIAL")
+    policy = default_policy(tmp_path / "home", ["*.custom-secret"])
+    assert policy.review("execute", {"command": "cat provider-credentials.json"}).verdict == "DENY"
+    with pytest.raises(ValueError, match="Credential"):
+        prepare_content("@provider-credentials.json", tmp_path, credential_files=["*.custom-secret"])
+    model = ScriptedModel(responses=[call("read_file", {"file_path": "/provider-credentials.json"}), AIMessage(content="done")])
+    graph = create_harness(model, root_dir=tmp_path, home=tmp_path / "home", approvals=policy)
+    state = graph.invoke({"messages": [{"role": "user", "content": "read it"}]},
+                         {"configurable": {"thread_id": "credential-guard"}})
+    assert all("SYNTHETIC_CREDENTIAL" not in str(message.content) for message in state["messages"])
+
+
 def test_mcp_requires_approval_and_is_blocked_in_plan(tmp_path):
     def mutate(value: str) -> str:
         """Write an audit marker."""
@@ -142,8 +159,9 @@ def test_mcp_requires_approval_and_is_blocked_in_plan(tmp_path):
 
 
 def test_cancel_kills_inflight_shell(tmp_path):
+    import psutil
     app, _ = app_at(tmp_path)
-    script = "from pathlib import Path; import time; Path('started').write_text('start'); time.sleep(2); Path('late').write_text('late')"
+    script = "from pathlib import Path; import time, os; Path('started').write_text(str(os.getpid())); time.sleep(2); Path('late').write_text('late')"
     args = [sys.executable, "-c", script]
     command = subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
     app.model_override = ScriptedModel(responses=[call("execute", {"command": command}),
@@ -152,11 +170,24 @@ def test_cancel_kills_inflight_shell(tmp_path):
     app._cmd_yolo("on")
     app._on_submit("execute synthetic test")
     end = time.monotonic() + 5
-    while not (app.workspace / "started").exists():
+    started = app.workspace / "started"
+    while not started.exists() or not started.read_text().strip().isdigit():
         assert time.monotonic() < end
         time.sleep(0.02)
+    process = psutil.Process(int(started.read_text()))
     app._bridge.cancel()
-    app._bridge._worker.join(timeout=3)
+    end = time.monotonic() + 2
+    while process.is_running():
+        try:
+            if process.status() == psutil.STATUS_ZOMBIE:
+                break
+        except psutil.NoSuchProcess:
+            break
+        assert time.monotonic() < end, "Cancelled shell child is still running"
+        time.sleep(0.02)
+    # Checkpoint/executor teardown has its own budget, after proving the shell
+    # is dead and cannot perform the scheduled mutation.
+    app._bridge._worker.join(timeout=8)
     assert not app._bridge.is_running
     assert not (app.workspace / "late").exists()
 
@@ -246,3 +277,41 @@ def test_cancel_native_model_request_before_server_response(tmp_path):
         release.set()
         server.shutdown()
         server.server_close()
+
+
+def test_input_during_cancel_teardown_starts_a_fresh_turn(tmp_path):
+    import asyncio
+    from circle.ink.parse_keypress import KeyPress
+    entered, cancelling, release = threading.Event(), threading.Event(), threading.Event()
+    class SlowCancellation(CapturingModel):
+        async def _agenerate(self, messages, *args, **kwargs):
+            if self.i == 0:
+                self.i = 1
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelling.set()
+                    while not release.is_set():
+                        await asyncio.sleep(0.02)
+                    raise
+            return self._generate(messages, *args, **kwargs)
+    app, _ = app_at(tmp_path)
+    model = SlowCancellation(responses=[AIMessage(content="unused"), AIMessage(content="fresh answer")])
+    app.model_override = model
+    app._rebuild_agent(model=model)
+    app._on_submit("cancel this request")
+    assert entered.wait(3)
+    app._handle_key(KeyPress(key="ctrl+c", ctrl=True, char="c"))
+    assert cancelling.wait(3)
+    app._on_submit("FOLLOWUP_AFTER_CANCEL")
+    try:
+        assert app._msg_queue and not app._bridge._signals.steering
+    finally:
+        release.set()
+    end = time.monotonic() + 8
+    while app._msg_queue or app._bridge.is_running or app._is_loading:
+        assert time.monotonic() < end
+        time.sleep(0.02)
+    assert "FOLLOWUP_AFTER_CANCEL" in model.inputs[-1]
+    assert app._last_assistant_plain == "fresh answer"

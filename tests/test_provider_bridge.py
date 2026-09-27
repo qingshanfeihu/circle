@@ -8,6 +8,14 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from circle.provider_bridge import PiChatModel, bridge_call, pi_context
 
 
+def test_sdk_credential_updates_keep_private_file_permissions(tmp_path):
+    from circle.file_permissions import is_private
+    path = tmp_path / "provider-credentials.json"
+    path.write_text("{}")
+    bridge_call("logout", {"provider": "openai"}, home=tmp_path)
+    assert path.exists() and is_private(path)
+
+
 def test_context_preserves_signatures_and_repaired_tool_calls():
     original = {"role": "assistant", "provider": "anthropic", "model": "m", "api": "anthropic-messages",
                 "content": [{"type": "thinking", "thinking": "reason", "thinkingSignature": "sig"},

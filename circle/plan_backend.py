@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import signal
 import subprocess
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from deepagents.backends.protocol import ExecuteResponse
 
-from circle.sandbox import CircleSandboxBackend
 from circle.run_control import check_cancelled
+from circle.sandbox import CircleSandboxBackend
 
 
 def _is_plan_file(path: str | Path) -> bool:
@@ -38,7 +39,7 @@ class PlanGuardedBackend(CircleSandboxBackend):
         except (ValueError, OSError):
             return False
 
-    def write(self, file_path: str, content: str) -> Any:  # noqa: ANN401
+    def write(self, file_path: str, content: str) -> Any:
         check_cancelled()
         if self.plan_mode and not self.is_plan_file(file_path):
             from deepagents.backends.protocol import WriteResult
@@ -51,7 +52,7 @@ class PlanGuardedBackend(CircleSandboxBackend):
             )
         return super().write(file_path, content)
 
-    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> Any:  # noqa: ANN401
+    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> Any:
         check_cancelled()
         if self.plan_mode and not self.is_plan_file(file_path):
             from deepagents.backends.protocol import EditResult
@@ -64,7 +65,7 @@ class PlanGuardedBackend(CircleSandboxBackend):
             )
         return super().edit(file_path, old_string, new_string, replace_all=replace_all)
 
-    def delete(self, file_path: str) -> Any:  # noqa: ANN401
+    def delete(self, file_path: str) -> Any:
         check_cancelled()
         if self.plan_mode:
             from deepagents.backends.protocol import DeleteResult
@@ -112,8 +113,23 @@ class PlanGuardedBackend(CircleSandboxBackend):
         finally:
             if process.poll() is None:
                 if os.name == "nt":
-                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    import psutil
+                    try:
+                        parent = psutil.Process(process.pid)
+                        descendants = parent.children(recursive=True)
+                        # Stop the shell from launching more work before killing
+                        # its captured children. Avoid another shell/taskkill
+                        # process on the cancellation path.
+                        for child in [parent, *reversed(descendants)]:
+                            try:
+                                child.kill()
+                            except psutil.NoSuchProcess:
+                                continue
+                        _, alive = psutil.wait_procs([parent, *descendants], timeout=2)
+                        if alive:
+                            raise RuntimeError("Cancelled shell processes did not terminate")
+                    except psutil.NoSuchProcess:
+                        pass
                 else:
                     try:
                         os.killpg(process.pid, signal.SIGKILL)

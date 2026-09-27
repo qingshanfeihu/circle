@@ -444,6 +444,7 @@ class CircleSessionApp:
             on_error=self._on_error,
             on_status=self._on_status,
             on_snapshot=self._on_snapshot,
+            on_exit=self._on_bridge_exit,
         )
         bridge._config["configurable"]["extension_flags"] = dict(self.settings.extension_flags)
         return bridge
@@ -1420,7 +1421,7 @@ class CircleSessionApp:
             self._dispatch_slash(parsed.name, parsed.args)
             return
         if self._bridge.is_running or self._is_loading:
-            if kind == "steering" and self._bridge.is_running:
+            if kind == "steering" and self._bridge.is_running and not getattr(self._bridge, "_cancelled", False):
                 self._bridge.steer(text)
                 self._toast("steering 将在下一次模型请求前送达")
                 return
@@ -1429,6 +1430,15 @@ class CircleSessionApp:
             self._toast(f"已排队 {label}（{len(self._msg_queue)}）")
             return
         self._start_user_turn(text)
+
+    def _on_bridge_exit(self) -> None:
+        # The callback runs just before the worker returns. Start queued input
+        # afterwards, including input entered during cancellation teardown.
+        if not self._msg_queue:
+            return
+        timer = threading.Timer(0.15, self._drain_message_queue)
+        timer.daemon = True
+        timer.start()
 
     def _start_user_turn(self, text: str) -> None:
         try:
@@ -1448,6 +1458,10 @@ class CircleSessionApp:
             self._transcript.append_message(_faint('─' * w))
         self._transcript.ensure_block_gap()
         self._transcript.append_messages([f" {_faint('>')} {line}" for line in text.split("\n")])
+        from circle.input_files import image_previews
+        previews = image_previews(content, width=max(1, (self._transcript.node.rect.width or 80) - 2))
+        if previews:
+            self._transcript.append_messages([" " + line for line in previews])
         self._transcript.ensure_block_gap()
         self._open_turn_region()
         self._turn_elapsed = 0.0
@@ -2678,11 +2692,6 @@ class CircleSessionApp:
             self._app.render()
             self._extensions.emit("turn_end", {"text": visible})
             self._archive_current()
-            # 延迟 drain：等 bridge 完全退出 running 状态后再消费队列
-            import threading
-            timer = threading.Timer(0.15, self._drain_message_queue)
-            timer.daemon = True
-            timer.start()
 
     def _on_error(self, exc: BaseException) -> None:
         with self._app.lock:

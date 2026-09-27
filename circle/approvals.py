@@ -32,16 +32,20 @@ import re
 import shlex
 import threading
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Literal
+
 from circle.file_permissions import make_private
 
 Verdict = Literal["DENY", "ASK", "ASK_FORCED"]
 
+INTERNAL_CREDENTIAL_FILES = ("credentials.json*", "provider-credentials.json*")
 DEFAULT_CREDENTIAL_FILES: tuple[str, ...] = (
     ".env", ".env.*", "*.env", ".netrc", ".pgpass", ".git-credentials", "credentials.json",
     "token.json", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "*.pem", "*.p12", "*.pfx",
+    "provider-credentials.json*",
 )
 FILE_EDIT_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
 REJECTED_BY_USER = "The user rejected this tool call."
@@ -400,7 +404,8 @@ class ApprovalPolicy:
     def __init__(self, store: ApprovalStore, *, credential_files: Iterable[str] | None = None
                  ) -> None:
         self.store = store
-        self.credential_files = tuple(credential_files or DEFAULT_CREDENTIAL_FILES)
+        self.credential_files = tuple(dict.fromkeys((*INTERNAL_CREDENTIAL_FILES,
+                                                    *(credential_files or DEFAULT_CREDENTIAL_FILES))))
         self._inside: Callable[[str], bool] = lambda _path: False
 
     def bind_workspace(self, resolve: Callable[[str], Path], root: Path) -> None:
