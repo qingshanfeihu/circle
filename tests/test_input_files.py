@@ -40,11 +40,11 @@ def test_large_image_is_resized_with_coordinate_disclosure(tmp_path):
 def test_inline_preview_is_bounded_and_keeps_model_attachment(tmp_path):
     from PIL import Image
     from circle.input_files import image_previews
-    from circle.ink.string_width import string_width
+    from rich.text import Text
     Image.new("RGB", (160, 80), "red").save(tmp_path / "preview.png")
     content = prepare_content("@preview.png", tmp_path)
     before = next(block["base64"] for block in content if block["type"] == "image")
     lines = image_previews(content, width=30)
-    assert lines and all(string_width(line) <= 30 for line in lines)
+    assert lines and all(Text.from_ansi(line).cell_len <= 30 for line in lines)
     assert len(lines) <= 20 and any("\x1b[" in line for line in lines)
     assert next(block["base64"] for block in content if block["type"] == "image") == before
