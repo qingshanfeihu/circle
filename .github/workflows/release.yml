@@ -10,7 +10,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15-intel, macos-15, windows-2025, windows-11-arm]
+        include:
+          - runner: ubuntu-22.04
+            python: '3.13'
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            python: '3.13'
+            arch: arm64
+          - runner: macos-15-intel
+            python: '3.13'
+            arch: x86_64
+          - runner: macos-15
+            python: '3.13'
+            arch: arm64
+          - runner: windows-2025
+            python: cpython-3.13.14-windows-x86_64-none
+            arch: x86_64
+          - runner: windows-11-arm
+            python: cpython-3.13.14-windows-x86_64-none
+            arch: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -19,7 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: uv sync --frozen --all-extras
+      - run: uv sync --frozen --all-extras --python ${{ matrix.python }}
       - run: npm ci --ignore-scripts --prefix circle/node
       - name: Test runtime
         run: uv run --frozen --all-extras pytest -q
@@ -27,7 +45,7 @@ jobs:
           LANGSMITH_TRACING: 'false'
           LANGCHAIN_TRACING_V2: 'false'
       - name: Build, smoke and relocate artifact
-        run: uv run --frozen --all-extras python scripts/build_runtime_release.py
+        run: uv run --frozen --all-extras python scripts/build_runtime_release.py --python ${{ matrix.python }} --target-arch ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-${{ matrix.runner }}

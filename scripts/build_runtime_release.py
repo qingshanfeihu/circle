@@ -23,6 +23,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=ROOT / "dist-release")
     parser.add_argument("--python", default="3.13")
+    parser.add_argument("--target-arch", choices=("arm64", "x86_64"))
     args = parser.parse_args()
     uv = shutil.which("uv")
     node = shutil.which("node")
@@ -30,6 +31,8 @@ def main():
         raise SystemExit("Build requires uv and Node >=22.19")
     os_tag = {"Darwin": "darwin", "Linux": "linux", "Windows": "windows"}[platform.system()]
     arch = {"aarch64": "arm64", "arm64": "arm64", "AMD64": "x86_64", "x86_64": "x86_64"}[platform.machine()]
+    if args.target_arch:
+        arch = args.target_arch
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="circle-release-") as temp:
         staging = Path(temp) / "circle"
@@ -75,6 +78,7 @@ def main():
                     link.symlink_to(relative, target_is_directory=directory)
         manifest = {"version": json.loads((ROOT / "circle" / "node" / "package.json").read_text())["version"],
                     "platform": os_tag, "arch": arch,
+                    "python_arch": subprocess.check_output([str(python), "-I", "-c", "import platform; print(platform.machine())"], text=True).strip(),
                     "python": str(python.relative_to(staging)),
                     "node": "runtime/node/node.exe" if os_tag == "windows" else "runtime/node/bin/node",
                     "uv": "runtime/uv.exe" if os_tag == "windows" else "runtime/uv",

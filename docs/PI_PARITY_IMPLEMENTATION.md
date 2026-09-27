@@ -60,6 +60,12 @@ The v3 LangGraph event protocol is experimental; the exact framework versions ar
 locked and protocol changes need explicit tests. Plan mode and approval are action
 controls, not an operating-system sandbox for trusted Python extension code.
 
+Windows ARM64 uses an x64 Python compatibility runtime: upstream sqlite-vec
+does not publish a win_arm64 wheel. The checkpoint implementation is unchanged;
+the artifact records both host target and Python architecture. This does not
+claim native ARM64 Python performance. A native variant needs an upstream binary
+build and its own acceptance receipt.
+
 Direct compatibility with third-party Pi TypeScript packages is outside the
 agreed scope. Do not describe these changes as complete Pi parity until the
 remaining live-account/platform acceptance matrix has receipts.
