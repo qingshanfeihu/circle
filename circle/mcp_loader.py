@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from langchain_core.tools import BaseTool
+from circle.run_control import controlled
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,10 @@ def _connection_from_config(item: dict[str, Any]) -> dict[str, Any] | None:
         transport = str(item.get("transport") or "sse").lower()
         if transport not in {"sse", "streamable_http", "websocket"}:
             transport = "sse"
-        return {"transport": transport, "url": str(url)}
+        conn = {"transport": transport, "url": str(url)}
+        if isinstance(item.get("headers"), dict):
+            conn["headers"] = {str(k): str(v) for k, v in item["headers"].items()}
+        return conn
     return None
 
 
@@ -54,7 +58,17 @@ async def _aload_mcp_tools(connections: dict[str, dict[str, Any]]) -> list[BaseT
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
     client = MultiServerMCPClient(connections, tool_name_prefix=True)
-    return list(await client.get_tools())
+    tools = list(await client.get_tools())
+    # Adapters provide async-only StructuredTools. Retain their schemas and
+    # async handlers, adding a sync bridge for the Python/print interfaces.
+    def with_sync(tool):
+        if getattr(tool, "func", None) is not None or not getattr(tool, "coroutine", None):
+            return tool
+        async_handler = tool.coroutine
+        def call(**kwargs):
+            return asyncio.run(controlled(async_handler(**kwargs)))
+        return tool.model_copy(update={"func": call})
+    return [with_sync(tool) for tool in tools]
 
 
 def load_mcp_tools_sync(

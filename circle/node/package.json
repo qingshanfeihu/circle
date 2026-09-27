@@ -1,0 +1,13 @@
+{
+  "name": "circle-provider-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
+    "json-rpc-2.0": "1.7.1",
+    "proper-lockfile": "4.1.2"
+  }
+}

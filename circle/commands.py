@@ -86,7 +86,7 @@ def discover_custom_commands(
     return sorted(by_name.values(), key=lambda c: c.name)
 
 
-def expand_command_template(template: str, args: str, *, cwd: Path | None = None) -> str:
+def expand_command_template(template: str, args: str, *, cwd: Path | None = None, execute=None) -> str:
     """Expand $ARGUMENTS, $1..$n and !`shell` placeholders."""
     import shlex
     import subprocess
@@ -99,6 +99,8 @@ def expand_command_template(template: str, args: str, *, cwd: Path | None = None
 
     def _shell(match: re.Match[str]) -> str:
         cmd = match.group(1)
+        if execute is not None:
+            return execute(cmd)
         try:
             out = subprocess.check_output(
                 cmd,

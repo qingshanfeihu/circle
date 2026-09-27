@@ -10,8 +10,9 @@ from typing import Any, Callable
 
 from langgraph.types import Command
 
-from circle.harness import create_harness
 from circle.ink.components.exec_approval_view import ExecApprovalSession
+from circle.paths import circle_home
+from circle.runtime import create_session_runtime
 from circle.settings import CircleSettings, apply_auth_to_environ
 
 
@@ -50,13 +51,7 @@ class MainController:
             home=self.home,
             model_override=self.model_override,
         )
-        self._agent = create_harness(
-            model,
-            root_dir=self.workspace,
-            home=self.home,
-            model_id=self.settings.auth.model,
-            protocol=self.settings.auth.protocol,
-        )
+        self._agent = create_session_runtime(self.settings, self.workspace, home=self.home or circle_home(), model_override=model)
         self._pending_config = {"configurable": {"thread_id": self._thread_id}}
         self.lines.append(
             TranscriptLine(

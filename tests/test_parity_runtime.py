@@ -1,0 +1,177 @@
+import time
+import threading
+from pathlib import Path
+
+from langchain_core.messages import AIMessage
+from langchain_core.tools import StructuredTool
+from unittest.mock import patch
+
+from circle.harness import create_harness, sandbox_backend
+from circle.session_service import SessionService
+from circle.checkpoint_store import make_checkpointer
+from circle.settings import CircleSettings, ModelAuth, save_credentials
+from circle.testing import ScriptedModel
+from circle.tui.session_app import CircleSessionApp
+from tests.test_session_service import CapturingModel
+
+
+def call(name, args):
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": "c1", "type": "tool_call"}])
+
+
+def idle(app):
+    end = time.monotonic() + 8
+    while app._bridge.is_running or app._is_loading:
+        assert time.monotonic() < end
+        time.sleep(0.02)
+
+
+def app_at(tmp_path):
+    ws, home = tmp_path / "ws", tmp_path / "home"
+    ws.mkdir()
+    settings = CircleSettings(initialized=True, auth=ModelAuth(base_url="http://invalid.example", model="audit"),
+                              trusted_folders=[str(ws.resolve())])
+    save_credentials({"api_key": "synthetic-placeholder"}, home)
+    model = CapturingModel(responses=[AIMessage(content=f"a-{n}") for n in range(10)])
+    return CircleSessionApp(settings, ws, home=home, model_override=model), model
+
+
+def test_tui_undo_removes_message_from_next_request(tmp_path):
+    app, model = app_at(tmp_path)
+    app._on_submit("first")
+    idle(app)
+    app._on_submit("discard")
+    idle(app)
+    app._cmd_undo("")
+    app._on_submit("alternative")
+    idle(app)
+    assert "discard" not in model.inputs[-1]
+    assert "first" in model.inputs[-1]
+
+
+def test_tui_restart_resume_restores_real_context(tmp_path):
+    app, _ = app_at(tmp_path)
+    app._on_submit("persistent")
+    idle(app)
+    sid = app._thread_id
+    model = CapturingModel(responses=[AIMessage(content="done")])
+    restarted = CircleSessionApp(app.settings, app.workspace, home=app.home, model_override=model)
+    restarted._cmd_resume(sid)
+    assert restarted._thread_id == sid
+    restarted._on_submit("continue")
+    idle(restarted)
+    assert "persistent" in model.inputs[-1]
+
+
+def test_tui_clone_retains_history_and_new_resets_tree(tmp_path):
+    app, model = app_at(tmp_path)
+    app._on_submit("persistent")
+    idle(app)
+    old = app._thread_id
+    app._cmd_clone("")
+    assert app._thread_id != old
+    app._on_submit("clone continuation")
+    idle(app)
+    assert "persistent" in model.inputs[-1]
+    app._cmd_new("")
+    assert not app._session_tree.nodes
+
+
+def test_plan_blocks_external_same_basename(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    backend = sandbox_backend(ws, plan_mode=True)
+    outside = tmp_path / "outside" / "plan.md"
+    assert backend.write(str(outside), "forbidden").error
+    assert not outside.exists()
+    assert backend.write("/plan.md", "allowed").error is None
+
+
+def test_mcp_requires_approval_and_is_blocked_in_plan(tmp_path):
+    def mutate(value: str) -> str:
+        """Write an audit marker."""
+        (tmp_path / "marker").write_text(value)
+        return "done"
+    tool = StructuredTool.from_function(mutate, name="audit_mcp")
+    for plan in (False, True):
+        with patch("circle.harness.load_mcp_tools_sync", return_value=[tool]):
+            agent = create_harness(ScriptedModel(responses=[call(tool.name, {"value": "x"}), AIMessage(content="done")]),
+                                   root_dir=tmp_path, home=tmp_path / "home", plan_mode=plan,
+                                   mcp_servers=[{"name": "audit"}])
+        cfg = {"configurable": {"thread_id": f"plan-{plan}"}}
+        out = agent.invoke({"messages": [{"role": "user", "content": "test"}]}, cfg)
+        assert not (tmp_path / "marker").exists()
+        assert bool(agent.get_state(cfg).interrupts) is (not plan)
+        if plan:
+            assert any("blocked" in str(m.content) for m in out["messages"])
+
+
+def test_cancel_kills_inflight_shell(tmp_path):
+    app, _ = app_at(tmp_path)
+    app.model_override = ScriptedModel(responses=[call("execute", {"command": "printf start > started; sleep 2; printf late > late"}),
+                                                AIMessage(content="done")])
+    app._rebuild_agent(model=app.model_override)
+    app._cmd_yolo("on")
+    app._on_submit("execute synthetic test")
+    end = time.monotonic() + 5
+    while not (app.workspace / "started").exists():
+        assert time.monotonic() < end
+        time.sleep(0.02)
+    app._bridge.cancel()
+    app._bridge._worker.join(timeout=3)
+    assert not app._bridge.is_running
+    assert not (app.workspace / "late").exists()
+
+
+def test_steering_reaches_next_request_before_current_run_ends(tmp_path):
+    app, _ = app_at(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    def pause() -> str:
+        """Pause a synthetic read operation."""
+        entered.set()
+        assert release.wait(3)
+        return "read result"
+    tool = StructuredTool.from_function(pause, name="pause_read", metadata={"circle_read_only": True})
+    model = CapturingModel(responses=[call("pause_read", {}), AIMessage(content="finished"), AIMessage(content="followup")])
+    raw = create_harness(model, root_dir=app.workspace, home=app.home, checkpointer=app._checkpointer, extra_tools=[tool])
+    app._agent = app._sessions.bind(raw)
+    app._bridge = app._make_bridge()
+    app._on_submit("initial")
+    assert entered.wait(3)
+    app._on_submit("STEERING")
+    release.set()
+    idle(app)
+    assert "STEERING" in model.inputs[1]
+    assert model.i == 2  # one run, not another task after it finishes
+
+
+def test_cancel_native_model_request_before_server_response(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from langchain_openai import ChatOpenAI
+    entered, release = threading.Event(), threading.Event()
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            entered.set()
+            release.wait(5)
+            self.send_response(200)
+            self.end_headers()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    app, _ = app_at(tmp_path)
+    app.model_override = ChatOpenAI(model="gpt-4.1", api_key="synthetic-placeholder", streaming=True,
+                                    base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
+    app._rebuild_agent(model=app.model_override)
+    try:
+        app._on_submit("test pending native request")
+        assert entered.wait(3)
+        app._bridge.cancel()
+        app._bridge._worker.join(timeout=2)
+        assert not app._bridge.is_running
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()

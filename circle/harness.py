@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents import (
+    FilesystemPermission,
     HarnessProfile,
     create_deep_agent,
     register_harness_profile,
@@ -40,7 +41,9 @@ from circle.prompt_features import (
     explore_subagent_spec,
     plan_mode_append,
 )
-from circle.sandbox import shell_environment
+from circle.sandbox import shell_environment, CircleFilesystemBackend
+from circle.tool_registry import ToolRegistry
+from circle.middleware.effect_gate import EffectGateMiddleware
 from circle.skills import skill_sources
 from circle.system_prompt import build_system_prompt, load_tool_prompt
 
@@ -179,15 +182,30 @@ def create_harness(
     # 禁止类命令在后端拒绝执行：主代理与子代理共用这个后端，一处拦住全部
     backend.command_guard = policy.deny_message
     policy.bind_workspace(backend._resolve_path, backend.cwd)  # noqa: SLF001
+    file_backend = CircleFilesystemBackend(root_dir=root_dir, virtual_mode=True)
+    permissions = [FilesystemPermission(operations=["read", "write"],
+                                       paths=["/**/" + pattern], mode="deny")
+                   for pattern in policy.credential_files]
+    # Native filesystem permissions deliberately reject shell backends. Keep
+    # file operations on the official filesystem backend and expose only the
+    # SDK's execute tool from the cancellable shell backend.
+    tools.extend(t for t in FilesystemMiddleware(backend=backend, tools=["read_file", "execute"]).tools
+                 if t.name == "execute")
     explore = {
         **explore,
         "tools": [t for t in tools if getattr(t, "name", None) in EXPLORE_EXTRA_TOOLS],
         # 替换子代理默认的文件系统中间件：没有 write_file / edit_file / delete / execute
-        "middleware": [FilesystemMiddleware(backend=backend, tools=list(EXPLORE_FS_TOOLS))],
+        "middleware": [FilesystemMiddleware(backend=file_backend, tools=list(EXPLORE_FS_TOOLS),
+                                             _permissions=permissions)],
         # 只读子代理不需要审批；不写这一项它会继承主代理的审批表
         "interrupt_on": {},
     }
     gated: list[str] = list(GATED_TOOLS)
+    registry = ToolRegistry()
+    for tool in extra_tools or []:
+        registry.register(tool.name, "read" if (tool.metadata or {}).get("circle_read_only") is True else "unknown", "sdk")
+    for tool in mcp_tools:
+        registry.register(tool.name, "unknown", "mcp")
     subagents: list[dict[str, Any]] = [explore]
     extension_middleware: list[Any] = []
     if extensions is not None:
@@ -200,16 +218,38 @@ def create_harness(
             taken.add(tool.name)
             tools.append(tool)
         gated.extend(name for name in extensions.interrupt_on() if name in taken)
-        subagents.extend(extensions.subagents(tools))
+        fs_tools = list(FilesystemMiddleware(backend=file_backend).tools)
+        for subagent in extensions.subagents([*tools, *fs_tools]):
+            names = set(subagent.pop("_circle_tool_names"))
+            fs_names = {tool.name for tool in fs_tools}
+            permitted_fs = sorted((names & fs_names) | {"read_file"})
+            subagent["tools"] = [tool for tool in subagent["tools"] if tool.name not in fs_names]
+            subagent["middleware"] = [*subagent.get("middleware", []),
+                FilesystemMiddleware(backend=file_backend, tools=permitted_fs, _permissions=permissions)]
+            subagent.setdefault("skills", skills)
+            subagents.append(subagent)
         extension_middleware = extensions.middleware()
+        for spec in extensions.tool_specs():
+            registry.register(spec.name, "read" if spec.read_only else "write", "extension")
 
     # 通用中间件在最前：错误边界包住其后所有工具层（含扩展的 tool_boundary），
     # 兼容层在执行前修形态；工具表要等 deepagents 组装完才齐，建完再 bind
-    interrupt_on = policy.interrupt_on(gated)
+    interrupt_on = policy.interrupt_on(registry.gated())
+    # HITL runs in after_model. Prohibited plan actions skip the dialog and
+    # reach the tool refusal wrapper, which cannot execute their handlers.
+    for name, rule in interrupt_on.items():
+        predicate = rule["when"]
+        rule["when"] = lambda request, n=name, pred=predicate: (
+            False if backend.plan_mode and n not in {"write_file", "edit_file", "apply_patch"}
+            else pred(request))
+    for spec in subagents:
+        spec.setdefault("skills", skills)
+        spec["middleware"] = [*spec.get("middleware", []), EffectGateMiddleware(registry, backend)]
     compat = ToolCallCompatibilityMiddleware(gated=interrupt_on)
     extra_mw: list[Any] = [
         ToolErrorBoundaryMiddleware(),
         compat,
+        EffectGateMiddleware(registry, backend),
         LoopGuardMiddleware(),
         ToolResultPruneMiddleware(),
         # deepagents 0.7 起不再默认挂 write_todos；提示词与计划面板都依赖它。
@@ -227,7 +267,8 @@ def create_harness(
 
     kwargs: dict[str, Any] = {
         "model": model,
-        "backend": backend,
+        "backend": file_backend,
+        "permissions": permissions,
         "system_prompt": prompt,
         "interrupt_on": interrupt_on,
         "checkpointer": checkpointer if checkpointer is not None else MemorySaver(),
@@ -251,6 +292,7 @@ def create_harness(
         agent._circle_backend = backend  # type: ignore[attr-defined]  # noqa: SLF001
         agent._circle_approvals = policy  # type: ignore[attr-defined]  # noqa: SLF001
         agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]  # noqa: SLF001
+        agent._circle_tools = registry
     except Exception:  # noqa: BLE001
         pass
     return agent

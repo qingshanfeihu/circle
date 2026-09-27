@@ -13,6 +13,8 @@ import sys
 import threading
 import time
 import uuid
+import json
+import html
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,10 +22,13 @@ from typing import Any, Callable
 
 from circle.approvals import REJECTED_BY_USER, default_policy
 from circle.checkpoint_store import (
-    copy_thread_if_possible,
     make_checkpointer,
     make_store,
 )
+from circle.session_service import SessionService
+from circle.themes import apply_theme
+from circle.run_control import RunSignals, current_run
+from circle.input_files import file_candidates, prepare_content
 from circle.commands import (
     CustomCommand,
     discover_custom_commands,
@@ -111,6 +116,8 @@ class _SessionRecord:
     title: str
     lines: list[str] = field(default_factory=list)
     bgs: list[str | None] = field(default_factory=list)  # 每行的类型底色，与 lines 等长
+    checkpoint: dict | None = None
+    tree: dict | None = None
 
 
 class _StandaloneEscapeInputParser:
@@ -203,6 +210,8 @@ class CircleSessionApp:
 
         apply_auth_to_environ(settings, self.home)
         init_palette_from_terminal()
+        if settings.theme != "terminal":
+            apply_theme(settings.theme, self.home)
 
         self._app = InkApp(alt_screen=True, mouse=True)
         self._app.style_pool.set_selection_bg([palette().sel_bg])
@@ -342,8 +351,14 @@ class CircleSessionApp:
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
         ensure_home(self.home)
         self._checkpointer = make_checkpointer(self.home)
+        self._sessions = SessionService(self.home, self.workspace)
         self._store = make_store()
         self._archive: list[_SessionRecord] = []
+        for row in self._sessions.list():
+            view = row["presentation"]
+            self._archive.append(_SessionRecord(row["id"], row["title"],
+                                                view.get("lines", []), view.get("bgs", []),
+                                                row["ref"], view.get("tree")))
         self._previous_thread_id: str | None = None
         self._session_title = "new"
         self._undo_stack: list[_SessionRecord] = []
@@ -386,6 +401,7 @@ class CircleSessionApp:
             ask_user=True,
         )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
+        self._agent = self._sessions.bind(self._agent)
         self._bridge = self._make_bridge()
 
     def _rebuild_agent(self, *, model: Any | None = None) -> None:
@@ -414,6 +430,7 @@ class CircleSessionApp:
         )
         self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
+        self._agent = self._sessions.bind(self._agent)
         self._bridge = self._make_bridge()
         backend = getattr(self._agent, "_circle_backend", None)
         if backend is not None and hasattr(backend, "set_plan_mode"):
@@ -437,10 +454,13 @@ class CircleSessionApp:
             toast=self._toast,
             append=lambda text: (self._transcript.append_message(text), self._app.render()),
             send_user_message=self._start_user_turn,
+            flags={**{name: spec["default"] for name, spec in self._extensions.flags().items()},
+                   **self.settings.extension_flags},
         )
 
     def _make_bridge(self) -> HarnessBridge:
-        return HarnessBridge(
+        self._sessions.ensure(self._thread_id, title=self._session_title)
+        bridge = HarnessBridge(
             agent=self._agent,
             thread_id=self._thread_id,
             on_update=self._on_stream_update,
@@ -450,6 +470,8 @@ class CircleSessionApp:
             on_status=self._on_status,
             on_snapshot=self._on_snapshot,
         )
+        bridge._config["configurable"]["extension_flags"] = dict(self.settings.extension_flags)
+        return bridge
 
     def run(self) -> int:
         self._app.start()
@@ -759,6 +781,32 @@ class CircleSessionApp:
         self._handle_key(event)
 
     def _handle_key(self, kp: KeyPress) -> None:
+        if getattr(self, "_auth_pending", None) is not None and kp.key in {"escape", "ctrl+c"}:
+            self._auth_signals.cancelled.set()
+            self._auth_pending = None
+            self._prompt.clear()
+            return
+        if kp.key == "ctrl+v" and getattr(self, "_auth_pending", None) is None:
+            from circle.input_files import clipboard_image
+            try:
+                path = clipboard_image(self.home)
+                if path:
+                    self._prompt.set_value(self._prompt.value + f' @"{path}"')
+                    self._toast("已附加剪贴板图片")
+                    return
+            except (ImportError, OSError, NotImplementedError):
+                self._toast("剪贴板图片不可用；可用 @图片路径 附加")
+        actions = {"thinking": "ctrl+t", "tools": "ctrl+o", "history_search": "ctrl+r", "redraw": "ctrl+l"}
+        for action, key in getattr(getattr(self, "settings", None), "keybindings", {}).items():
+            if kp.key == key and action in actions:
+                kp.key = actions[action]
+                break
+        extensions = getattr(self, "_extensions", None)
+        shortcut = extensions.shortcuts().get(kp.key) if extensions is not None else None
+        if shortcut is not None:
+            shortcut(self._command_context())
+            self._app.render()
+            return
         # InfoTest ist_app._handle_key — same session-ring order.
         if self._exec_approval is not None:
             if self._exec_approval.handle_key(kp.key, kp.char):
@@ -1281,6 +1329,14 @@ class CircleSessionApp:
             self._prompt.clear()
 
     def _tab_complete(self) -> None:
+        token = self._prompt.value.rsplit(" ", 1)[-1]
+        if token.startswith("@"):
+            candidates = file_candidates(self.workspace, token[1:])
+            if len(candidates) == 1:
+                self._prompt.set_value(self._prompt.value[:-len(token)] + "@" + candidates[0])
+            elif candidates:
+                self._toast(" · ".join(candidates[:8]))
+            return
         val = self._prompt.value
         if not val.startswith("/"):
             return
@@ -1375,6 +1431,12 @@ class CircleSessionApp:
         text = text.strip()
         if not text:
             return
+        pending_auth = getattr(self, "_auth_pending", None)
+        if pending_auth is not None:
+            pending_auth["answer"] = text
+            pending_auth["ready"].set()
+            self._auth_pending = None
+            return
         self._input_history.add(text)
         self._input_history.reset_navigation()
         extra = set(self._custom_commands) | set(self._extensions.commands())
@@ -1383,6 +1445,10 @@ class CircleSessionApp:
             self._dispatch_slash(parsed.name, parsed.args)
             return
         if self._bridge.is_running or self._is_loading:
+            if kind == "steering" and self._bridge.is_running:
+                self._bridge.steer(text)
+                self._toast("steering 将在下一次模型请求前送达")
+                return
             self._msg_queue.append((kind, text))
             label = "follow-up" if kind == "followup" else "steering"
             self._toast(f"已排队 {label}（{len(self._msg_queue)}）")
@@ -1390,8 +1456,14 @@ class CircleSessionApp:
         self._start_user_turn(text)
 
     def _start_user_turn(self, text: str) -> None:
+        try:
+            content = prepare_content(text, self.workspace, credential_files=self.settings.credential_files)
+        except (ValueError, OSError) as exc:
+            self._toast(str(exc))
+            return
         self._push_undo_checkpoint()
-        self._session_tree.add("user", text)
+        node = self._session_tree.add("user", text)
+        node.checkpoint = dict(self._sessions.get(self._thread_id)["ref"])
 
         if self._session_title == "new":
             self._session_title = text.split("\n", 1)[0][:60]
@@ -1409,7 +1481,7 @@ class CircleSessionApp:
         self._call_started_at = time.time()
         self._app.render()
         self._extensions.emit("turn_start", {"text": text})
-        self._bridge.start(text)
+        self._bridge.start(content)
 
     def _drain_message_queue(self) -> None:
         if self._bridge.is_running or self._is_loading or not self._msg_queue:
@@ -1462,7 +1534,11 @@ class CircleSessionApp:
             return
         if name in self._custom_commands:
             cmd = self._custom_commands[name]
-            expanded = expand_command_template(cmd.template, args, cwd=self.workspace)
+            try:
+                expanded = expand_command_template(cmd.template, args, cwd=self.workspace, execute=self._expand_shell)
+            except PermissionError as exc:
+                self._toast(str(exc))
+                return
             self._start_user_turn(expanded)
             return
         _busy_ok = {
@@ -1532,10 +1608,26 @@ class CircleSessionApp:
             return
         handler(args)
 
+    def _expand_shell(self, command: str) -> str:
+        backend = self._agent._circle_backend
+        if self._plan_mode:
+            raise PermissionError("计划模式禁止模板中的 shell 执行")
+        review = self._approvals.review("execute", {"command": command})
+        if review.verdict == "DENY":
+            raise PermissionError(review.message)
+        if not self._bridge.auto_approve and self._approvals.needs_approval("execute", {"command": command}, self._thread_id):
+            raise PermissionError("模板命令需要审批；先批准相同的 execute 命令，再重试此模板")
+        result = backend.execute(command, timeout=30)
+        if result.exit_code:
+            raise PermissionError(f"模板命令失败，退出码 {result.exit_code}")
+        return result.output
+
     def _archive_current(self) -> None:
         if self._transcript.message_count() <= 3 and self._session_title == "new":
             return
         rec = self._snapshot_record()
+        self._sessions.save(rec.thread_id, title=rec.title,
+                            presentation={"lines": rec.lines, "bgs": rec.bgs, "tree": rec.tree})
         for i, existing in enumerate(self._archive):
             if existing.thread_id == rec.thread_id:
                 self._archive[i] = rec
@@ -1549,6 +1641,14 @@ class CircleSessionApp:
         self._archive_current()
         self._previous_thread_id = self._thread_id
         self._thread_id = thread_id
+        saved = self._sessions.get(thread_id)
+        self._session_title = saved["title"]
+        self._session_tree = SessionTree.from_checkpoint(saved["presentation"].get("tree") or {})
+        state = self._agent.get_state(thread_config(thread_id))
+        if state.values.get("messages"):
+            self._session_tree = self._agent.project_tree(thread_id)
+            lines = [f" {node.role}: {node.text}" for node in self._session_tree.path_to()]
+            bgs = None
         self._bridge = self._make_bridge()
         self._reset_turn_regions()
         if lines is not None:
@@ -1563,6 +1663,39 @@ class CircleSessionApp:
             self._show_welcome()
 
     def _cmd_login(self, args: str) -> None:
+        import os
+        if os.environ.get("CIRCLE_OAUTH_MOCK", "").strip() in {"1", "true", "yes"}:
+            self._complete_login(args)
+            return
+        if getattr(self, "_auth_worker", None) is not None and self._auth_worker.is_alive():
+            self._toast("登录正在进行中")
+            return
+        self._auth_signals = RunSignals()
+
+        def prompt(question):
+            pending = {"ready": threading.Event(), "answer": ""}
+            self._auth_pending = pending
+            self._toast(question["message"])
+            while not pending["ready"].wait(0.1):
+                if question.get("cancelled") and question["cancelled"].is_set():
+                    return ""
+                self._auth_signals.check()
+            return pending["answer"]
+
+        def worker():
+            token = current_run.set(self._auth_signals)
+            try:
+                self._complete_login(args, on_prompt=prompt)
+            except Exception as exc:
+                self._toast(f"登录失败: {type(exc).__name__}")
+            finally:
+                self._auth_pending = None
+                current_run.reset(token)
+
+        self._auth_worker = threading.Thread(target=worker, daemon=True, name="circle-auth")
+        self._auth_worker.start()
+
+    def _complete_login(self, args: str, *, on_prompt=None) -> None:
         """OAuth provider login (/login, /connect)."""
         from circle.oauth import (
             OAuthNotConfiguredError,
@@ -1585,7 +1718,8 @@ class CircleSessionApp:
             return
         self._toast(f"正在登录 {provider}…")
         try:
-            session = start_oauth_login(provider)
+            session = start_oauth_login(provider, home=self.home, on_prompt=on_prompt,
+                                        on_event=lambda event: self._toast(event.get("message") or event.get("url") or event.get("verificationUri") or "授权处理中"))
         except OAuthNotConfiguredError as exc:
             self._toast(str(exc))
             return
@@ -1602,6 +1736,8 @@ class CircleSessionApp:
             model=model or self.settings.auth.model,
             oauth_provider=provider,
             api_key_ref="oauth_access_token",
+            engine=session.engine,
+            provider=session.provider_id,
         )
         self.settings.initialized = True
         save_credentials(
@@ -1624,6 +1760,9 @@ class CircleSessionApp:
         self._toast(f"已登录 {provider} · 模型 {self.settings.auth.model}")
 
     def _cmd_logout(self, _args: str) -> None:
+        if self.settings.auth.engine == "pi":
+            from circle.provider_bridge import bridge_call
+            bridge_call("logout", {"provider": self.settings.auth.provider}, home=self.home)
         clear_credentials(self.home)
         self.settings.auth = ModelAuth()
         self.settings.initialized = False
@@ -1634,6 +1773,7 @@ class CircleSessionApp:
         self._archive_current()
         self._previous_thread_id = self._thread_id
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        self._session_tree = SessionTree()
         self._bridge = self._make_bridge()
         self._reset_turn_regions()
         self._session_title = "new"
@@ -1643,6 +1783,15 @@ class CircleSessionApp:
 
     def _cmd_resume(self, args: str) -> None:
         self._archive_current()
+        legacy = self._sessions.legacy_threads(self._agent.raw)
+        if args.strip() in legacy:
+            self._sessions.adopt_legacy(self._agent.raw, args.strip())
+            row = self._sessions.get(args.strip())
+            values = self._agent.get_state(thread_config(args.strip())).values
+            lines = [f" {message.type}: {message.content}" for message in values.get("messages", [])]
+            self._archive.append(_SessionRecord(row["id"], row["title"], lines, checkpoint=row["ref"]))
+        elif not args.strip() and legacy:
+            self._toast("未绑定工作区的历史线程；/resume <id> 可显式绑定并恢复：" + ", ".join(legacy[:20]))
         sessions = list(self._archive)
         # Always include current at end if not already archived this turn
         if not any(s.thread_id == self._thread_id for s in sessions):
@@ -1704,6 +1853,14 @@ class CircleSessionApp:
         self._toast(f"已继续 {prev} · {title[:40]}")
 
     def _cmd_models(self, args: str) -> None:
+        if args.strip() in self.settings.connections:
+            from circle.model_registry import ModelRegistry
+            ModelRegistry(self.settings, self.home).select_connection(args.strip())
+            self.model_override = None
+            self._rebuild_agent()
+            save_settings(self.settings, self.home)
+            self._toast(f"已切换连接 {args.strip()}")
+            return
         name = args.strip()
         if not name:
             models = self._list_models()
@@ -1721,6 +1878,10 @@ class CircleSessionApp:
         self._switch_model(name)
 
     def _list_models(self) -> list[str]:
+        if self.settings.auth.engine == "pi":
+            from circle.model_registry import ModelRegistry
+            return [model["id"] for provider in ModelRegistry(self.settings, self.home).catalog()
+                    if provider["id"] == self.settings.auth.provider for model in provider["models"]]
         from circle.probe import FALLBACK_MODELS, probe_endpoint
 
         creds = load_credentials(self.home)
@@ -1876,6 +2037,13 @@ class CircleSessionApp:
         if not self._session_tree.jump(token):
             self._toast(f"未知节点 {token}")
             return
+        node = self._session_tree.nodes[token]
+        if node.checkpoint is not None:
+            self._sessions.select(self._thread_id, node.checkpoint)
+            self._bridge = self._make_bridge()
+            if node.role == "user":
+                self._prompt.set_value(node.text)
+            self._archive_current()
         self._toast(f"已跳到节点 {token}（后续对话从此分支）")
 
     def _cmd_fork(self, args: str) -> None:
@@ -1888,10 +2056,9 @@ class CircleSessionApp:
             self._toast(f"无法 fork {token}")
             return
         self._archive_current()
-        old_thread = self._thread_id
-        self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        node = self._session_tree.nodes[token]
+        self._thread_id = self._sessions.fork(self._thread_id, ref=node.checkpoint)
         self._session_tree = forked
-        copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
         self._rebuild_agent()
         self._session_title = (self._session_title or "session") + " (fork)"
         self._reset_turn_regions()
@@ -1901,14 +2068,13 @@ class CircleSessionApp:
         self._notice([f" {_faint('>')} {node.text.splitlines()[0][:80]}"
                       for node in self._session_tree.path_to() if node.role == "user"])
         self._app.render()
+        self._archive_current()
 
     def _cmd_clone(self, _args: str) -> None:
         cloned = self._session_tree.clone_active()
         self._archive_current()
-        old_thread = self._thread_id
-        self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        self._thread_id = self._sessions.fork(self._thread_id, title=self._session_title + " (clone)")
         self._session_tree = cloned
-        copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
         self._rebuild_agent()
         self._session_title = (self._session_title or "session") + " (clone)"
         self._reset_turn_regions()
@@ -1916,8 +2082,20 @@ class CircleSessionApp:
         self._show_welcome()
         self._toast(f"已 clone 当前分支 → {self._thread_id}")
         self._app.render()
+        self._archive_current()
 
     def _cmd_thinking(self, _args: str) -> None:
+        level = _args.strip().lower()
+        if level:
+            if level not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+                self._toast("可选思考深度: minimal low medium high xhigh max")
+                return
+            key = "reasoning" if self.settings.auth.engine == "pi" else "reasoning_effort"
+            self.settings.auth.params[key] = level
+            self._rebuild_agent()
+            save_settings(self.settings, self.home)
+            self._toast(f"思考深度 → {level}")
+            return
         self._show_thinking = not self._show_thinking
         self._rerender_turns()
         state = "显示" if self._show_thinking else "隐藏"
@@ -1932,6 +2110,8 @@ class CircleSessionApp:
             title=self._session_title or self._thread_id,
             lines=self._transcript.snapshot(),
             bgs=self._transcript.snapshot_bgs(),
+            checkpoint=dict(self._sessions.get(self._thread_id)["ref"]),
+            tree=self._session_tree.to_checkpoint(),
         )
 
     def _push_undo_checkpoint(self) -> None:
@@ -1943,9 +2123,13 @@ class CircleSessionApp:
     def _restore_record(self, rec: _SessionRecord) -> None:
         self._thread_id = rec.thread_id
         self._session_title = rec.title
+        if rec.checkpoint is not None:
+            self._sessions.select(rec.thread_id, rec.checkpoint)
+        self._session_tree = SessionTree.from_checkpoint(rec.tree or {})
         self._bridge = self._make_bridge()
         self._reset_turn_regions()
         self._transcript.restore(rec.lines, rec.bgs)
+        self._archive_current()
 
     def _cmd_undo(self, _args: str) -> None:
         if not self._undo_stack:
@@ -2009,12 +2193,16 @@ class CircleSessionApp:
             self._toast(f"当前主题: {self.settings.theme}")
             self._toast("可选: " + ", ".join(available))
             return
-        if name not in available:
-            self._toast(f"未知主题 {name!r}；可选: {', '.join(available)}")
+        try:
+            apply_theme(name, self.home)
+        except (ValueError, KeyError, OSError) as exc:
+            self._toast(f"主题加载失败: {exc}")
             return
         self.settings.theme = name
         save_settings(self.settings, self.home)
-        self._toast(f"主题 → {name}（终端色板仍以探测为准）")
+        self._app.style_pool.set_selection_bg([palette().sel_bg])
+        self._rerender_turns()
+        self._toast(f"主题 → {name}")
 
     def _cmd_mcp(self, args: str) -> None:
         token = (args or "").strip().lower()
@@ -2167,7 +2355,16 @@ class CircleSessionApp:
                 path = self.workspace / path
         else:
             path = self.home / "exports" / f"circle-{self._thread_id}-{stamp}.md"
-        self._write_markdown_export(path)
+        if path.suffix.lower() == ".json":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._agent.export(self._thread_id), ensure_ascii=False, indent=2))
+        elif path.suffix.lower() == ".html":
+            payload = self._agent.export(self._thread_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("<!doctype html><meta charset=utf-8><title>Circle session</title><pre>" +
+                            html.escape(json.dumps(payload, ensure_ascii=False, indent=2)) + "</pre>")
+        else:
+            self._write_markdown_export(path)
         self._toast(f"已导出 {path}")
 
     def _cmd_import(self, args: str) -> None:
@@ -2185,6 +2382,14 @@ class CircleSessionApp:
             self._toast(f"找不到文件 {raw}")
             return
         body = path.read_text(encoding="utf-8")
+        if path.suffix.lower() == ".json":
+            try:
+                sid = self._agent.import_session(json.loads(body))
+                self._switch_thread(sid, lines=[" " + ln for ln in body.splitlines()])
+                self._toast(f"已导入完整结构化会话 {sid}")
+            except (ValueError, KeyError, TypeError) as exc:
+                self._toast(f"导入失败: {exc}")
+            return
         self._push_undo_checkpoint()
         self._archive_current()
         self._previous_thread_id = self._thread_id
@@ -2202,7 +2407,7 @@ class CircleSessionApp:
                 self._thread_id,
                 HumanMessage(
                     content=(
-                        "Imported prior transcript for continuity.\n" + body[:8000]
+                        "Imported prior transcript for continuity.\n" + body
                     )
                 ),
             )
@@ -2297,9 +2502,12 @@ class CircleSessionApp:
     # ── busy / footer ──────────────────────────────────────────────────
 
     def _sync_model_meter(self) -> None:
+        model = getattr(self, "_chat_model", None)
+        descriptor = getattr(model, "catalog_model", None) or {}
+        profile = getattr(model, "profile", None) or {}
         self._footer.update(
             model=self.settings.auth.model,
-            tokens_budget=context_window_for(self.settings.auth.model),
+            tokens_budget=descriptor.get("contextWindow") or profile.get("max_input_tokens") or context_window_for(self.settings.auth.model),
             reasoning_effort=reasoning_effort_of(getattr(self, "_chat_model", None)),
         )
 
@@ -2508,7 +2716,9 @@ class CircleSessionApp:
                 self._transcript.ensure_block_gap()
                 self._transcript.append_message(assistant_block(said or NO_OUTPUT))
             self._last_assistant_plain = visible
-            self._session_tree.add("assistant", visible)
+            node = self._session_tree.add("assistant", visible)
+            node.checkpoint = dict(self._sessions.get(self._thread_id)["ref"])
+            self._session_tree = self._agent.project_tree(self._thread_id)
             cooked = self._cooked_lines(answered=bool(shown or said))
             self._close_turn_region()
             for line in cooked:
@@ -2516,6 +2726,7 @@ class CircleSessionApp:
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"text": visible})
+            self._archive_current()
             # 延迟 drain：等 bridge 完全退出 running 状态后再消费队列
             import threading
             timer = threading.Timer(0.15, self._drain_message_queue)
@@ -2858,6 +3069,7 @@ def run_circle_session(
     home: Path | None = None,
     force_init: bool = False,
     model_override=None,
+    settings_override=None,
 ) -> int:
     """Entry used by CLI: init/trust gates then CircleSessionApp."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -2870,7 +3082,7 @@ def run_circle_session(
 
     configure_file_logging(home)
     workspace = normalize_workspace(workspace)
-    settings = load_settings(home)
+    settings = settings_override or load_settings(home)
 
     # Reuse existing init/trust controllers (line-driven) inside ink for now
     if force_init or not settings.is_ready():
@@ -2878,7 +3090,7 @@ def run_circle_session(
 
         # Keep init/trust on the existing CircleApp path, then hand off
         app = CircleApp(
-            workspace, home=home, force_init=force_init, model_override=model_override
+            workspace, home=home, force_init=force_init, model_override=model_override, settings_override=settings
         )
         # Only run until main would start — simpler: run init/trust then session
         return _run_gates_then_session(
@@ -2887,7 +3099,7 @@ def run_circle_session(
 
     if not is_folder_trusted(settings, workspace):
         return _run_gates_then_session(
-            workspace, home=home, force_init=False, model_override=model_override
+            workspace, home=home, force_init=False, model_override=model_override, settings_override=settings
         )
 
     return CircleSessionApp(
@@ -2901,6 +3113,7 @@ def _run_gates_then_session(
     home: Path,
     force_init: bool,
     model_override,
+    settings_override=None,
 ) -> int:
     """Init/trust via existing ink CircleApp controllers, then session shell."""
     # Use the gate portion of CircleApp by composing controllers directly in ink
@@ -2909,9 +3122,9 @@ def _run_gates_then_session(
     class _GateThenSession(CircleApp):
         def run(self) -> int:  # type: ignore[override]
             init_palette_from_terminal()
-            settings = load_settings(self.home)
+            settings = settings_override or load_settings(self.home)
             if self.force_init or not settings.is_ready():
-                self.init = InitController(home=self.home)
+                self.init = InitController(home=self.home, on_change=self._rebuild)
                 self._stage = "init"
             elif not is_folder_trusted(settings, self.workspace):
                 self.trust = TrustController(settings, self.workspace, home=self.home)

@@ -129,33 +129,59 @@ def build_chat_model(
     model_name = model_override if isinstance(model_override, str) else auth.model
     if not model_name:
         raise ValueError("no model name in settings; re-run circle --init")
+    if any(k in auth.params for k in ("api_key", "apiKey", "base_url", "model_provider")):
+        raise ValueError("Credentials and endpoints belong to the connection, not model params")
+
+    if auth.engine == "pi":
+        from circle.provider_bridge import PiChatModel, bridge_call
+        provider = auth.provider or auth.oauth_provider
+        if provider == "openai" and auth.mode == "oauth":
+            provider = "openai-codex"
+        root = home or Path.home() / ".circle"
+        catalog = bridge_call("catalog", {}, home=root)
+        descriptor = next((m for p in catalog if p["id"] == provider for m in p["models"] if m["id"] == model_name), None)
+        if descriptor is None:
+            raise ValueError("Model is not in this provider's catalog")
+        options = dict(auth.params)
+        options.setdefault("maxTokens", min(32000, descriptor["maxTokens"]))
+        if provider == "anthropic":
+            options.setdefault("reasoning", (os.environ.get("CIRCLE_REASONING_EFFORT") or "xhigh").strip())
+        # This is the configured request budget, not a claim that the provider
+        # publishes a separate max-input limit: reserve the requested output.
+        profile = {"image_inputs": "image" in descriptor["input"],
+                   "image_tool_message": "image" in descriptor["input"],
+                   "reasoning_output": descriptor["reasoning"],
+                   "max_output_tokens": options["maxTokens"],
+                   "max_input_tokens": max(1, descriptor["contextWindow"] - options["maxTokens"])}
+        return guard_model(PiChatModel(provider=provider, model=model_name, home=root, profile=profile,
+                           catalog_model=descriptor, base_url=auth.base_url, options=options))
 
     creds = load_credentials(home)
-    api_key = (
-        creds.get(auth.api_key_ref)
-        or creds.get("api_key")
-        or creds.get("oauth_access_token")
-        or ""
-    )
-    if not api_key:
+    api_key = creds.get(auth.api_key_ref) or ""
+    provider = auth.provider or ("anthropic" if auth.protocol == "anthropic" else "openai")
+    if not api_key and not auth.provider:
         raise ValueError(
             "missing API key in ~/.circle/credentials.json; re-run circle --init"
         )
 
     timeout = _request_timeout_s()
-    effort = (os.environ.get("CIRCLE_REASONING_EFFORT") or "xhigh").strip()
+    effort = (auth.params.get("reasoning_effort") or os.environ.get("CIRCLE_REASONING_EFFORT") or "xhigh").strip()
     kwargs: dict[str, Any] = {
-        "model_provider": "anthropic" if auth.protocol == "anthropic" else "openai",
-        "api_key": api_key,
+        "model_provider": provider,
         "streaming": True,
         "timeout": timeout,
         # 重试交给 circle.model_guard 按错误类型分预算做；SDK 再重试会让次数相乘
         "max_retries": 0,
     }
+    if api_key:
+        kwargs["api_key"] = api_key
     if auth.protocol == "anthropic" and effort:
         kwargs["reasoning_effort"] = effort
     if auth.base_url:
         kwargs["base_url"] = auth.base_url
+    if any(k in auth.params for k in ("api_key", "base_url", "model_provider")):
+        raise ValueError("Use the connection's credential reference/provider/base_url, not model params")
+    kwargs.update(auth.params)
 
     model = init_chat_model(model_name, **kwargs)
     apply_reasoning(model, effort, auth.protocol)

@@ -17,24 +17,18 @@ from langgraph.checkpoint.memory import MemorySaver
 def make_checkpointer(home: Path | None = None) -> Any:
     """Durable Sqlite checkpointer under ``home/checkpoints.sqlite``.
 
-    Falls back to ``MemorySaver`` if sqlite deps are unavailable.
+    Durable mode fails explicitly if its dependencies or database are unusable.
     """
     if home is None:
         return MemorySaver()
-    try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
-    except ImportError:
-        return MemorySaver()
+    from langgraph.checkpoint.sqlite import SqliteSaver
 
     path = Path(home).expanduser().resolve()
     path.mkdir(parents=True, exist_ok=True)
     db = path / "checkpoints.sqlite"
     conn = sqlite3.connect(str(db), check_same_thread=False)
     saver = SqliteSaver(conn)
-    try:
-        saver.setup()
-    except Exception:  # noqa: BLE001
-        pass
+    saver.setup()
     return saver
 
 

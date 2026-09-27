@@ -379,7 +379,8 @@ class ApprovalStore:
 def _thread_of(request: Any) -> str:
     runtime = getattr(request, "runtime", None)
     config = getattr(runtime, "config", None) or {}
-    return str((config.get("configurable") or {}).get("thread_id") or "")
+    configured = config.get("configurable") or {}
+    return str(configured.get("session_id") or configured.get("thread_id") or "")
 
 
 def _patch_paths(patch: str) -> tuple[list[str], bool]:

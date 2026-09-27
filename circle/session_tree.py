@@ -14,6 +14,7 @@ class TreeNode:
     role: str  # user | assistant | system | meta
     text: str
     label: str = ""
+    checkpoint: dict[str, Any] | None = None
 
 
 @dataclass
@@ -67,6 +68,7 @@ class SessionTree:
         for node in path:
             new = tree.add(node.role, node.text, parent_id=prev)
             new.label = node.label
+            new.checkpoint = dict(node.checkpoint) if node.checkpoint is not None else None
             id_map[node.id] = new.id
             prev = new.id
         return tree
@@ -110,6 +112,7 @@ class SessionTree:
                     "role": n.role,
                     "text": n.text,
                     "label": n.label,
+                    "checkpoint": n.checkpoint,
                 }
                 for nid, n in self.nodes.items()
             },
@@ -127,5 +130,6 @@ class SessionTree:
                 role=str(raw.get("role") or "user"),
                 text=str(raw.get("text") or ""),
                 label=str(raw.get("label") or ""),
+                checkpoint=raw.get("checkpoint"),
             )
         return tree

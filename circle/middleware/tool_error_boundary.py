@@ -20,6 +20,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
 
 from circle.middleware.redact import redact
+from circle.run_control import RunCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ _MAX_LISTED_FIELD_ERRORS = 6
 
 
 def _pass_through_types() -> tuple[type[BaseException], ...]:
-    out: list[type[BaseException]] = [GraphBubbleUp]
+    out: list[type[BaseException]] = [GraphBubbleUp, RunCancelled]
     try:
         from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 

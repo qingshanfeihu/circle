@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
-from circle.harness import create_harness
-from circle.model import build_chat_model
+from langgraph.types import Command
+
+from circle.paths import circle_home
+from circle.runtime import create_session_runtime
 from circle.settings import CircleSettings, apply_auth_to_environ
 from circle.tui.slash_commands import help_text, parse_slash
 
@@ -23,13 +26,9 @@ def run_main(
     print("输入消息后回车；/help 查看命令；空行或 /exit 离开。")
     print("（行模式；全屏 ink TUI 请直接运行 circle）")
 
-    agent = create_harness(
-        build_chat_model(settings, home=home),
-        root_dir=workspace,
-        home=home,
-        model_id=settings.auth.model,
-        protocol=settings.auth.protocol,
-    )
+    agent = create_session_runtime(settings, workspace, home=home or circle_home())
+    thread_id = "circle-" + uuid.uuid4().hex[:12]
+    config = {"configurable": {"thread_id": thread_id}}
     while True:
         try:
             line = input("you> ").strip()
@@ -52,8 +51,20 @@ def run_main(
         try:
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": line}]},
-                config={"configurable": {"thread_id": "circle-main"}},
+                config=config,
             )
+            while agent.get_state(config).interrupts:
+                decisions = []
+                for interrupted in agent.get_state(config).interrupts:
+                    for request in interrupted.value.get("action_requests", []):
+                        from circle.middleware.redact import redact
+                        print(redact(f"审批: {request['name']} {request.get('args', {})}"))
+                        choice = input("approve / reject> ").strip().lower()
+                        decisions.append({"type": "approve" if choice == "approve" else "reject"})
+                if not decisions:
+                    print("该中断需要 TUI 或 ACP 客户端回答。")
+                    break
+                result = agent.invoke(Command(resume={"decisions": decisions}), config=config)
         except Exception as exc:  # noqa: BLE001 — surface to user in shell
             print(f"错误: {exc}")
             continue

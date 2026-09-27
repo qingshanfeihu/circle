@@ -82,13 +82,15 @@ def _init_api_key(*, home: Path | None) -> CircleSettings:
 def _init_oauth(*, home: Path | None) -> CircleSettings:
     provider = _pick("OAuth 提供方:", ["anthropic", "openai"])
     try:
-        session = start_oauth_login(provider)
+        session = start_oauth_login(provider, home=home,
+                                     on_prompt=lambda q: getpass.getpass(q["message"] + ": ") if q["type"] == "secret" else input(q["message"] + ": "),
+                                     on_event=lambda event: print(event.get("message") or event.get("url") or event.get("verificationUri") or "授权处理中"))
     except OAuthNotConfiguredError as exc:
         print(str(exc))
         print("回落到 API URL + KEY。")
         return _init_api_key(home=home)
 
-    models = fallback_model_list()
+    models = list(session.models) or fallback_model_list()
     model = _pick("选择主模型:", models)
     settings = CircleSettings(
         initialized=True,
@@ -99,6 +101,8 @@ def _init_oauth(*, home: Path | None) -> CircleSettings:
             model=model,
             oauth_provider=provider,
             api_key_ref="oauth_access_token",
+            engine=session.engine,
+            provider=session.provider_id,
         ),
     )
     save_credentials(

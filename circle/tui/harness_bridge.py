@@ -7,12 +7,14 @@ MessageSnapshot: visible text, thinking preview, reasoning_chars, phase.
 from __future__ import annotations
 
 import json
+import asyncio
 import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from langgraph.types import Command
+from langchain_core.messages import HumanMessage, ToolMessage
 
 from circle.events import EventBus, bind_bus, unbind_bus
 from circle.tui.content_blocks import (
@@ -25,6 +27,7 @@ from circle.tui.message_model import MessageSnapshot
 from circle.tui.progress_handler import ProgressHandler
 from circle.tool_events import announce_blocked_tool_call
 from circle.tui.sink import TuiSink
+from circle.run_control import RunSignals, current_run
 
 
 # 回合结束却没有正文时交给 on_done 的占位；会话据此判断模型其实没有作答
@@ -98,6 +101,9 @@ class HarnessBridge:
         self._sink = TuiSink(post=self._post_snapshot)
         self._worker: threading.Thread | None = None
         self._cancelled = False
+        self._signals = RunSignals()
+        self._loop = None
+        self._async_task = None
         self._config: dict[str, Any] = {
             "configurable": {"thread_id": thread_id},
         }
@@ -120,6 +126,9 @@ class HarnessBridge:
 
     def cancel(self) -> None:
         self._cancelled = True
+        self._signals.cancelled.set()
+        if self._loop is not None and self._async_task is not None:
+            self._loop.call_soon_threadsafe(self._async_task.cancel)
         self._sink.cancel_run()
 
     def _post_snapshot(self, snap: MessageSnapshot) -> None:
@@ -131,13 +140,17 @@ class HarnessBridge:
 
                 logging.getLogger(__name__).exception("snapshot render failed")
 
-    def start(self, user_text: str) -> None:
+    def start(self, user_text: Any) -> None:
         if self.is_running:
             return
         self._cancelled = False
+        self._signals = RunSignals()
         self._sink.reset()
         payload: Any = {"messages": [{"role": "user", "content": user_text}]}
         self._spawn(payload)
+
+    def steer(self, text: str) -> None:
+        self._signals.enqueue(HumanMessage(content=text, id=uuid.uuid4().hex))
 
     def resume(self, decision: Any) -> None:
         """``{"decision": …}`` 扇出到本次中断的全部挂起调用；其他值原样作为 resume 值。"""
@@ -330,13 +343,18 @@ class HarnessBridge:
         config = {**self._config, "callbacks": [ProgressHandler(bus)]}
         # 中间件拒掉的调用经这条总线补发工具行（circle.tool_events）
         token = bind_bus(bus)
+        run_token = current_run.set(self._signals)
         bus.emit("run_start")
         try:
-            self._run_with(payload, config, bus)
+            if hasattr(self._agent, "astream_native"):
+                asyncio.run(self._run_async(payload, config, bus))
+            else:
+                self._run_with(payload, config, bus)
         except Exception:  # noqa: BLE001 — _run_with reports through on_error itself
             pass
         finally:
             unbind_bus(token)
+            current_run.reset(run_token)
             deferred, self._deferred_resume = getattr(self, "_deferred_resume", None), None
             if deferred is not None and not self._cancelled:
                 self._start_resume(deferred)
@@ -346,6 +364,48 @@ class HarnessBridge:
         bus = getattr(self, "_bus", None)
         if bus is not None:
             announce_blocked_tool_call(call, text, bus=bus)
+
+    async def _run_async(self, payload, config, bus):
+        self._loop = asyncio.get_running_loop()
+        self._async_task = asyncio.current_task()
+        self._on_status("thinking")
+        try:
+            async for item in self._agent.astream_native(payload, config=config, stream_mode="messages"):
+                if self._cancelled:
+                    raise asyncio.CancelledError
+                message = item[0] if isinstance(item, tuple) else item
+                name = type(message).__name__
+                usage = self._note_usage(message)
+                if isinstance(message, ToolMessage):
+                    self._on_update(StreamUpdate(tool_name=message.name or "tool", tool_output=str(message.content),
+                                                 tool_call_id=message.tool_call_id))
+                elif "AIMessage" in name:
+                    calls = self._absorb_tool_calls(message)
+                    if calls or usage:
+                        self._on_update(StreamUpdate(tool_calls=calls, usage=usage))
+                    self._emit_from_content(message.content, chunk="Chunk" in name)
+            state = self._agent.get_state(self._config)
+            if state.interrupts:
+                self._pending_action_count = self._count_action_requests(state.interrupts)
+                bus.emit("run_end", payload={"awaiting_user": True})
+                self._on_interrupt(state.interrupts)
+                self._on_status("approval")
+            else:
+                messages = state.values.get("messages", [])
+                answer = message_text(messages[-1].content) if messages else ""
+                bus.emit("run_end")
+                self._on_done(answer or NO_OUTPUT)
+                self._on_status("ready")
+        except asyncio.CancelledError:
+            self._signals.cancelled.set()
+            bus.emit("run_end", payload={"cancelled": True})
+            self._on_status("cancelled")
+        except Exception as exc:  # noqa: BLE001 -- user-facing run boundary
+            self._on_error(exc)
+            self._on_status("ready")
+        finally:
+            self._async_task = None
+            self._loop = None
 
     def _run_with(self, payload: Any, config: dict[str, Any], bus: EventBus) -> None:
         self._on_status("thinking")
@@ -421,6 +481,13 @@ class HarnessBridge:
             except Exception as exc:  # noqa: BLE001
                 stream_exc = exc
 
+            if stream_exc is not None:
+                if self._cancelled:
+                    self._on_status("cancelled")
+                else:
+                    self._on_error(stream_exc)
+                    self._on_status("ready")
+                return
             if used_stream:
                 state = self._agent.get_state(self._config)
                 interrupts = getattr(state, "interrupts", None) or ()

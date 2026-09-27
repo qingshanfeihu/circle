@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -17,7 +18,7 @@ from circle.paths import (
 )
 
 
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
 
 
 @dataclass
@@ -31,6 +32,9 @@ class ModelAuth:
     # credential file keys; never store raw secrets here
     api_key_ref: str = "api_key"
     oauth_provider: str = ""  # anthropic | openai when mode=oauth
+    provider: str = ""
+    engine: str = "langchain"  # langchain | pi (model SDK only)
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -46,12 +50,15 @@ class CircleSettings:
     extensions: dict[str, dict[str, Any]] = field(default_factory=dict)
     # shell 命令点名这些文件（basename 通配）即拒绝执行；为空时用 circle.approvals 的默认表
     credential_files: list[str] = field(default_factory=list)
+    connections: dict[str, dict[str, Any]] = field(default_factory=dict)
+    keybindings: dict[str, str] = field(default_factory=dict)
+    extension_flags: dict[str, str] = field(default_factory=dict)
 
     def is_ready(self) -> bool:
         if not self.initialized:
             return False
         if self.auth.mode == "api_key":
-            return bool(self.auth.base_url and self.auth.model)
+            return bool(self.auth.model and (self.auth.base_url or self.auth.provider))
         if self.auth.mode == "oauth":
             return bool(self.auth.oauth_provider and self.auth.model)
         return False
@@ -74,6 +81,9 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         model=str(auth_raw.get("model") or ""),
         api_key_ref=str(auth_raw.get("api_key_ref") or "api_key"),
         oauth_provider=str(auth_raw.get("oauth_provider") or ""),
+        provider=str(auth_raw.get("provider") or ""),
+        engine=str(auth_raw.get("engine") or "langchain"),
+        params=dict(auth_raw.get("params") or {}),
     )
     folders = [str(p) for p in (raw.get("trusted_folders") or []) if str(p).strip()]
     mcp_raw = raw.get("mcp_servers") or []
@@ -88,7 +98,7 @@ def load_settings(home: Path | None = None) -> CircleSettings:
     credential_files = [str(p) for p in cred_raw if str(p).strip()] if isinstance(
         cred_raw, list) else []
     return CircleSettings(
-        version=int(raw.get("version") or SETTINGS_VERSION),
+        version=SETTINGS_VERSION,
         initialized=bool(raw.get("initialized")),
         auth=auth,
         trusted_folders=folders,
@@ -96,6 +106,9 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         mcp_servers=mcp_servers,
         extensions=extensions,
         credential_files=credential_files,
+        connections=dict(raw.get("connections") or {}),
+        keybindings=dict(raw.get("keybindings") or {}),
+        extension_flags=dict(raw.get("extension_flags") or {}),
     )
 
 
@@ -103,6 +116,10 @@ def save_settings(settings: CircleSettings, home: Path | None = None) -> Path:
     root = ensure_home(home)
     path = settings_path(root)
     payload = asdict(settings)
+    if path.exists() and not path.with_suffix(".v1.backup.json").exists():
+        old = json.loads(path.read_text())
+        if old.get("version", 1) < SETTINGS_VERSION:
+            shutil.copy2(path, path.with_suffix(".v1.backup.json"))
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     try:
         os.chmod(path, 0o600)

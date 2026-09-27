@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import os
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -48,6 +50,10 @@ class InitController:
     error: str = ""
     settings: CircleSettings | None = None
     _oauth_token: str = ""
+    _oauth_engine: str = "langchain"
+    _oauth_provider_id: str = ""
+    on_change: Callable[[], None] | None = None
+    _oauth_pending: dict | None = None
 
     def __post_init__(self) -> None:
         if self.probe is None:
@@ -114,6 +120,11 @@ class InitController:
             self.model_focus = (self.model_focus + delta) % len(self.models)
 
     def submit_line(self, text: str) -> None:
+        if self._oauth_pending is not None:
+            self._oauth_pending["answer"] = text.strip()
+            self._oauth_pending["ready"].set()
+            self._oauth_pending = None
+            return
         text = text.strip()
         self.error = ""
         if self.step == InitStep.AUTH_MODE:
@@ -167,6 +178,28 @@ class InitController:
         self.oauth_provider = "anthropic" if self.model_focus == 0 else "openai"
         self.step = InitStep.OAUTH_WAIT
         self.status = f"启动 {self.oauth_provider} OAuth…"
+        if self.oauth_login is start_oauth_login and os.environ.get("CIRCLE_OAUTH_MOCK", "").strip() not in {"1", "true", "yes"}:
+            def ask(question):
+                pending = {"ready": threading.Event(), "answer": ""}
+                self._oauth_pending = pending
+                self.status = question["message"]
+                if self.on_change:
+                    self.on_change()
+                while not pending["ready"].wait(0.1):
+                    if question.get("cancelled") and question["cancelled"].is_set():
+                        return ""
+                return pending["answer"]
+            def login():
+                try:
+                    session = start_oauth_login(self.oauth_provider, home=self.home, on_prompt=ask)
+                    self._accept_oauth(session)
+                except Exception as exc:  # noqa: BLE001 -- first-run auth boundary
+                    self.error = f"登录失败: {type(exc).__name__}"
+                    self.step = InitStep.AUTH_MODE
+                if self.on_change:
+                    self.on_change()
+            threading.Thread(target=login, daemon=True, name="circle-init-auth").start()
+            return
         try:
             session = self.oauth_login(self.oauth_provider)
         except OAuthNotConfiguredError as exc:
@@ -174,7 +207,12 @@ class InitController:
             self.step = InitStep.AUTH_MODE
             self.model_focus = 0
             return
+        self._accept_oauth(session)
+
+    def _accept_oauth(self, session) -> None:
         self._oauth_token = getattr(session, "access_token", "") or ""
+        self._oauth_engine = getattr(session, "engine", "langchain")
+        self._oauth_provider_id = getattr(session, "provider_id", "")
         self.base_url = getattr(session, "base_url", "") or ""
         self.protocol = "anthropic" if self.oauth_provider == "anthropic" else "openai"
         self.models = list(getattr(session, "models", None) or fallback_model_list())
@@ -215,11 +253,13 @@ class InitController:
                     model=model,
                     oauth_provider=self.oauth_provider,
                     api_key_ref="oauth_access_token",
+                    engine=self._oauth_engine,
+                    provider=self._oauth_provider_id,
                 ),
             )
             save_credentials(
                 {
-                    "oauth_access_token": self._oauth_token or "mock-token",
+                    "oauth_access_token": self._oauth_token,
                     "oauth_refresh_token": "",
                 },
                 self.home,

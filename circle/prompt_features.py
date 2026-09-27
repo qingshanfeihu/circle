@@ -370,6 +370,8 @@ def build_extra_tools(
     patch_tool = build_apply_patch_tool(workspace)
     if plan_mode:
         root = Path(workspace).resolve() if workspace else Path.cwd()
+        from circle.sandbox import CircleSandboxBackend
+        resolver = CircleSandboxBackend(root_dir=root, virtual_mode=True)
 
         def _plan_patch(patchText: str) -> str:
             for line in patchText.splitlines():
@@ -381,7 +383,7 @@ def build_extra_tools(
                 ):
                     if line.startswith(prefix):
                         target = line.split(":", 1)[1].strip()
-                        if Path(target).name.lower() not in {"plan.md", "plan"}:
+                        if resolver._resolve_path(target) != (root / "plan.md").resolve() or prefix == "*** Delete File:":
                             return (
                                 "Error: Plan mode is active — apply_patch blocked "
                                 "except for plan.md. Use /plan off."

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import signal
+import subprocess
+import time
 from typing import Any, Callable
 
 from deepagents.backends.protocol import ExecuteResponse
 
 from circle.sandbox import CircleSandboxBackend
+from circle.run_control import check_cancelled
 
 
 def _is_plan_file(path: str | Path) -> bool:
@@ -27,8 +32,15 @@ class PlanGuardedBackend(CircleSandboxBackend):
     def set_plan_mode(self, enabled: bool) -> None:
         self.plan_mode = enabled
 
+    def is_plan_file(self, path: str | Path) -> bool:
+        try:
+            return self._resolve_path(str(path)) == (self.cwd / "plan.md").resolve()
+        except (ValueError, OSError):
+            return False
+
     def write(self, file_path: str, content: str) -> Any:  # noqa: ANN401
-        if self.plan_mode and not _is_plan_file(file_path):
+        check_cancelled()
+        if self.plan_mode and not self.is_plan_file(file_path):
             from deepagents.backends.protocol import WriteResult
 
             return WriteResult(
@@ -40,7 +52,8 @@ class PlanGuardedBackend(CircleSandboxBackend):
         return super().write(file_path, content)
 
     def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> Any:  # noqa: ANN401
-        if self.plan_mode and not _is_plan_file(file_path):
+        check_cancelled()
+        if self.plan_mode and not self.is_plan_file(file_path):
             from deepagents.backends.protocol import EditResult
 
             return EditResult(
@@ -52,7 +65,8 @@ class PlanGuardedBackend(CircleSandboxBackend):
         return super().edit(file_path, old_string, new_string, replace_all=replace_all)
 
     def delete(self, file_path: str) -> Any:  # noqa: ANN401
-        if self.plan_mode and not _is_plan_file(file_path):
+        check_cancelled()
+        if self.plan_mode:
             from deepagents.backends.protocol import DeleteResult
 
             return DeleteResult(
@@ -75,4 +89,34 @@ class PlanGuardedBackend(CircleSandboxBackend):
         refusal = self.command_guard(command) if self.command_guard else ""
         if refusal:
             return ExecuteResponse(output=refusal, exit_code=126)
-        return super().execute(command, timeout=timeout)
+        check_cancelled()
+        duration = timeout if timeout is not None else self._default_timeout
+        if duration <= 0:
+            raise ValueError("timeout must be positive")
+        process = subprocess.Popen(command, shell=True, cwd=self.cwd, env=self._env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, start_new_session=os.name != "nt")
+        deadline = time.monotonic() + duration
+        try:
+            while True:
+                check_cancelled()
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, duration)
+                try:
+                    output, _ = process.communicate(timeout=min(0.1, deadline - time.monotonic()))
+                    limit = self._max_output_bytes
+                    return ExecuteResponse(output=output[:limit] or "<no output>",
+                                           exit_code=process.returncode, truncated=len(output) > limit)
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            if process.poll() is None:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                process.communicate()

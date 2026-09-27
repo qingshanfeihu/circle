@@ -22,7 +22,16 @@ include = ["circle*"]
 exclude = ["tests*", "packaging*"]
 
 [tool.setuptools.package-data]
-circle = ["prompts/**/*.md"]
+circle = ["prompts/**/*.md", "node/*.mjs", "node/*.json"]
+
+[project.optional-dependencies]
+dev = ["pytest>=9,<10", "ruff>=0.15,<1"]
+google = ["langchain-google-genai>=4,<5"]
+aws = ["langchain-aws>=1,<2"]
+ollama = ["langchain-ollama>=1,<2"]
+lsp = ["multilspy>=0.0.15,<1"]
+images = ["Pillow>=12,<14"]
+acp = ["agent-client-protocol>=0.10.1,<1", "deepagents-acp==0.0.12"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

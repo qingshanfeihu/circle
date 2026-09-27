@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import webbrowser
+from pathlib import Path
 from dataclasses import dataclass, field
 
-SUPPORTED_OAUTH_PROVIDERS = ("anthropic", "openai")
+SUPPORTED_OAUTH_PROVIDERS = ("anthropic", "openai", "github-copilot", "kimi-coding", "meta", "openrouter", "radius", "xai")
 
 
 @dataclass(frozen=True)
@@ -15,13 +17,15 @@ class OAuthSession:
     refresh_token: str = ""
     base_url: str = ""
     models: tuple[str, ...] = field(default_factory=tuple)
+    engine: str = "langchain"
+    provider_id: str = ""
 
 
 class OAuthNotConfiguredError(RuntimeError):
     """Raised until a provider OAuth client is wired for this build."""
 
 
-def start_oauth_login(provider: str) -> OAuthSession:
+def start_oauth_login(provider: str, *, home: Path | None = None, on_prompt=None, on_event=None) -> OAuthSession:
     provider = provider.strip().lower()
     if provider not in SUPPORTED_OAUTH_PROVIDERS:
         raise ValueError(
@@ -45,7 +49,19 @@ def start_oauth_login(provider: str) -> OAuthSession:
             ),
             models=models,
         )
-    raise OAuthNotConfiguredError(
-        f"{provider} OAuth client is not wired in this build yet; "
-        "use API URL + KEY, or set CIRCLE_OAUTH_MOCK=1 for selftest"
-    )
+    from circle.provider_bridge import bridge_events
+    provider_id = "openai-codex" if provider == "openai" else provider
+    try:
+        for record in bridge_events("login", {"provider": provider_id}, home=home, timeout=600, on_prompt=on_prompt):
+            if record.get("method") == "auth_event":
+                event = record["params"]["event"]
+                if on_event:
+                    on_event(event)
+                if event.get("type") == "auth_url":
+                    webbrowser.open(event["url"])
+            if "result" in record:
+                result = record["result"]
+                return OAuthSession(provider, "", models=tuple(result["models"]), engine="pi", provider_id=provider_id)
+    except RuntimeError as exc:
+        raise OAuthNotConfiguredError(str(exc)) from exc
+    raise OAuthNotConfiguredError("Provider login returned no result")

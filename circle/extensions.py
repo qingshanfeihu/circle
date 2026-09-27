@@ -53,6 +53,7 @@ class CommandContext:
     toast: Callable[[str], None]
     append: Callable[[str], None]
     send_user_message: Callable[[str], None]
+    flags: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -86,6 +87,9 @@ class Extension:
     subagents: list[tuple[dict[str, Any], list[str]]] = field(default_factory=list)
     renderers: dict[str, Callable[[Any], list[str]]] = field(default_factory=dict)
     handlers: dict[str, list[Callable[[dict[str, Any]], None]]] = field(default_factory=dict)
+    providers: dict[str, Callable] = field(default_factory=dict)
+    shortcuts: dict[str, Callable] = field(default_factory=dict)
+    flags: dict[str, dict] = field(default_factory=dict)
 
     @property
     def loaded(self) -> bool:
@@ -159,6 +163,21 @@ class ExtensionAPI:
         if not event_kind.startswith("tool_result:") or not event_kind.split(":", 1)[1]:
             raise ExtensionError("renderer kind must be tool_result:<tool name>")
         self._ext.renderers[event_kind] = renderer
+
+    def register_provider(self, name: str, factory: Callable) -> None:
+        if not _NAME_RE.fullmatch(name) or not callable(factory):
+            raise ExtensionError("provider needs a valid name and callable factory")
+        self._ext.providers[name] = factory
+
+    def register_shortcut(self, key: str, handler: Callable) -> None:
+        if not key or key in {"ctrl+c", "ctrl+d", "escape"} or not callable(handler):
+            raise ExtensionError("invalid or reserved shortcut")
+        self._ext.shortcuts[key] = handler
+
+    def register_flag(self, name: str, description: str, *, default: str = "") -> None:
+        if not _NAME_RE.fullmatch(name):
+            raise ExtensionError("invalid flag name")
+        self._ext.flags[name] = {"description": description, "default": default}
 
     def on(self, event: str, handler: Callable[[dict[str, Any]], None]) -> None:
         if event not in EVENTS:
@@ -242,6 +261,20 @@ class ExtensionHost:
                 continue
             taken_tools.update(t.name for t in ext.tools)
             taken_commands.update(c.name for c in ext.commands)
+        from circle.plugins import PluginManager
+        for ep in PluginManager(self.home).entry_points():
+            ext = Extension(ep.name, "user", self.home / "plugins", enabled=self.enabled(ep.name))
+            self.extensions.append(ext)
+            if not ext.enabled:
+                continue
+            api = ExtensionAPI(ext, taken_tools, taken_commands)
+            try:
+                ep.load()(api)
+            except Exception as exc:  # noqa: BLE001 -- failed registration stays inactive
+                ext.error = f"{type(exc).__name__}: {exc}"
+                continue
+            taken_tools.update(t.name for t in ext.tools)
+            taken_commands.update(c.name for c in ext.commands)
         return self
 
     @staticmethod
@@ -285,7 +318,7 @@ class ExtensionHost:
                     if note not in ext.warnings:
                         ext.warnings.append(note)
                     continue
-                out.append({**spec, "tools": [by_name[n] for n in names]})
+                out.append({**spec, "tools": [by_name[n] for n in names], "_circle_tool_names": names})
         return out
 
     def catalog(self) -> list[tuple[str, str]]:
@@ -299,6 +332,15 @@ class ExtensionHost:
     # ── session-side hooks ────────────────────────────────────────
     def commands(self) -> dict[str, ExtensionCommand]:
         return {c.name: c for e in self._loaded() for c in e.commands}
+
+    def providers(self) -> dict[str, Callable]:
+        return {name: factory for e in self._loaded() for name, factory in e.providers.items()}
+
+    def shortcuts(self) -> dict[str, Callable]:
+        return {key: handler for e in self._loaded() for key, handler in e.shortcuts.items()}
+
+    def flags(self) -> dict[str, dict]:
+        return {name: spec for e in self._loaded() for name, spec in e.flags.items()}
 
     def renderer(self, tool_name: str) -> Callable[[Any], list[str]] | None:
         for ext in self._loaded():

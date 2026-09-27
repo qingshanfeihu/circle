@@ -14,3 +14,6 @@ compile-excel-skills/
 compile_outputs/
 .agents/
 .circle/
+.venv/
+node_modules/
+dist-release/

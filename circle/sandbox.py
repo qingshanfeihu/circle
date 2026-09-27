@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from deepagents.backends import LocalShellBackend
+from deepagents.backends import FilesystemBackend
 from deepagents.backends.filesystem import _raise_if_symlink_loop
 
 # 名字里任一段（按非字母数字切）是这些词、或以它们结尾，就当机密：API key、令牌、口令等
@@ -84,8 +85,8 @@ def is_host_absolute_path(path: str) -> bool:
     return first in _HOST_TOP_LEVEL
 
 
-class CircleSandboxBackend(LocalShellBackend):
-    """LocalShellBackend with host-absolute path passthrough."""
+class HostPathsMixin:
+    """Shared host path mapping for official filesystem and shell backends."""
 
     def _resolve_path(self, key: str) -> Path:
         raw = (key or "").strip() or "/"
@@ -113,3 +114,11 @@ class CircleSandboxBackend(LocalShellBackend):
             return super()._to_virtual_path(path)
         except (ValueError, OSError, RuntimeError):
             return path.resolve().as_posix()
+
+
+class CircleSandboxBackend(HostPathsMixin, LocalShellBackend):
+    """LocalShellBackend with host-absolute path passthrough."""
+
+
+class CircleFilesystemBackend(HostPathsMixin, FilesystemBackend):
+    """Official filesystem backend; supports native FilesystemPermission."""
