@@ -18,6 +18,7 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -34,6 +35,7 @@ from circle.middleware import (
     ToolErrorBoundaryMiddleware,
     ToolResultPruneMiddleware,
 )
+from circle.middleware.effect_gate import EffectGateMiddleware
 from circle.plan_backend import PlanGuardedBackend
 from circle.prompt_features import (
     build_extra_tools,
@@ -41,11 +43,10 @@ from circle.prompt_features import (
     explore_subagent_spec,
     plan_mode_append,
 )
-from circle.sandbox import shell_environment, CircleFilesystemBackend
-from circle.tool_registry import ToolRegistry
-from circle.middleware.effect_gate import EffectGateMiddleware
+from circle.sandbox import CircleFilesystemBackend, shell_environment
 from circle.skills import skill_sources
 from circle.system_prompt import build_system_prompt, load_tool_prompt
+from circle.tool_registry import ToolRegistry
 
 if TYPE_CHECKING:
     from circle.extensions import ExtensionHost
@@ -91,7 +92,8 @@ def _ensure_tool_description_profiles() -> None:
         for key in _PROFILE_KEYS:
             try:
                 register_harness_profile(key, profile)
-            except Exception:  # noqa: BLE001
+            except Exception:
+                logger.debug("harness profile registration unavailable", exc_info=True)
                 continue
     _profiles_ready = True
 
@@ -181,7 +183,7 @@ def create_harness(
     policy = approvals or default_policy(home)
     # 禁止类命令在后端拒绝执行：主代理与子代理共用这个后端，一处拦住全部
     backend.command_guard = policy.deny_message
-    policy.bind_workspace(backend._resolve_path, backend.cwd)  # noqa: SLF001
+    policy.bind_workspace(backend._resolve_path, backend.cwd)
     file_backend = CircleFilesystemBackend(root_dir=root_dir, virtual_mode=True)
     permissions = [FilesystemPermission(operations=["read", "write"],
                                        paths=["/**/" + pattern], mode="deny")
@@ -242,9 +244,15 @@ def create_harness(
         rule["when"] = lambda request, n=name, pred=predicate: (
             False if backend.plan_mode and n not in {"write_file", "edit_file", "apply_patch"}
             else pred(request))
+    # The SDK's automatic general-purpose agent intentionally does not inherit
+    # main-only middleware. Supply its public base spec so every child has the
+    # same effect boundary, including unknown MCP and extension tools.
+    if not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in subagents):
+        subagents.insert(0, {**GENERAL_PURPOSE_SUBAGENT, "model": model, "tools": list(tools),
+                            "middleware": [FilesystemMiddleware(backend=file_backend, _permissions=permissions)]})
     for spec in subagents:
         spec.setdefault("skills", skills)
-        spec["middleware"] = [*spec.get("middleware", []), EffectGateMiddleware(registry, backend)]
+        spec["middleware"] = [*spec.get("middleware", []), EffectGateMiddleware(registry, backend, steering=False)]
     compat = ToolCallCompatibilityMiddleware(gated=interrupt_on)
     extra_mw: list[Any] = [
         ToolErrorBoundaryMiddleware(),
@@ -261,8 +269,8 @@ def create_harness(
     if chat_model is not None:
         try:
             extra_mw.extend(build_context_middleware(chat_model, backend))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            logger.warning("manual compaction middleware unavailable", exc_info=True)
     extra_mw.extend(extension_middleware)
 
     kwargs: dict[str, Any] = {
@@ -286,13 +294,10 @@ def create_harness(
     agent = create_deep_agent(**kwargs)
     try:
         compat.bind(agent.nodes["tools"].bound.tools_by_name.values())
-    except Exception:  # noqa: BLE001 — 取不到工具表时只修已解析到工具的调用
+    except Exception:
         logger.debug("tool table unavailable for tool-call repair", exc_info=True)
-    try:
-        agent._circle_backend = backend  # type: ignore[attr-defined]  # noqa: SLF001
-        agent._circle_approvals = policy  # type: ignore[attr-defined]  # noqa: SLF001
-        agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]  # noqa: SLF001
-        agent._circle_tools = registry
-    except Exception:  # noqa: BLE001
-        pass
+    agent._circle_backend = backend  # type: ignore[attr-defined]
+    agent._circle_approvals = policy  # type: ignore[attr-defined]
+    agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]
+    agent._circle_tools = registry
     return agent

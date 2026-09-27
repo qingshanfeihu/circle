@@ -11,14 +11,15 @@ from circle.tool_registry import CONTROL_TOOLS, READ_TOOLS, ToolRegistry
 
 class EffectGateMiddleware(AgentMiddleware):
     """Enforce plan mode at the common tool boundary, before HITL or handlers."""
-    def __init__(self, registry: ToolRegistry, backend: Any):
+    def __init__(self, registry: ToolRegistry, backend: Any, *, steering: bool = True):
         self.registry = registry
         self.backend = backend
+        self.steering = steering
 
     def before_model(self, state, runtime):
         check_cancelled()
         run = current_run.get()
-        messages = run.take() if run is not None else []
+        messages = run.take() if run is not None and self.steering else []
         return {"messages": messages} if messages else None
 
     async def abefore_model(self, state, runtime):

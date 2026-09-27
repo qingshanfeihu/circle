@@ -183,6 +183,39 @@ def test_steering_reaches_next_request_before_current_run_ends(tmp_path):
     assert model.i == 2  # one run, not another task after it finishes
 
 
+def test_steering_is_delivered_to_parent_after_child_returns(tmp_path):
+    from circle.extensions import Extension, ExtensionAPI, ExtensionHost
+    app, _ = app_at(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    def pause() -> str:
+        """Pause a read inside a child agent."""
+        entered.set()
+        assert release.wait(4)
+        return "read result"
+    tool = StructuredTool.from_function(pause, name="pause_read", metadata={"circle_read_only": True})
+    child = CapturingModel(responses=[call("pause_read", {}), AIMessage(content="child finished")])
+    parent = CapturingModel(responses=[call("task", {"subagent_type": "researcher", "description": "read"}),
+                                       AIMessage(content="parent finished")])
+    host = ExtensionHost(home=app.home, workspace=app.workspace, trusted=True).load()
+    extension = Extension("research", "user", tmp_path / "extension.py")
+    ExtensionAPI(extension, set(), set()).register_subagent({
+        "name": "researcher", "description": "research", "system_prompt": "read only", "model": child},
+        tools=["pause_read"])
+    host.extensions.append(extension)
+    raw = create_harness(parent, root_dir=app.workspace, home=app.home, checkpointer=app._checkpointer,
+                         extensions=host, extra_tools=[tool])
+    app._agent = app._sessions.bind(raw)
+    app._bridge = app._make_bridge()
+    app._on_submit("initial")
+    assert entered.wait(4)
+    app._on_submit("MAIN_STEERING")
+    release.set()
+    idle(app)
+    assert "MAIN_STEERING" in parent.inputs[-1]
+    assert all("MAIN_STEERING" not in request for request in child.inputs)
+    assert parent.i == child.i == 2
+
+
 def test_cancel_native_model_request_before_server_response(tmp_path):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from langchain_openai import ChatOpenAI

@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +107,13 @@ def bridge_events(method: str, params: dict, *, home: Path | None = None,
 
 
 def bridge_call(method: str, params: dict, *, home: Path | None = None) -> Any:
-    return next(event["result"] for event in bridge_events(method, params, home=home) if "result" in event)
+    # A result arrives before the generator's final return. Explicitly close it
+    # so the Node process is reaped before a caller relocates its runtime files.
+    with closing(bridge_events(method, params, home=home)) as events:
+        for event in events:
+            if "result" in event:
+                return event["result"]
+    raise RuntimeError("Provider bridge returned no result")
 
 
 def _blocks(content: Any) -> list[dict]:

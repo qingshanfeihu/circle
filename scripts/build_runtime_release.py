@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,8 +119,16 @@ def main():
         run([*command, "--version"], env=env)
         run([*command, "--list-models"], env=env, stdout=subprocess.DEVNULL)
         # Relocation is part of smoke, not inferred from the archive's layout.
-        relocated = Path(temp) / "relocated with spaces"
-        staging.rename(relocated)
+        relocated = (Path(temp) / "relocated with spaces").resolve()
+        for attempt in range(20):
+            try:
+                staging.rename(relocated)
+                break
+            except PermissionError:
+                if os_tag != "windows" or attempt == 19:
+                    raise
+                print(f"Windows prevented relocation; retry {attempt + 1}/20", flush=True)
+                time.sleep(0.5)
         command = [str(relocated / relative_python), "-I", str(relocated / "launcher.py")]
         run([*command, "--version"], env=env)
         artifact = args.out / f"circle-{os_tag}-{arch}.tar.gz"

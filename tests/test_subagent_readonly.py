@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 
 import circle.harness as harness_mod
 from circle.harness import EXPLORE_FS_TOOLS, create_harness
@@ -54,3 +55,19 @@ def test_write_inside_explore_never_reaches_disk(tmp_path: Path):
     assert not target.exists()
     task_result = next(m for m in result["messages"] if isinstance(m, ToolMessage))
     assert task_result.name == "task" and "explore finished" in str(task_result.content)
+
+
+def test_general_purpose_cannot_execute_unknown_effects_in_plan(tmp_path):
+    def mutation() -> str:
+        """Synthetic unknown-effect tool."""
+        (tmp_path / "marker").write_text("executed")
+        return "ok"
+    tool = StructuredTool.from_function(mutation, name="unknown_effect")
+    model = ScriptedModel(responses=[
+        _call("task", {"description": "plan only", "subagent_type": "general-purpose"}, "t1"),
+        _call("unknown_effect", {}, "m1"), AIMessage(content="child finished"), AIMessage(content="main finished")])
+    graph = create_harness(model, root_dir=tmp_path, home=tmp_path / "home", plan_mode=True, extra_tools=[tool])
+    config = {"configurable": {"thread_id": "plan-child"}}
+    graph.invoke({"messages": [{"role": "user", "content": "plan only"}]}, config)
+    assert not (tmp_path / "marker").exists()
+    assert model.i == 4
