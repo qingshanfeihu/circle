@@ -35,7 +35,7 @@ def main():
         arch = args.target_arch
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="circle-release-") as temp:
-        staging = Path(temp) / "circle"
+        staging = (Path(temp) / "circle").resolve()
         staging.mkdir()
         runtime = staging / "runtime"
         python_dir = runtime / "python"

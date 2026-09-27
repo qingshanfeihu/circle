@@ -1,5 +1,9 @@
 import time
 import threading
+import sys
+import os
+import shlex
+import subprocess
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -108,7 +112,10 @@ def test_mcp_requires_approval_and_is_blocked_in_plan(tmp_path):
 
 def test_cancel_kills_inflight_shell(tmp_path):
     app, _ = app_at(tmp_path)
-    app.model_override = ScriptedModel(responses=[call("execute", {"command": "printf start > started; sleep 2; printf late > late"}),
+    script = "from pathlib import Path; import time; Path('started').write_text('start'); time.sleep(2); Path('late').write_text('late')"
+    args = [sys.executable, "-c", script]
+    command = subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+    app.model_override = ScriptedModel(responses=[call("execute", {"command": command}),
                                                 AIMessage(content="done")])
     app._rebuild_agent(model=app.model_override)
     app._cmd_yolo("on")

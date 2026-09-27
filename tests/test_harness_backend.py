@@ -52,7 +52,7 @@ def test_host_absolute_paths_are_not_remapped_under_workspace(tmp_path: Path):
     assert is_host_absolute_path(host_key)
 
     # Old virtual_mode bug would look under tmp_path/Users/... and miss.
-    ghost = tmp_path / host_key.lstrip("/")
+    ghost = tmp_path / host_key.replace(":", "").replace("\\", "/").lstrip("/")
     assert not ghost.exists()
 
     result = backend.read(host_key)

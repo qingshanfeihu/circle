@@ -35,6 +35,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
+from circle.file_permissions import make_private
 
 Verdict = Literal["DENY", "ASK", "ASK_FORCED"]
 
@@ -327,6 +328,7 @@ class ApprovalStore:
             json.dump({"rules": data["rules"], "log": data["log"][-self._LOG_LIMIT:]}, fh,
                       ensure_ascii=False, indent=1)
         os.replace(tmp, path)
+        make_private(path)
 
     def rules(self, thread_id: str) -> list[dict[str, Any]]:
         with self._lock:

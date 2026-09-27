@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from filelock import FileLock
+from circle.file_permissions import make_private
 
 SCHEMA = "circle.secret-request.v1"
 _MAX_SECRET_BYTES = 4096
@@ -114,7 +115,7 @@ def create_request(
     }
     path = _request_path(home, rid)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    os.chmod(path, 0o600)
+    make_private(path)
     return payload
 
 
@@ -151,7 +152,7 @@ def submit_answer(home: Path | str, request_id: str, value: str) -> None:
             raise SecretPromptError("机密值超长")
         path = _answer_path(home, request_id)
         path.write_bytes(raw)
-        os.chmod(path, 0o600)
+        make_private(path)
 
 
 def _consume_answer_locked(home: Path | str, request_id: str, path: Path) -> bytes | None:
@@ -219,9 +220,9 @@ def apply_to_target(request: Mapping[str, Any], value: str) -> Path:
     kept.append(f"{key}={value}")
     tmp = target.with_name(target.name + ".tmp")
     tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
+    make_private(tmp)
     os.replace(tmp, target)
-    os.chmod(target, 0o600)
+    make_private(target)
     return target
 
 

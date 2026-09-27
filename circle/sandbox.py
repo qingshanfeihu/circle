@@ -40,7 +40,10 @@ def shell_environment(source: Mapping[str, str] | None = None) -> dict[str, str]
     into os.environ must still never reach model-run commands.
     """
     env = os.environ if source is None else source
-    return {k: v for k, v in env.items() if not _looks_secret(k)}
+    result = {k: v for k, v in env.items() if not _looks_secret(k)}
+    if source is None:
+        result.setdefault("HOME", str(Path.home()))
+    return result
 
 
 _HOST_TOP_LEVEL = frozenset(
@@ -90,6 +93,13 @@ class HostPathsMixin:
 
     def _resolve_path(self, key: str) -> Path:
         raw = (key or "").strip() or "/"
+        if raw.startswith("/__circle_host__/"):
+            drive, _, tail = raw[len("/__circle_host__/"):].partition("/")
+            if len(drive) != 1 or not drive.isalpha() or ".." in Path(tail).parts:
+                raise ValueError("Invalid host path")
+            path = Path(drive + ":/" + tail).resolve()
+            _raise_if_symlink_loop(path)
+            return path
         if is_host_absolute_path(raw):
             path = Path(raw).expanduser()
             if not path.is_absolute():

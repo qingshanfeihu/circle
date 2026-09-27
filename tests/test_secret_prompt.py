@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from circle import secret_prompt
+from circle.file_permissions import is_private
 from circle.secret_prompt import (
     SecretPromptError,
     SecretPromptTimeout,
@@ -37,8 +38,7 @@ def test_create_and_list_pending(home: Path) -> None:
     pending = list_pending(home)
     assert [p["id"] for p in pending] == [req["id"]]
     # 请求文件 600
-    mode = stat.S_IMODE((requests_dir(home) / f"{req['id']}.request.json").stat().st_mode)
-    assert mode == 0o600
+    assert is_private(requests_dir(home) / f"{req['id']}.request.json")
 
 
 def test_create_rejects_bad_key(home: Path) -> None:
@@ -77,7 +77,7 @@ def test_apply_replaces_key_and_keeps_other_lines(home: Path, tmp_path: Path) ->
     assert "KMS_ADDR=10.4.127.100:8900" in text
     assert "APV_PASSWORD=new-secret" in text
     assert "APV_PASSWORD=old" not in text
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert is_private(target)
 
 
 def test_collect_returns_redacted_lines_only(home: Path, tmp_path: Path) -> None:

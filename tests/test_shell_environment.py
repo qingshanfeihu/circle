@@ -7,6 +7,10 @@ out of model-run commands is still the point, so secret-looking names are remove
 """
 
 from __future__ import annotations
+import os
+import sys
+import subprocess
+import shlex
 
 from circle.harness import sandbox_backend
 from circle.sandbox import shell_environment
@@ -29,8 +33,9 @@ def test_execute_sees_path_home_and_trust_but_no_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("SSL_CERT_FILE", "/ca/bundle.pem")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
     monkeypatch.setenv("PATH", "/opt/venv/bin:/usr/bin:/bin")
-    out = sandbox_backend(tmp_path).execute(
-        'printf "%s|%s|%s|%s" "$HOME" "$SSL_CERT_FILE" "$PATH" "$ANTHROPIC_API_KEY"')
+    args = [sys.executable, "-c", "import os; print('|'.join(os.environ.get(k,'') for k in ['HOME','SSL_CERT_FILE','PATH','ANTHROPIC_API_KEY']))"]
+    command = subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+    out = sandbox_backend(tmp_path).execute(command)
     home, cert, path, key = str(getattr(out, "output", out)).strip().split("|")
     assert home and cert == "/ca/bundle.pem" and path.startswith("/opt/venv/bin")
     assert key == ""

@@ -9,6 +9,7 @@ tilde first so ``~/.circle/skills/...`` is that same host path.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 def install_tilde_expansion() -> None:
@@ -26,6 +27,8 @@ def install_tilde_expansion() -> None:
     def validate_path(path: str, *args, **kwargs):
         if isinstance(path, str) and path.startswith("~"):
             path = str(Path(path).expanduser())
+        if isinstance(path, str) and re.match(r"^[A-Za-z]:[\\/]", path):
+            path = "/__circle_host__/" + path[0].upper() + "/" + path[3:].replace("\\", "/")
         return current(path, *args, **kwargs)
 
     validate_path._circle_tilde = True  # type: ignore[attr-defined]

@@ -2471,7 +2471,11 @@ class CircleSessionApp:
         try:
             self._app.suspend_for_external()
             try:
-                subprocess.run([editor, str(tmp_path)], check=False)
+                import shlex
+                command = [editor] if Path(editor).is_file() else shlex.split(editor)
+                if command[0].endswith(".py"):
+                    command.insert(0, sys.executable)
+                subprocess.run([*command, str(tmp_path)], check=False)
             finally:
                 self._app.resume_from_external()
             text = tmp_path.read_text(encoding="utf-8")

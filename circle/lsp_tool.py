@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,7 +39,8 @@ async def _query(workspace, path, operation, line, character, query):
     server = LanguageServer.create(MultilspyConfig.from_dict({"code_language": language}),
                                     MultilspyLogger(), str(workspace))
     if language == "python":
-        server.server.process_launch_info.cmd = shlex.quote(sys.executable) + " -c " + shlex.quote("from jedi_language_server.cli import cli; cli()")
+        command = [sys.executable, "-c", "from jedi_language_server.cli import cli; cli()"]
+        server.server.process_launch_info.cmd = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
     server.server.process_launch_info.env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
     async with asyncio.timeout(15):
         async with server.start_server():
