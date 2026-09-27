@@ -1,0 +1,500 @@
+{
+  "captured_at": "2026-09-27T20:24:04.784636+00:00",
+  "code_commit": "e8d739061b655f7011087b43925a0828ec595e39",
+  "circle_baseline": "c0bafb5d99d99dac70f51eafa5632e351b794f1a",
+  "pi_baseline": {
+    "coding_agent": "0.87.1",
+    "tag_commit": "f07218c4d4bbc12bef056a7058c3dd49dfe41abe"
+  },
+  "local_suite": {
+    "passed": 438,
+    "skipped": 1,
+    "warnings": 2,
+    "command": "uv run --frozen --all-extras pytest -q",
+    "skip_reason": "No adjacent compile-excel-skills checkout",
+    "warnings_reason": "Experimental framework v3 streaming protocol"
+  },
+  "check_runs": [
+    36347072185,
+    36347068098
+  ],
+  "runtime_release": {
+    "id": 36347098564,
+    "url": "https://github.com/qingshanfeihu/circle/actions/runs/36347098564",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "id": 108698280379,
+        "name": "build (windows-11-arm, cpython-3.13.14-windows-x86_64-none, arm64)",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run uv sync --frozen --all-extras --python cpython-3.13.14-windows-x86_64-none",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run npm ci --ignore-scripts --prefix circle/node",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test runtime",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build, smoke and relocate artifact",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install, upgrade and reject a corrupt checksum",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 108698280449,
+        "name": "build (macos-15, 3.13, arm64)",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run uv sync --frozen --all-extras --python 3.13",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run npm ci --ignore-scripts --prefix circle/node",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test runtime",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build, smoke and relocate artifact",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install, upgrade and reject a corrupt checksum",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 108698280454,
+        "name": "build (macos-15-intel, 3.13, x86_64)",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run uv sync --frozen --all-extras --python 3.13",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run npm ci --ignore-scripts --prefix circle/node",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test runtime",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build, smoke and relocate artifact",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install, upgrade and reject a corrupt checksum",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 108698280461,
+        "name": "build (ubuntu-22.04, 3.13, x86_64)",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run uv sync --frozen --all-extras --python 3.13",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run npm ci --ignore-scripts --prefix circle/node",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test runtime",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build, smoke and relocate artifact",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install, upgrade and reject a corrupt checksum",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 108698280475,
+        "name": "build (ubuntu-22.04-arm, 3.13, arm64)",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run uv sync --frozen --all-extras --python 3.13",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run npm ci --ignore-scripts --prefix circle/node",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test runtime",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build, smoke and relocate artifact",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install, upgrade and reject a corrupt checksum",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 108698280496,
+        "name": "build (windows-2025, cpython-3.13.14-windows-x86_64-none, x86_64)",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run uv sync --frozen --all-extras --python cpython-3.13.14-windows-x86_64-none",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run npm ci --ignore-scripts --prefix circle/node",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test runtime",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build, smoke and relocate artifact",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install, upgrade and reject a corrupt checksum",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run astral-sh/setup-uv@v6",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 108700339572,
+        "name": "publish",
+        "status": "completed",
+        "conclusion": "skipped",
+        "steps": []
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "id": 10941441464,
+      "name": "runtime-ubuntu-22.04",
+      "size_in_bytes": 197743775,
+      "digest": "sha256:b227440a1b369656ddf2c04a7a3813f56302cfdea563da640c58604ed6a9d970",
+      "expired": false,
+      "created_at": "2026-09-27T20:14:21Z",
+      "expires_at": "2026-12-26T20:11:21Z",
+      "archive_download_url": "https://api.github.com/repos/qingshanfeihu/circle/actions/artifacts/10941441464/zip"
+    },
+    {
+      "id": 10941336513,
+      "name": "runtime-windows-11-arm",
+      "size_in_bytes": 154372819,
+      "digest": "sha256:ac4027a328b446b7599e24234218f5b2f49727a36cdc96d0ba02d6fc7c8bcf98",
+      "expired": false,
+      "created_at": "2026-09-27T20:21:43Z",
+      "expires_at": "2026-12-26T20:11:21Z",
+      "archive_download_url": "https://api.github.com/repos/qingshanfeihu/circle/actions/artifacts/10941336513/zip"
+    },
+    {
+      "id": 10941167239,
+      "name": "runtime-ubuntu-22.04-arm",
+      "size_in_bytes": 188798462,
+      "digest": "sha256:16a9ea7b2277c87fb8c766a5a0c4e318dbf08eed4827fb3aa758dfe6fce1e338",
+      "expired": false,
+      "created_at": "2026-09-27T20:13:47Z",
+      "expires_at": "2026-12-26T20:11:21Z",
+      "archive_download_url": "https://api.github.com/repos/qingshanfeihu/circle/actions/artifacts/10941167239/zip"
+    },
+    {
+      "id": 10940912223,
+      "name": "runtime-windows-2025",
+      "size_in_bytes": 156979805,
+      "digest": "sha256:a1c874f1dbd4aa7e1f13dc8d5ef7dbcccc58ca1be94e70ba4b397c3f7be80db6",
+      "expired": false,
+      "created_at": "2026-09-27T20:17:44Z",
+      "expires_at": "2026-12-26T20:11:21Z",
+      "archive_download_url": "https://api.github.com/repos/qingshanfeihu/circle/actions/artifacts/10940912223/zip"
+    },
+    {
+      "id": 10940673829,
+      "name": "runtime-macos-15-intel",
+      "size_in_bytes": 164821258,
+      "digest": "sha256:2dffbbec570dddc609b526f41cfd7565cdd18e370ccc70547a5ea610431dc8c2",
+      "expired": false,
+      "created_at": "2026-09-27T20:20:17Z",
+      "expires_at": "2026-12-26T20:11:21Z",
+      "archive_download_url": "https://api.github.com/repos/qingshanfeihu/circle/actions/artifacts/10940673829/zip"
+    },
+    {
+      "id": 10940404719,
+      "name": "runtime-macos-15",
+      "size_in_bytes": 160250116,
+      "digest": "sha256:9caac82eada67a9eb2a0c7cf3c1a215c101f3c48638366320a3af6f921f678b9",
+      "expired": false,
+      "created_at": "2026-09-27T20:15:33Z",
+      "expires_at": "2026-12-26T20:11:21Z",
+      "archive_download_url": "https://api.github.com/repos/qingshanfeihu/circle/actions/artifacts/10940404719/zip"
+    }
+  ],
+  "digest_scope": "GitHub artifact ZIP digests; each ZIP also contains the runtime tar.gz and its own sha256 file, verified by the target installer",
+  "live_model_boundary": {
+    "configured_model": "claude-sonnet-5",
+    "marker_ok": true,
+    "finish_reason": "end_turn",
+    "input_tokens": 18,
+    "output_tokens": 5,
+    "scope": "Earlier bounded native model adapter call; not all-provider or subscription acceptance"
+  },
+  "windows_arm64": "x64 Python compatibility runtime; actual architecture is recorded in runtime.json",
+  "not_verified": [
+    "Live subscription OAuth accounts",
+    "All provider connectivity",
+    "Actual visual model quality",
+    "Every interactive terminal environment"
+  ],
+  "published_release": false,
+  "original_checkout_status": "Only the original untracked quicksort.py remains"
+}

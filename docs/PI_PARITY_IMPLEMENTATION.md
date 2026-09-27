@@ -1,42 +1,65 @@
 # Pi parity implementation and evidence
 
 Baseline: Circle `c0bafb5`; Pi coding agent/model SDK `0.87.1`.
+Scope: Pi default coding-agent capabilities plus the official plan/todo/subagent
+workflows, with functional adapters rather than TypeScript plugin or wire compatibility.
 
 The implementation keeps Deep Agents as the sole agent engine. The Pi dependency
 is its public model/auth SDK, not the Pi coding-agent loop. LangGraph owns message
 state and checkpoints; Circle stores logical-session pointers and derived UI caches.
+Framework and dependency choices were checked against the ecosystem-primer,
+Deep Agents, LangChain middleware/dependencies and LangGraph persistence/HITL skills.
+The Python process-control and preview adapters reuse
+[psutil](https://psutil.io/) and
+[Rich Pixels](https://pypi.org/project/rich-pixels/3.0.1/).
 
 ## Implemented behavior
 
 - Durable logical sessions, selected-checkpoint execution, forks/clones without
-  raw checkpoint copying, restart discovery, real conversation undo/redo, native
-  message-ID tree projection, and explicit legacy-thread adoption.
-- Shared runtime for the line/print/JSON/ACP interfaces; native async SQLite
+  raw checkpoint copying, restart discovery, real conversation undo/redo, all-branch
+  native message-ID tree projection after restart, and explicit legacy-thread adoption.
+  A file lock prevents concurrent writers from different processes.
+- Shared runtime for the TUI/line/print/JSON/ACP interfaces; native async SQLite
   execution in the TUI, including cancellation of a waiting native model request.
 - Tool effect registry, MCP approval despite read-only annotations, plan-mode
   refusal before handlers, exact workspace plan-file exception, SDK filesystem
-  permissions, and run-scoped shell-process cancellation.
+  permissions, and run-scoped shell-process cancellation. Windows termination
+  uses psutil; verification checks the child PID separately from framework teardown.
+  Input entered during cancelled-run teardown is retained for a fresh turn.
 - Mid-run steering through LangChain before-model middleware; follow-up queue
-  stays after the current run. Native subagent configuration supports explicit
+  stays after the current run. Steering is consumed only by the parent; read-only,
+  configured and SDK general-purpose children share the effect boundary. Native
+  subagent configuration supports explicit
   filesystem tools, skills and per-agent models.
 - Named LangChain connections and Pi model/auth adapter, complete tool-call and
   thinking-signature preservation, upstream provider catalog, browser/device
   authentication callbacks, and separate locked provider credential storage.
+  Internal credential files remain denied even with custom file patterns; Node
+  credential writes set private POSIX modes or native Windows ACLs before writing.
 - Python extension packages via entry points and uv-built versioned environments;
-  plugin install/remove/update, enable/disable, provider/shortcut/flag registration.
+  plugin install/remove/update, enable/disable, provider/shortcut/flag registration,
+  dependency constraints and fresh imports after an idle generation reload.
 - File references and completion, standard image input blocks, clipboard-image
-  input via Pillow, configurable keys, applied themes, and full structured JSON
-  conversation export/import alongside Markdown/HTML exports.
+  input via Pillow, automatic image size/orientation handling with coordinate
+  disclosure, inline terminal-cell thumbnails via Rich Pixels, configurable keys
+  and applied themes. Structured JSON export/import
+  preserves all branch conversations, tool-call identities, todos and native
+  compaction summaries. Import settles native scheduled nodes without replaying tools.
 - Microsoft multilspy replaces handwritten LSP transport; Python definition
   lookup is verified against a real Jedi language server.
 - Bundled Python/Node/uv runtime release builder, Python and npm lock files,
   six target runner jobs, relocation smoke, checksums, retained previous versions,
-  Unix and PowerShell installers, and push/PR checks.
+  Unix and PowerShell installers, and push/PR checks. Target-runner installation
+  smoke exercises installation, retained-generation upgrade, and checksum rejection.
 
 ## Verification recorded during implementation
 
-- Existing and new suite reached **426 passed, 1 skipped** before the final
-  clipboard/initialization edits. Run the suite again at the final commit.
+- Code commit `e8d739061b655f7011087b43925a0828ec595e39` passed the local suite:
+  **438 passed, 1 skipped**. The skip requires an adjacent external compile-excel
+  installer checkout; it is not treated as executed coverage. Two warnings are
+  the framework's experimental v3 streaming notice.
+- [Push CI](https://github.com/qingshanfeihu/circle/actions/runs/36347072185)
+  passed on the same code commit.
 - Real local integration tests exercised MCP stdio loading/approval/execution,
   the official ACP adapter's durable load/replay, plugin package installation and
   entry-point loading, a local OpenAI Responses stream through the actual Pi SDK,
@@ -44,17 +67,26 @@ state and checkpoints; Circle stores logical-session pointers and derived UI cac
 - Current configured `claude-sonnet-5` gateway returned the exact requested marker
   in a bounded live model call: 18 input + 5 output tokens, `end_turn`. This verifies
   that connection only, not every provider or subscription account.
-- A macOS arm64 bundled-runtime archive was built, and its launcher/model catalog
-  worked after relocation to a directory containing spaces. Rebuild after the
-  final source changes; the earlier archive is not a final-head release receipt.
+- A macOS arm64 archive from an earlier implementation commit was built and
+  relocated to a directory containing spaces. The current installer was then
+  exercised against it: install, upgrade, retained prior generation and corrupt
+  checksum rejection passed. This is a local installer receipt, not a final-head
+  artifact receipt; the target-runner matrix supplies those.
 - The original main checkout is preserved, including its untracked `quicksort.py`.
 
 ## Acceptance boundaries
 
 The provider catalog has 41 providers and 1495 models; catalog presence is not a
 live connectivity verdict. Subscription OAuth requires actual account login.
-Five other platform builds and their installation/upgrade behavior still require
-target-runner results. No GitHub Release or tag was published during local work.
+The final six-target build/install run is
+[36347098564](https://github.com/qingshanfeihu/circle/actions/runs/36347098564),
+bound to code commit `e8d739061b655f7011087b43925a0828ec595e39`.
+All six target jobs passed tests, build, relocation, installation, retained-generation
+upgrade and corrupted-checksum rejection.
+[Machine-readable receipt](receipts/pi-parity-e8d7390.json) records job results
+and the six GitHub artifact ZIP digests. Runtime tarball checksums are inside each
+artifact and were verified by the target installer. The later documentation commit
+does not change the tested runtime code. No GitHub Release or tag was published.
 
 The v3 LangGraph event protocol is experimental; the exact framework versions are
 locked and protocol changes need explicit tests. Plan mode and approval are action
@@ -68,7 +100,21 @@ build and its own acceptance receipt.
 
 Direct compatibility with third-party Pi TypeScript packages is outside the
 agreed scope. Do not describe these changes as complete Pi parity until the
-remaining live-account/platform acceptance matrix has receipts.
+remaining live-account and real visual-model acceptance has receipts. Terminal
+previews use cell thumbnails; high-resolution Kitty/iTerm rendering in the Circle
+UI is not claimed. Interactive terminal/font compatibility is distinct from the
+platform-runner build and install receipts.
+
+## Target receipts
+
+| Target | Test/build/relocate/install/upgrade/checksum refusal | Python runtime |
+|---|---|---|
+| Linux x86_64 | PASS | x86_64 |
+| Linux ARM64 | PASS | ARM64 |
+| macOS x86_64 | PASS | x86_64 |
+| macOS ARM64 | PASS | ARM64 |
+| Windows x86_64 | PASS | x86_64 |
+| Windows ARM64 | PASS | x64 compatibility |
 
 ## Commands
 
@@ -79,10 +125,12 @@ uv run --frozen --all-extras pytest -q
 circle -p 'task' --session example
 circle -p 'task' --mode json
 circle --mode rpc                 # ACP over stdio
+# print/JSON exits 3 on pending approval; resume through TUI or ACP
 circle --list-models
 circle auth login openai
 circle plugins install ./my-plugin
 uv run --frozen --all-extras python scripts/build_runtime_release.py
+uv run --frozen --all-extras python scripts/check_runtime_install.py
 ```
 
 Plugins expose `circle.extensions` entry points pointing to `register(api)`.
