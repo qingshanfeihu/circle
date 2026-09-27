@@ -170,7 +170,8 @@ class InkApp:
         self._terminal.write(init_seq)
 
         
-        signal.signal(signal.SIGWINCH, self._on_resize)
+        if hasattr(signal, "SIGWINCH"):
+            signal.signal(signal.SIGWINCH, self._on_resize)
 
         
         self._input_thread = threading.Thread(
@@ -324,10 +325,12 @@ class InkApp:
                 time.sleep(0.05)
                 continue
             try:
-                data = os.read(fd, 4096)
-                if not data:
+                text = self._terminal.read()
+                if not text:
+                    if os.name == "nt":
+                        time.sleep(0.02)
+                        continue
                     break
-                text = data.decode("utf-8", errors="replace")
                 events = self._input_parser.feed(text)
                 input_handler = self._on_input
                 mouse_handler = self._on_mouse

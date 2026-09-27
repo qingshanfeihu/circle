@@ -8,7 +8,6 @@ import os
 import platform
 import shutil
 import subprocess
-import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -42,7 +41,7 @@ def main():
         candidates = [p for p in candidates if p.is_file() and not p.name.endswith("-config")]
         if not candidates:
             raise RuntimeError("Managed runtime has no Python executable")
-        python = candidates[0]
+        python = candidates[0].resolve()
         run([uv, "build", "--wheel", "--out-dir", str(staging / "wheels")], cwd=ROOT)
         wheel = next((staging / "wheels").glob("circle-*.whl"))
         locked = staging / "requirements.lock.txt"
@@ -64,6 +63,16 @@ def main():
             return []
         shutil.copytree(node_root, runtime / "node", symlinks=True, ignore=runtime_only)
         shutil.copy2(uv, runtime / ("uv.exe" if os_tag == "windows" else "uv"))
+        # uv's version aliases may point at absolute installation paths. Make
+        # every internal link relocatable before moving or archiving the tree.
+        for link in staging.rglob("*"):
+            if link.is_symlink():
+                target = link.resolve(strict=False)
+                if target.is_relative_to(staging):
+                    relative = os.path.relpath(target, link.parent)
+                    directory = target.is_dir()
+                    link.unlink()
+                    link.symlink_to(relative, target_is_directory=directory)
         manifest = {"version": json.loads((ROOT / "circle" / "node" / "package.json").read_text())["version"],
                     "platform": os_tag, "arch": arch,
                     "python": str(python.relative_to(staging)),

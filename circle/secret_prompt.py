@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import re
@@ -30,6 +29,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping
+
+from filelock import FileLock
 
 SCHEMA = "circle.secret-request.v1"
 _MAX_SECRET_BYTES = 4096
@@ -63,12 +64,8 @@ def _locked(home: Path | str) -> Iterator[None]:
     迟到写入之间存在毫秒级竞态，会留下孤儿机密文件。"""
     directory = requests_dir(home)
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / ".lock").open("a+b") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    with FileLock(str(directory / ".lock"), timeout=30, mode=0o600):
+        yield
 
 
 def _shred(path: Path) -> None:
