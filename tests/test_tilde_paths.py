@@ -20,9 +20,10 @@ def test_tilde_skill_path_passes_the_tool_check_and_reads(tmp_path, monkeypatch)
     import deepagents.middleware.filesystem as filesystem
 
     validated = filesystem.validate_path("~/.circle/skills/compile-excel/SKILL.md")
-    assert validated == (skill / "SKILL.md").as_posix()
-
     backend = sandbox_backend(tmp_path / "ws")
+    # Windows drive paths are encoded for the SDK's POSIX path validator,
+    # then mapped back by the host backend. Verify the resulting file path.
+    assert backend._resolve_path(validated) == (skill / "SKILL.md").resolve()
     result = backend.read(validated, limit=1)
     assert result.error is None
     assert result.file_data is not None

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from filelock import FileLock
+
 from circle.file_permissions import make_private
 
 SCHEMA = "circle.secret-request.v1"

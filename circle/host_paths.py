@@ -8,8 +8,8 @@ tilde first so ``~/.circle/skills/...`` is that same host path.
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 
 def install_tilde_expansion() -> None:
