@@ -88,20 +88,41 @@ install_binary() {
 
     log "下载 $url"
     curl -fsSL "$url" -o "$tmp/$asset"
+    curl -fsSL "${url}.sha256" -o "$tmp/${asset}.sha256"
+    if command -v shasum >/dev/null 2>&1; then
+        (cd "$tmp" && shasum -a 256 -c "${asset}.sha256") || die "资产校验失败"
+    else
+        (cd "$tmp" && sha256sum -c "${asset}.sha256") || die "资产校验失败"
+    fi
     mkdir -p "$PREFIX" "$BIN_DIR" "$HOME_DIR"
-    rm -rf "$PREFIX/current"
-    mkdir -p "$PREFIX/current"
-    tar -xzf "$tmp/$asset" -C "$PREFIX/current"
+    local generation="${PREFIX}/versions/${version}-${asset%.tar.gz}-$(date +%s)"
+    mkdir -p "$generation"
+    tar -xzf "$tmp/$asset" -C "$generation"
     # onedir 内预期为 circle/circle 或顶层 circle
     local exe
-    if [[ -x "$PREFIX/current/circle/circle" ]]; then
-        exe="$PREFIX/current/circle/circle"
-    elif [[ -x "$PREFIX/current/circle" ]]; then
-        exe="$PREFIX/current/circle"
+    if [[ -x "$generation/circle/circle" ]]; then
+        exe="$generation/circle/circle"
+    elif [[ -x "$generation/circle" ]]; then
+        exe="$generation/circle"
     else
         die "Release 资产布局异常：未找到可执行文件 circle"
     fi
-    ln -sfn "$exe" "$BIN_DIR/circle"
+    CIRCLE_HOME="$tmp/smoke-home" "$exe" --version >/dev/null || die "新版本启动检查失败"
+    # Retain the previous generation. Existing legacy directories are moved
+    # aside, never deleted before a verified replacement is available.
+    if [[ -e "$PREFIX/current" && ! -L "$PREFIX/current" ]]; then
+        mv "$PREFIX/current" "$PREFIX/legacy-$(date +%s)"
+    fi
+    ln -s "$generation" "$PREFIX/.current-next-$$"
+    case "$(uname -s)" in
+        Darwin) mv -f -h "$PREFIX/.current-next-$$" "$PREFIX/current" ;;
+        Linux) mv -f -T "$PREFIX/.current-next-$$" "$PREFIX/current" ;;
+    esac
+    # Invoke the real script path so its relative runtime lookup survives the
+    # user's bin directory and spaces in the installation prefix.
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$exe" > "$BIN_DIR/.circle-next-$$"
+    chmod +x "$BIN_DIR/.circle-next-$$"
+    mv -f "$BIN_DIR/.circle-next-$$" "$BIN_DIR/circle"
     log "已安装: ${BIN_DIR}/circle → ${exe}"
     log "数据根: ${HOME_DIR}（凭据与 settings 由首次运行写入，安装器不写配置）"
 

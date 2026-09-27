@@ -1,0 +1,19 @@
+name: check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: uv sync --frozen --all-extras
+      - run: npm ci --ignore-scripts --prefix circle/node
+      - run: uv run --frozen --all-extras pytest -q
+        env:
+          LANGSMITH_TRACING: 'false'
+          LANGCHAIN_TRACING_V2: 'false'
