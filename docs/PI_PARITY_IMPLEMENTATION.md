@@ -54,11 +54,11 @@ The Python process-control and preview adapters reuse
 
 ## Verification recorded during implementation
 
-- Code commit `e8d739061b655f7011087b43925a0828ec595e39` passed the local suite:
-  **438 passed, 1 skipped**. The skip requires an adjacent external compile-excel
+- Code commit `05cbaa5fbb626f930c16fe49ab89e7f661f6690b` passed the local suite:
+  **440 passed, 1 skipped**. The skip requires an adjacent external compile-excel
   installer checkout; it is not treated as executed coverage. Two warnings are
   the framework's experimental v3 streaming notice.
-- [Push CI](https://github.com/qingshanfeihu/circle/actions/runs/36347072185)
+- [Push CI](https://github.com/qingshanfeihu/circle/actions/runs/36368242910)
   passed on the same code commit.
 - Real local integration tests exercised MCP stdio loading/approval/execution,
   the official ACP adapter's durable load/replay, plugin package installation and
@@ -79,11 +79,16 @@ The Python process-control and preview adapters reuse
 The provider catalog has 41 providers and 1495 models; catalog presence is not a
 live connectivity verdict. Subscription OAuth requires actual account login.
 The current release targets are Linux and macOS on x86_64/ARM64, plus Windows
-x86_64. Their build/install results will be recorded against the new code commit.
+x86_64. All five [target jobs](https://github.com/qingshanfeihu/circle/actions/runs/36368243504)
+passed tests, build, relocation, installation, retained-generation upgrade and
+corrupted-checksum rejection on the code commit above. The
+[five-target receipt](receipts/pi-parity-05cbaa5.json) records each job and the
+five GitHub artifact ZIP digests; target installers checked the inner tarball
+checksums. No GitHub Release or tag was published.
 The earlier [six-target run](https://github.com/qingshanfeihu/circle/actions/runs/36347098564)
 and [receipt](receipts/pi-parity-e8d7390.json) remain unchanged as historical
 evidence, including the former x64-Python compatibility artifact for Windows ARM64.
-That artifact is outside the current support scope. No GitHub Release or tag was published.
+That artifact is outside the current support scope.
 
 The v3 LangGraph event protocol is experimental; the exact framework versions are
 locked and protocol changes need explicit tests. Plan mode and approval are action
@@ -92,7 +97,8 @@ controls, not an operating-system sandbox for trusted Python extension code.
 Windows ARM64 is currently unsupported. The release matrix omits it; the
 Windows installer and manual release builder reject it before downloading or
 creating an artifact. `langgraph-checkpoint-sqlite==3.1.1` requires sqlite-vec,
-whose pinned 0.1.9 release has no Windows ARM64 wheel. A future native target
+whose [pinned 0.1.9 release](https://pypi.org/project/sqlite-vec/0.1.9/) has no
+Windows ARM64 wheel. A future native target
 needs a supported upstream wheel and separate acceptance receipts.
 
 Direct compatibility with third-party Pi TypeScript packages is outside the

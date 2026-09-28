@@ -4,6 +4,8 @@
 
 ## Install
 
+Windows x64 使用仓库中的 `install.ps1`；Windows ARM64 暂不支持。
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
 ```
