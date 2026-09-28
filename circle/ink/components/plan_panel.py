@@ -47,7 +47,7 @@ def plan_lines(todos: list[dict], *, width: int = 100) -> list[str]:
         return []
     pal = palette()
     done = sum(1 for t in todos if t.get("status") == "completed")
-    lines = [f" {pal.em}{GLYPH_AGENT} Plan{pal.reset} {pal.dim}· {done}/{len(todos)} 完成{pal.reset}"]
+    lines = [f" {pal.em}{GLYPH_AGENT} Plan{pal.reset} {pal.dim}· {done}/{len(todos)} complete{pal.reset}"]
     start, end = plan_window(todos)
     if start:
         lines.append(f"   {pal.faint}… 上面还有 {start} 项{pal.reset}")

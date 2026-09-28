@@ -294,6 +294,8 @@ class CircleSessionApp:
         # write_todos 的计划面板（对话框上方）
         self._plan_panel = PlanPanel()
         self._plan_width = 0
+        self._composer_gap = create_element(NodeType.BOX)
+        self._composer_gap.style.height = 0
         # 本回合耗时：不含停下等用户审批/作答的时间
         self._turn_started_at = 0.0
         self._turn_elapsed = 0.0
@@ -304,6 +306,7 @@ class CircleSessionApp:
         root.append_child(self._agent_detail.node)
         root.append_child(self._plan_panel.node)
         root.append_child(self._ask_panel.node)
+        root.append_child(self._composer_gap)
         root.append_child(self._dialog)
         root.append_child(self._footer.node)
         root.append_child(self._agent_strip)
@@ -536,6 +539,12 @@ class CircleSessionApp:
         self._render_agent_detail()
         self._sync_agent_strip()
         self._sync_plan_panel()
+        active_view = self._agent_detail if self._detail_active else self._transcript
+        self._composer_gap.style.height = int(
+            active_view.message_count() > 0
+            and not self._plan_panel.is_visible
+            and not self._ask_panel.is_visible
+        )
 
     # ── subagents: strip, selection, detail page ───────────────────────────
 
@@ -1366,8 +1375,8 @@ class CircleSessionApp:
         self._tool_outputs_expanded = not self._tool_outputs_expanded
         self._show_details = self._tool_outputs_expanded
         self._rerender_turns()
-        state = "展开" if self._tool_outputs_expanded else "折叠"
-        self._toast(f"工具输出 → {state}（ctrl+o）")
+        state = "expanded" if self._tool_outputs_expanded else "collapsed"
+        self._toast(f"Tool output → {state} (ctrl+o)")
         self._footer.update(status="ready" if not self._is_loading else "running")
         self._app.render()
 

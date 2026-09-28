@@ -20,14 +20,17 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from circle.display_lexicon import tool_result_is_error
 from circle.display_stream import TypedDisplayStreamNormalizer, event_deltas, extract_display_channels
 from circle.events import EventBus
 from circle.pricing import callback_model_name, price_call, response_model_name
 from circle.tool_recoverable import RECOVERABLE_KEY, is_recoverable_message
+from circle.tui.tool_display import MAX_CHANGE_CHARS, change_preview, file_diff_preview
 
 logger = logging.getLogger(__name__)
 
@@ -211,8 +214,9 @@ def sanitize_tool_inputs(inputs: Any, *, cap: int = _INPUT_CAP) -> dict[str, Any
 class ProgressHandler(BaseCallbackHandler):
     """One per run; emits to ``bus``."""
 
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(self, bus: EventBus, *, path_resolver: Callable[[str], Path] | None = None) -> None:
         self._bus = bus
+        self._path_resolver = path_resolver
         self._chat_idx = 0
         self._tool_name_stack: list[str] = []
         self._seen_tool_run_ids: set[str] = set()
@@ -225,6 +229,10 @@ class ProgressHandler(BaseCallbackHandler):
         self._settled_usage_ids: set[str] = set()
         # 结束回调不带 metadata：子代理标签按工具 run id 从开始时记下的那份取
         self._tool_tags: dict[str, dict[str, Any]] = {}
+        # Success-only file previews, keyed by the exact tool run. Raw model inputs
+        # remain under the existing 400-character event cap.
+        self._tool_display: dict[str, list[dict[str, str]]] = {}
+        self._tool_before: dict[str, tuple[Path, str, bool, str | None]] = {}
         # 回调的父运行链：子代理事件沿链找到它属于哪一次 task 调用（并行子代理不串）
         self._parents: dict[str, str] = {}
         self._task_runs: set[str] = set()
@@ -416,6 +424,18 @@ class ProgressHandler(BaseCallbackHandler):
 
     # tools
 
+    @staticmethod
+    def _display_file_text(path: Path) -> str | None:
+        try:
+            if not path.exists():
+                return ""
+            if not path.is_file() or path.stat().st_size > MAX_CHANGE_CHARS:
+                return None
+            text = path.read_text(encoding="utf-8")
+            return text if len(text) <= MAX_CHANGE_CHARS else None
+        except (OSError, UnicodeError):
+            return None
+
     def on_tool_start(self, serialized: Any, input_str: str, **kwargs: Any) -> None:
         name = str(serialized.get("name") or "") if isinstance(serialized, dict) else ""
         run_id = str(kwargs.get("run_id") or "")
@@ -434,6 +454,28 @@ class ProgressHandler(BaseCallbackHandler):
         if run_id:
             tags["lc_tool_run_id"] = run_id
             self._tool_tags[run_id] = dict(tags)
+            preview = change_preview(name, kwargs.get("inputs"))
+            if preview:
+                self._tool_display[run_id] = preview
+            inputs = kwargs.get("inputs")
+            if (name in {"write_file", "edit_file"} and self._path_resolver is not None
+                    and isinstance(inputs, Mapping) and isinstance(inputs.get("file_path"), str)):
+                try:
+                    path = self._path_resolver(inputs["file_path"])
+                    created = not path.exists()
+                    before = self._display_file_text(path)
+                    if before is not None:
+                        expected: str | None = None
+                        if name == "write_file" and isinstance(inputs.get("content"), str):
+                            expected = inputs["content"]
+                        elif name == "edit_file":
+                            old, new = inputs.get("old_string"), inputs.get("new_string")
+                            if isinstance(old, str) and old and isinstance(new, str) and old in before:
+                                count = -1 if inputs.get("replace_all") is True else 1
+                                expected = before.replace(old, new, count)
+                        self._tool_before[run_id] = (path, before, created, expected)
+                except (OSError, ValueError, RuntimeError):
+                    pass  # The tool owns the path decision; display falls back to inputs.
         payload_input: dict[str, Any] = {"raw": (input_str or "")[:cap]}
         structured = sanitize_tool_inputs(kwargs.get("inputs"), cap=cap)
         if structured:
@@ -457,6 +499,9 @@ class ProgressHandler(BaseCallbackHandler):
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:
         from langgraph.types import Command
 
+        run_id = str(kwargs.get("run_id") or "")
+        preview = self._tool_display.pop(run_id, None)
+        before = self._tool_before.pop(run_id, None)
         settled = self._settle_tool(kwargs)
         if settled is None:
             return
@@ -482,9 +527,34 @@ class ProgressHandler(BaseCallbackHandler):
             payload["status"] = status
         if is_recoverable_message(output):
             payload[RECOVERABLE_KEY] = True
+        verified_preview = False
+        if before and not tool_result_is_error(text, status):
+            path, original, created, expected = before
+            after = self._display_file_text(path)
+            try:
+                is_file = path.is_file()
+            except OSError:
+                is_file = False
+            if after is not None and is_file and (expected is None or after == expected):
+                verified = file_diff_preview(str(path), original, after,
+                                             created=created, operation=name)
+                if verified:
+                    preview = [*verified, {"text": f"result: {text}", "tone": ""}]
+                    verified_preview = True
+        if preview and not tool_result_is_error(text, status):
+            if verified_preview:
+                payload["display_lines"] = preview
+            else:
+                payload["display_lines"] = [
+                    *({"text": line, "tone": ""} for line in text.rstrip("\n").splitlines()),
+                    *preview,
+                ]
         self._emit("tool_result", payload=payload, tags=tags)
 
     def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
+        run_id = str(kwargs.get("run_id") or "")
+        self._tool_display.pop(run_id, None)
+        self._tool_before.pop(run_id, None)
         settled = self._settle_tool(kwargs)
         if settled is None:
             return

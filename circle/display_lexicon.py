@@ -232,7 +232,18 @@ def _summarize(style: str, value: object) -> str:
 def tool_arg_summary(name: str, args) -> str:
     """One short phrase for the tool row; tools not in the table show their first
     scalar argument, and nothing at all rather than a dict repr."""
-    values = structured_args(args if isinstance(args, _Mapping) else {})
+    safe_args = args if isinstance(args, _Mapping) else {}
+    values = structured_args(safe_args)
+    if name == "execute":
+        command = tool_arg_value(safe_args, "command")
+        first = command.splitlines()[0] if command else ""
+        if "<<" in first:
+            head = first.split("<<", 1)[0].strip()
+            comment = next((line.strip().lstrip("#").strip()
+                            for line in command.splitlines()[1:]
+                            if line.strip().startswith("#")), "")
+            return _clip(f"{head} · {comment or 'multiline script'}")
+        return _clip(first)
     for key, style in TOOL_ARG_SUMMARY.get(str(name or ""), ()):
         value = values.get(key)
         if value in (None, "") and isinstance(args, _Mapping):
@@ -242,6 +253,16 @@ def tool_arg_summary(name: str, args) -> str:
             return shown
     if str(name or "") in TOOL_ARG_SUMMARY:
         return ""
+    kind, named = values.get("kind"), values.get("name")
+    if isinstance(kind, str) and kind and isinstance(named, str) and named:
+        return _clip(f"kind={kind}, name='{named}'")
+    batch, autoid = values.get("batch"), values.get("autoid")
+    if isinstance(batch, str) and batch and autoid not in (None, ""):
+        return _clip(f"{batch} · {autoid}")
+    for key in ("file_path", "path", "name", "batch", "autoid", "query", "pattern"):
+        value = values.get(key)
+        if isinstance(value, str) and value:
+            return _summarize("path_tail" if key in ("file_path", "path") else "text", value)
     for value in values.values():
         shown = _summarize("text", value)
         if shown:

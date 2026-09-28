@@ -121,8 +121,9 @@ def test_finished_subagent_folds_to_meta_and_result_and_ctrl_o_lists_every_call(
     feed.finish("T", "found it in /etc/app.toml\nsecond line")
     collapsed = _entry(feed)
     assert collapsed[1].startswith("   ⎿ general-purpose · 4 calls · ")
-    assert collapsed[2] == "   ⎿ found it in /etc/app.toml (ctrl+o 展开 +1 行)"
-    assert len(collapsed) == 3
+    assert collapsed[2] == "   ⎿ found it in /etc/app.toml"
+    assert collapsed[3] == "     second line"
+    assert len(collapsed) == 4
     expanded = _entry(feed, tools_expanded=True)
     assert sum("Read(/f" in ln for ln in expanded) == 4 and "更早" not in "\n".join(expanded)
 

@@ -327,7 +327,10 @@ class HarnessBridge:
         bus = EventBus(run_id=uuid.uuid4().hex[:12])
         bus.subscribe(self._sink)
         self._bus = bus
-        config = {**self._config, "callbacks": [ProgressHandler(bus)]}
+        backend = getattr(self._agent, "_circle_backend", None)
+        resolver = getattr(backend, "_resolve_path", None)
+        config = {**self._config, "callbacks": [ProgressHandler(
+            bus, path_resolver=resolver if callable(resolver) else None)]}
         # 中间件拒掉的调用经这条总线补发工具行（circle.tool_events）
         token = bind_bus(bus)
         bus.emit("run_start")

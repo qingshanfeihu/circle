@@ -630,6 +630,8 @@ class MessageReducer:
             block_payload["status"] = result_status
         if payload.get("recoverable") is True:
             block_payload["recoverable"] = True
+        if isinstance(payload.get("display_lines"), list):
+            block_payload["display_lines"] = payload["display_lines"]
         self._messages.append(make_user_message(
             uuid=make_uuid(event.get("run_id") or "", event.get("seq") or 0),
             content=make_tool_result_block(tool_use_id=tool_use_id, output=output, name=tool_name,

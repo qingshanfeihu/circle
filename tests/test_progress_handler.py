@@ -20,6 +20,8 @@ from circle.extensions import ExtensionHost
 from circle.harness import BUILTIN_TOOL_NAMES, create_harness
 from circle.testing import ScriptedModel
 from circle.tui.progress_handler import ProgressHandler, extract_message_usage
+from circle.tui.reducer import MessageReducer
+from circle.tui.transcript_view import ViewOptions, render_turn
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 CRASHY = '''
@@ -111,6 +113,116 @@ def test_todo_updates_and_recoverable_results():
     assert last["status"] == "error" and last["recoverable"] is True
 
 
+def test_file_change_preview_survives_input_cap_and_replays_with_diff_colors():
+    bus = EventBus(run_id="display")
+    seen: list[dict] = []
+    bus.subscribe(seen.append)
+    handler = ProgressHandler(bus)
+    content = "\n".join(f"line {i}: {'x' * 12}" for i in range(74))
+    write_run, edit_run = uuid4(), uuid4()
+    handler.on_tool_start({"name": "write_file"}, "{}", run_id=write_run,
+                          inputs={"file_path": "/new.py", "content": content})
+    handler.on_tool_end(ToolMessage(content="Updated file /new.py", name="write_file",
+                                    tool_call_id="w", status="success"), run_id=write_run)
+    handler.on_tool_start({"name": "edit_file"}, "{}", run_id=edit_run,
+                          inputs={"file_path": "/new.py", "old_string": "old\n",
+                                  "new_string": "new\n"})
+    handler.on_tool_end(ToolMessage(content="Successfully replaced 1 instance(s)",
+                                    name="edit_file", tool_call_id="e", status="success"),
+                        run_id=edit_run)
+    write_call = next(e for e in seen if e["kind"] == "tool_call"
+                      and e["payload"]["name"] == "write_file")
+    assert len(write_call["payload"]["input"]["args"]["content"]) == 400
+    reducer = MessageReducer()
+    for event in seen:
+        reducer.dispatch(event)
+    snap = reducer.snapshot()
+    collapsed = render_turn(snap, ViewOptions())
+    expanded = render_turn(snap, ViewOptions(tools_expanded=True))
+    assert "+70 lines" in ANSI.sub("", "\n".join(collapsed))
+    assert "+ 74  line 73" in ANSI.sub("", "\n".join(expanded))
+    from circle.ink.theme import palette
+
+    assert palette().green in next(line for line in expanded[0].splitlines() if "+  1  line 0" in line)
+    assert palette().red in next(line for line in expanded[1].splitlines() if "-old" in line)
+    assert palette().green in next(line for line in expanded[1].splitlines() if "+new" in line)
+
+
+def test_failed_file_change_does_not_show_attempted_diff():
+    bus = EventBus(run_id="display-failure")
+    seen: list[dict] = []
+    bus.subscribe(seen.append)
+    handler = ProgressHandler(bus)
+    run_id = uuid4()
+    handler.on_tool_start({"name": "edit_file"}, "{}", run_id=run_id,
+                          inputs={"file_path": "/missing", "old_string": "old",
+                                  "new_string": "new"})
+    handler.on_tool_end(ToolMessage(content="Error: file not found", name="edit_file",
+                                    tool_call_id="e", status="error"), run_id=run_id)
+    payload = next(e["payload"] for e in seen if e["kind"] == "tool_result")
+    assert "display_lines" not in payload
+
+
+def test_verified_file_snapshots_show_real_added_and_removed_lines(tmp_path):
+    bus = EventBus(run_id="file-snapshots")
+    seen: list[dict] = []
+    bus.subscribe(seen.append)
+    handler = ProgressHandler(bus, path_resolver=lambda name: tmp_path / name.lstrip("/"))
+    path = tmp_path / "sample.py"
+    write_run = uuid4()
+    handler.on_tool_start({"name": "write_file"}, "{}", run_id=write_run,
+                          inputs={"file_path": "/sample.py", "content": "old\nkeep\n"})
+    path.write_text("old\nkeep\n")
+    handler.on_tool_end(ToolMessage(content="Updated file /sample.py", name="write_file",
+                                    tool_call_id="w", status="success"), run_id=write_run)
+    added = next(e["payload"]["display_lines"] for e in seen
+                 if e["kind"] == "tool_result")
+    assert added[0]["text"].startswith(f"Added {path} (+2 -0)")
+    assert any(line["text"] == "+  1  old" and line["tone"] == "added" for line in added)
+
+    edit_run = uuid4()
+    handler.on_tool_start({"name": "edit_file"}, "{}", run_id=edit_run,
+                          inputs={"file_path": "/sample.py", "old_string": "old",
+                                  "new_string": "new"})
+    path.write_text("new\nkeep\n")
+    handler.on_tool_end(ToolMessage(content="Successfully replaced 1 instance(s)",
+                                    name="edit_file", tool_call_id="e", status="success"),
+                        run_id=edit_run)
+    edited = [e["payload"]["display_lines"] for e in seen if e["kind"] == "tool_result"][-1]
+    assert edited[0]["text"].startswith(f"Edited {path} (+1 -1)")
+    assert any(line["text"].startswith("@@ -1,2 +1,2 @@") for line in edited)
+    assert any(line["text"] == "-  1  old" and line["tone"] == "removed" for line in edited)
+    assert any(line["text"] == "+  1  new" and line["tone"] == "added" for line in edited)
+
+    overwrite_run = uuid4()
+    handler.on_tool_start({"name": "write_file"}, "{}", run_id=overwrite_run,
+                          inputs={"file_path": "/sample.py", "content": "latest\nkeep\n"})
+    path.write_text("latest\nkeep\n")
+    handler.on_tool_end(ToolMessage(content="Updated file /sample.py", name="write_file",
+                                    tool_call_id="w2", status="success"), run_id=overwrite_run)
+    overwritten = [e["payload"]["display_lines"] for e in seen
+                   if e["kind"] == "tool_result"][-1]
+    assert overwritten[0]["text"].startswith(f"Wrote {path} (+1 -1)")
+    assert any(line["tone"] == "removed" for line in overwritten)
+
+
+def test_write_snapshot_mismatch_uses_labeled_input_preview(tmp_path):
+    bus = EventBus(run_id="file-mismatch")
+    seen: list[dict] = []
+    bus.subscribe(seen.append)
+    handler = ProgressHandler(bus, path_resolver=lambda name: tmp_path / name.lstrip("/"))
+    run_id = uuid4()
+    handler.on_tool_start({"name": "write_file"}, "{}", run_id=run_id,
+                          inputs={"file_path": "/sample.py", "content": "requested\n"})
+    (tmp_path / "sample.py").write_text("different\n")
+    handler.on_tool_end(ToolMessage(content="Updated file /sample.py", name="write_file",
+                                    tool_call_id="w", status="success"), run_id=run_id)
+    lines = next(e["payload"]["display_lines"] for e in seen if e["kind"] == "tool_result")
+    assert lines[0]["text"] == "Updated file /sample.py"
+    assert lines[1]["text"] == "Written content (1 line)"
+    assert not any("Added" in line["text"] for line in lines)
+
+
 def test_anthropic_usage_counts_cache_reads_as_input():
     message = SimpleNamespace(usage_metadata=None, response_metadata={"usage": {
         "input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 90,
@@ -179,11 +291,11 @@ def test_session_turn_renders_rows_results_and_answer_from_snapshots(tmp_path, m
     _wait_idle(app)
     raw = "\n".join(app._transcript.snapshot())  # noqa: SLF001
     text = ANSI.sub("", raw)
-    assert "Read(/notes.txt)" in text
+    assert "Read(/notes.txt:1-1)" in text
     assert "Write(/out.txt)" in text and "等待审批" not in text
     assert "The user rejected this tool call." in text
     assert "Finished reading." in text
-    read_row = next(line for line in raw.splitlines() if "Read(/notes.txt)" in line)
+    read_row = next(line for line in raw.splitlines() if "Read(/notes.txt:1-1)" in line)
     write_row = next(line for line in raw.splitlines() if "Write(/out.txt)" in line)
     from circle.ink.theme import status_light
 

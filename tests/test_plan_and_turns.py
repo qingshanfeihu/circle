@@ -74,7 +74,7 @@ def test_plan_lines_show_real_status_and_count_done():
         {"content": "a", "status": "completed"},
         {"content": "b", "status": "in_progress"},
         {"content": "c", "status": "pending"}], width=60)]
-    assert lines[0] == f" {theme.GLYPH_AGENT} Plan · 1/3 完成"
+    assert lines[0] == f" {theme.GLYPH_AGENT} Plan · 1/3 complete"
     assert lines[1:] == ["   ● a", "   ◉ b", "   ○ c"]
 
 
@@ -148,6 +148,20 @@ def test_todo_updates_reach_the_panel_and_stay_as_the_model_left_them(tmp_path, 
     assert "● first" in text and "○ second" in text, "an unfinished item is not drawn as done"
     app._cmd_new("")  # noqa: SLF001
     assert not app._plan_panel.is_visible  # noqa: SLF001
+
+
+def test_composer_gap_uses_existing_plan_and_ask_panel_spacing(tmp_path, monkeypatch):
+    app = _fake_session(tmp_path, monkeypatch)
+    app._transcript.append_message(" ⏺ Answer")  # noqa: SLF001
+    app._sync_dialog_frame()  # noqa: SLF001
+    assert app._composer_gap.style.height == 1  # noqa: SLF001
+    app._plan_panel.update([{"content": "step", "status": "pending"}])  # noqa: SLF001
+    app._sync_dialog_frame()  # noqa: SLF001
+    assert app._composer_gap.style.height == 0  # noqa: SLF001
+    app._plan_panel.clear()  # noqa: SLF001
+    app._ask_panel.update(["Choose an option"])  # noqa: SLF001
+    app._sync_dialog_frame()  # noqa: SLF001
+    assert app._composer_gap.style.height == 0  # noqa: SLF001
 
 
 def test_replay_redraws_every_turn_and_shifts_the_ones_after(tmp_path, monkeypatch):

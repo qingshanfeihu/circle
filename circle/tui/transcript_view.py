@@ -23,6 +23,7 @@ whole call-by-call record is on the agent's detail page.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -34,6 +35,7 @@ from circle.display_lexicon import (
     tool_short_name,
 )
 from circle.ink.components.markdown_renderer import MarkdownRenderer
+from circle.ink.string_width import char_width, string_width
 from circle.ink.theme import GLYPH_AGENT, GLYPH_ERROR, palette, status_light
 from circle.tui.agent_strip import (
     card_calls,
@@ -56,12 +58,12 @@ from circle.tui.message_model import (
     ContentBlock,
     MessageSnapshot,
 )
+from circle.tui.tool_display import PREVIEW_LINES, display_lines
 
 COLLAPSED_HINT_MIN_HIDDEN = 1
-EXPANDED_MAX_LINES = 30
 SUBAGENT_RECENT_CALLS = 3
-_RESULT_WIDTH = 160
 _HIDDEN_TOOLS = frozenset({"write_todos"})  # 由计划面板显示，不占工具行
+_READ_RANGE = re.compile(r"^@@ lines (\d+)-(\d+) of \d+ @@")
 
 # 动作类型 → 底色（InfoTest 07 章 §11.25(2)，同类同色）：读＝查阅文件/代码/网页/skill，
 # 写＝改文件，agent＝子代理；执行命令、问询这类不归类的不铺底色。
@@ -95,8 +97,55 @@ class ViewOptions:
     now: float | None = None
 
 
-def _clip(text: str, width: int = _RESULT_WIDTH) -> str:
-    return text if len(text) <= width else text[: width - 1] + "…"
+def _fit_summary(name: str, summary: str, width: int) -> str:
+    available = max(8, width - string_width(name) - 6)
+    if string_width(summary) <= available:
+        return summary
+    if name in {"Read", "Write", "Edit", "Patch"} and "/" in summary:
+        tail = "…/" + summary.rsplit("/", 1)[-1]
+        if string_width(tail) <= available:
+            return tail
+        kept = ""
+        for char in reversed(tail):
+            if string_width(kept) + char_width(char) > available - 1:
+                break
+            kept = char + kept
+        return "…" + kept
+    used, out = 0, []
+    for char in summary:
+        if used + char_width(char) > available - 1:
+            break
+        used += char_width(char)
+        out.append(char)
+    return "".join(out) + "…"
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    """Wrap for the terminal without discarding source characters."""
+    if not text:
+        return [""]
+    parts: list[str] = []
+    current, used = "", 0
+    for char in text:
+        char_w = char_width(char)
+        if current and used + char_w > width:
+            parts.append(current)
+            current, used = "", 0
+        current += char
+        used += char_w
+    parts.append(current)
+    return parts
+
+
+def _line_word(count: int) -> str:
+    return "line" if count == 1 else "lines"
+
+
+def _read_summary(summary: str, result: ContentBlock | None) -> str:
+    if result is None or result.is_error:
+        return summary
+    match = _READ_RANGE.match(str(result.output or ""))
+    return f"{summary}:{match.group(1)}-{match.group(2)}" if summary and match else summary
 
 
 def tool_type_bg_hex(name: str) -> str | None:
@@ -119,10 +168,13 @@ def _text_entry(text: str, opts: ViewOptions) -> str:
     return "\n".join([f" {GLYPH_AGENT} {lines[0]}"] + [f"   {ln}" if ln else "" for ln in lines[1:]])
 
 
-def _tool_row(block: ContentBlock, result: ContentBlock | None) -> str:
+def _tool_row(block: ContentBlock, result: ContentBlock | None, opts: ViewOptions) -> str:
     pal = palette()
     name = tool_short_name(block.name)
     summary = tool_arg_summary(block.name, dict(block.input))
+    if block.name == "read_file":
+        summary = _read_summary(summary, result)
+    summary = _fit_summary(name, summary, opts.width)
     call = f"{name}({summary})"
     if result is None:
         light = status_light("running" if block.status == "running" else "none")
@@ -133,26 +185,40 @@ def _tool_row(block: ContentBlock, result: ContentBlock | None) -> str:
     return f" {light} {pal.text}{call}{pal.reset}"
 
 
-def _result_lines(result: ContentBlock, opts: ViewOptions) -> list[str]:
+def _result_lines(block: ContentBlock, result: ContentBlock, opts: ViewOptions) -> list[str]:
     pal = palette()
-    lines = [ln.rstrip() for ln in str(result.output or "").split("\n")]
-    while lines and not lines[-1]:
+    lines = display_lines(str(result.output or ""), result.payload, is_error=result.is_error)
+    while lines and not lines[-1]["text"]:
         lines.pop()
     if not lines:
-        lines = ["(no output)"]
+        lines = [{"text": "(no output)", "tone": ""}]
     recoverable = result.is_error and tool_result_recoverable(result.payload)
-    first_color = pal.muted_strike if recoverable else (pal.red if result.is_error else pal.faint)
-    rest_color = pal.muted_strike if recoverable else pal.faint
+    if block.name == "read_file" and not result.is_error and not opts.tools_expanded:
+        raw = str(result.output or "").rstrip("\n").splitlines()
+        match = _READ_RANGE.match(raw[0]) if raw else None
+        header = raw[0] if match else f"Read {len(raw)} line{'s' if len(raw) != 1 else ''}"
+        hidden = max(0, len(raw) - (1 if match else 0))
+        hint = f" (ctrl+o expand +{hidden} {_line_word(hidden)})" if hidden else ""
+        if string_width(f"   ⎿ {header}{hint}") > opts.width:
+            hint = f" (ctrl+o +{hidden})" if hidden else ""
+        if string_width(f"   ⎿ {header}{hint}") > opts.width:
+            hint = f" (+{hidden})" if hidden else ""
+        return [f"   ⎿ {pal.faint}{header}{hint}{pal.reset}"]
     if not opts.tools_expanded:
-        hidden = len(lines) - 1
-        hint = (f" {pal.faint}(ctrl+o 展开 +{hidden} 行){pal.reset}"
-                if hidden >= COLLAPSED_HINT_MIN_HIDDEN else "")
-        return [f"   ⎿ {first_color}{_clip(lines[0])}{pal.reset}{hint}"]
-    shown = lines[:EXPANDED_MAX_LINES]
-    out = [f"   ⎿ {first_color}{_clip(shown[0])}{pal.reset}"]
-    out += [f"     {rest_color}{_clip(ln)}{pal.reset}" for ln in shown[1:]]
-    if len(lines) > EXPANDED_MAX_LINES:
-        out.append(f"     {pal.faint}… +{len(lines) - EXPANDED_MAX_LINES} 行{pal.reset}")
+        shown = lines[:PREVIEW_LINES]
+        hidden = len(lines) - len(shown)
+        if hidden >= COLLAPSED_HINT_MIN_HIDDEN:
+            shown = [*shown, {"text": f"… +{hidden} {_line_word(hidden)} (ctrl+o to expand)", "tone": ""}]
+    else:
+        shown = lines
+    out: list[str] = []
+    for index, item in enumerate(shown):
+        prefix = "   ⎿ " if index == 0 else "     "
+        color = pal.muted_strike if recoverable else (pal.red if result.is_error else pal.faint)
+        if not (recoverable or result.is_error):
+            color = {"added": pal.green, "removed": pal.red}.get(item["tone"], pal.faint)
+        for part_index, part in enumerate(_wrap(item["text"], max(20, opts.width - string_width(prefix) - 1))):
+            out.append(f"{prefix if part_index == 0 else '     '}{color}{part}{pal.reset}")
     return out
 
 
@@ -166,7 +232,10 @@ def _extension_lines(block: ContentBlock, result: ContentBlock, opts: ViewOption
         lines = [str(line) for line in (renderer(update) or [])]
     except Exception:  # noqa: BLE001 — a broken renderer falls back to the default lines
         return None
-    return lines or None
+    if not lines or opts.tools_expanded or len(lines) <= PREVIEW_LINES:
+        return lines or None
+    hidden = len(lines) - PREVIEW_LINES
+    return [*lines[:PREVIEW_LINES], f"     {palette().faint}… +{hidden} {_line_word(hidden)} (ctrl+o to expand){palette().reset}"]
 
 
 def subagent_call_row(item: Mapping[str, Any], *, now: float | None = None) -> str:
@@ -191,7 +260,7 @@ def _subagent_lines(card: Mapping[str, Any], opts: ViewOptions, now: float) -> l
     calls = [item for item in card.get("transcript") or ()
              if isinstance(item, Mapping) and item.get("kind") == "tool"]
     if opts.tools_expanded:
-        shown = calls[-EXPANDED_MAX_LINES:]
+        shown = calls
     elif card_running(card):
         shown = calls[-SUBAGENT_RECENT_CALLS:]
     else:
@@ -204,11 +273,11 @@ def _subagent_lines(card: Mapping[str, Any], opts: ViewOptions, now: float) -> l
 
 def _tool_entry(block: ContentBlock, result: ContentBlock | None, opts: ViewOptions,
                 card: Mapping[str, Any] | None = None) -> str:
-    parts = [_tool_row(block, result)]
+    parts = [_tool_row(block, result, opts)]
     if card is not None:
         parts += _subagent_lines(card, opts, time.time() if opts.now is None else opts.now)
     if result is not None:
-        parts += _extension_lines(block, result, opts) or _result_lines(result, opts)
+        parts += _extension_lines(block, result, opts) or _result_lines(block, result, opts)
     return "\n".join(parts)
 
 
