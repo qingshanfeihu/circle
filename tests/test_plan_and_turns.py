@@ -152,16 +152,16 @@ def test_todo_updates_reach_the_panel_and_stay_as_the_model_left_them(tmp_path, 
 
 def test_composer_gap_uses_existing_plan_and_ask_panel_spacing(tmp_path, monkeypatch):
     app = _fake_session(tmp_path, monkeypatch)
-    app._transcript.append_message(" ⏺ Answer")  # noqa: SLF001
-    app._sync_dialog_frame()  # noqa: SLF001
-    assert app._composer_gap.style.height == 1  # noqa: SLF001
-    app._plan_panel.update([{"content": "step", "status": "pending"}])  # noqa: SLF001
-    app._sync_dialog_frame()  # noqa: SLF001
-    assert app._composer_gap.style.height == 0  # noqa: SLF001
-    app._plan_panel.clear()  # noqa: SLF001
-    app._ask_panel.update(["Choose an option"])  # noqa: SLF001
-    app._sync_dialog_frame()  # noqa: SLF001
-    assert app._composer_gap.style.height == 0  # noqa: SLF001
+    app._transcript.append_message(" ⏺ Answer")
+    app._sync_dialog_frame()
+    assert app._composer_gap.style.height == 1
+    app._plan_panel.update([{"content": "step", "status": "pending"}])
+    app._sync_dialog_frame()
+    assert app._composer_gap.style.height == 0
+    app._plan_panel.clear()
+    app._ask_panel.update(["Choose an option"])
+    app._sync_dialog_frame()
+    assert app._composer_gap.style.height == 0
 
 
 def test_replay_redraws_every_turn_and_shifts_the_ones_after(tmp_path, monkeypatch):

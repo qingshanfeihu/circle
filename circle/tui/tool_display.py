@@ -72,18 +72,31 @@ def _limit_change(lines: list[dict[str, str]]) -> list[dict[str, str]]:
     return [*lines[:MAX_CHANGE_LINES], _line(f"… +{hidden} change lines not captured for display")]
 
 
+def _diff_body(text: str, *, boundary: str = "EOF") -> str:
+    """Keep line-ending-only changes visible without embedding newlines in a row."""
+    if text.endswith("\r\n"):
+        return text[:-2] + " [CRLF]"
+    if text.endswith("\n"):
+        return text[:-1]
+    if text.endswith("\r"):
+        return text[:-1] + " [CR]"
+    return f"{text} [no newline at {boundary}]"
+
+
 def file_diff_preview(
     path: str, before: str, after: str, *, created: bool, operation: str = "edit_file"
 ) -> list[dict[str, str]]:
     """Render a verified before/after file snapshot with real file line numbers."""
-    old_lines, new_lines = before.splitlines(), after.splitlines()
+    old_lines, new_lines = before.splitlines(keepends=True), after.splitlines(keepends=True)
     if len(old_lines) + len(new_lines) > MAX_CHANGE_LINES * 2:
         return []
     diff = list(difflib.unified_diff(old_lines, new_lines, lineterm=""))[2:]
     if not diff:
         return []
-    added = sum(line.startswith("+") and not line.startswith("+++") for line in diff)
-    removed = sum(line.startswith("-") and not line.startswith("---") for line in diff)
+    # The file headers were removed above. A changed source line may itself
+    # start with "++" or "--", so its diff line starts with "+++"/"---".
+    added = sum(line.startswith("+") for line in diff)
+    removed = sum(line.startswith("-") for line in diff)
     verb = "Added" if created else "Wrote" if operation == "write_file" else "Edited"
     lines = [_line(f"{verb} {path} (+{added} -{removed})")]
     old_number = new_number = 0
@@ -93,13 +106,13 @@ def file_diff_preview(
             old_number, new_number = int(hunk.group(1)), int(hunk.group(2))
             lines.append(_line(text))
         elif text.startswith("+"):
-            lines.append(_line(f"+{new_number:>3}  {text[1:]}", "added"))
+            lines.append(_line(f"+{new_number:>3}  {_diff_body(text[1:])}", "added"))
             new_number += 1
         elif text.startswith("-"):
-            lines.append(_line(f"-{old_number:>3}  {text[1:]}", "removed"))
+            lines.append(_line(f"-{old_number:>3}  {_diff_body(text[1:])}", "removed"))
             old_number += 1
         elif text.startswith(" "):
-            lines.append(_line(f" {new_number:>3}  {text[1:]}"))
+            lines.append(_line(f" {new_number:>3}  {_diff_body(text[1:])}"))
             old_number += 1
             new_number += 1
         else:
@@ -132,7 +145,7 @@ def change_preview(name: str, inputs: object) -> list[dict[str, str]] | None:
             return None
         if len(old) + len(new) > MAX_CHANGE_CHARS:
             return [_line(f"Replacement exceeds {MAX_CHANGE_CHARS} characters; preview omitted")]
-        old_lines, new_lines = old.splitlines(), new.splitlines()
+        old_lines, new_lines = old.splitlines(keepends=True), new.splitlines(keepends=True)
         if len(old_lines) + len(new_lines) > MAX_CHANGE_LINES * 2:
             return [_line("Replacement has too many lines; preview omitted")]
         diff = list(difflib.unified_diff(old_lines, new_lines, lineterm=""))[2:]
@@ -143,7 +156,7 @@ def change_preview(name: str, inputs: object) -> list[dict[str, str]] | None:
             if text.startswith("@@"):
                 continue  # snippet-relative line numbers are not file positions
             tone = "added" if text.startswith("+") else "removed" if text.startswith("-") else ""
-            lines.append(_line(text, tone))
+            lines.append(_line(text[0] + _diff_body(text[1:], boundary="end of replacement"), tone))
         return _limit_change(lines)
     if name == "apply_patch":
         patch = inputs.get("patchText")

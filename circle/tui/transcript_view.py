@@ -61,6 +61,7 @@ from circle.tui.message_model import (
 from circle.tui.tool_display import PREVIEW_LINES, display_lines
 
 COLLAPSED_HINT_MIN_HIDDEN = 1
+COLLAPSED_WRAP_ROWS = 3
 SUBAGENT_RECENT_CALLS = 3
 _HIDDEN_TOOLS = frozenset({"write_todos"})  # 由计划面板显示，不占工具行
 _READ_RANGE = re.compile(r"^@@ lines (\d+)-(\d+) of \d+ @@")
@@ -120,21 +121,23 @@ def _fit_summary(name: str, summary: str, width: int) -> str:
     return "".join(out) + "…"
 
 
-def _wrap(text: str, width: int) -> list[str]:
-    """Wrap for the terminal without discarding source characters."""
+def _wrap(text: str, width: int, *, max_rows: int | None = None) -> tuple[list[str], int]:
+    """Wrap a line and report any characters hidden by the collapsed row limit."""
     if not text:
-        return [""]
+        return [""], 0
     parts: list[str] = []
     current, used = "", 0
-    for char in text:
+    for index, char in enumerate(text):
         char_w = char_width(char)
         if current and used + char_w > width:
             parts.append(current)
+            if max_rows is not None and len(parts) >= max_rows:
+                return parts, len(text) - index
             current, used = "", 0
         current += char
         used += char_w
     parts.append(current)
-    return parts
+    return parts, 0
 
 
 def _line_word(count: int) -> str:
@@ -217,8 +220,15 @@ def _result_lines(block: ContentBlock, result: ContentBlock, opts: ViewOptions) 
         color = pal.muted_strike if recoverable else (pal.red if result.is_error else pal.faint)
         if not (recoverable or result.is_error):
             color = {"added": pal.green, "removed": pal.red}.get(item["tone"], pal.faint)
-        for part_index, part in enumerate(_wrap(item["text"], max(20, opts.width - string_width(prefix) - 1))):
+        parts, hidden_chars = _wrap(
+            item["text"],
+            max(20, opts.width - string_width(prefix) - 1),
+            max_rows=None if opts.tools_expanded else COLLAPSED_WRAP_ROWS,
+        )
+        for part_index, part in enumerate(parts):
             out.append(f"{prefix if part_index == 0 else '     '}{color}{part}{pal.reset}")
+        if hidden_chars:
+            out.append(f"     {pal.faint}… +{hidden_chars} chars (ctrl+o to expand){pal.reset}")
     return out
 
 

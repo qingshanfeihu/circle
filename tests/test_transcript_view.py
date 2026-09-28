@@ -99,6 +99,19 @@ def test_expanded_results_show_all_lines():
     assert lines[-1] == "     l39"
 
 
+def test_collapsed_long_result_line_has_a_physical_row_limit():
+    output = "x" * 10_000
+    s = snap(call("a", "execute", {"command": "print data"}),
+             result("a", output, name="execute"))
+    collapsed = plain(render_turn(s, ViewOptions(width=40)))[0].splitlines()
+    assert len(collapsed) <= 6
+    assert any("chars (ctrl+o to expand)" in line for line in collapsed)
+
+    expanded = plain(render_turn(s, ViewOptions(width=40, tools_expanded=True)))[0].splitlines()
+    assert "chars (ctrl+o to expand)" not in "\n".join(expanded)
+    assert "".join(line[5:] for line in expanded[1:]) == output
+
+
 def test_bounded_read_keeps_actual_range_but_hides_body_until_expanded():
     body = "\n".join(f"{line}  source {line}" for line in range(301, 346))
     s = snap(call("r", "read_file", {"file_path": "/root/references/authoring.md",
