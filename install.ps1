@@ -8,7 +8,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-$arch = switch ($architecture) { "X64" { "x86_64" } "Arm64" { "arm64" } default { throw "Unsupported architecture: $architecture" } }
+if ($architecture -eq "Arm64") { throw "Windows ARM64 is not supported by this Circle release" }
+$arch = switch ($architecture) { "X64" { "x86_64" } default { throw "Unsupported architecture: $architecture" } }
 if (-not $Version) {
     $Version = (Invoke-RestMethod "https://api.github.com/repos/$Repository/releases/latest").tag_name
 }

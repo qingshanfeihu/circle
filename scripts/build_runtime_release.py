@@ -31,7 +31,10 @@ def main():
     if not uv or not node:
         raise SystemExit("Build requires uv and Node >=22.19")
     os_tag = {"Darwin": "darwin", "Linux": "linux", "Windows": "windows"}[platform.system()]
-    arch = args.target_arch or {"aarch64": "arm64", "arm64": "arm64", "amd64": "x86_64", "x86_64": "x86_64"}[platform.machine().lower()]
+    host_arch = {"aarch64": "arm64", "arm64": "arm64", "amd64": "x86_64", "x86_64": "x86_64"}[platform.machine().lower()]
+    arch = args.target_arch or host_arch
+    if os_tag == "windows" and (host_arch == "arm64" or arch == "arm64"):
+        raise SystemExit("Windows ARM64 is not supported by this Circle release")
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="circle-release-") as temp:
         staging = (Path(temp) / "circle").resolve()

@@ -48,7 +48,7 @@ The Python process-control and preview adapters reuse
 - Microsoft multilspy replaces handwritten LSP transport; Python definition
   lookup is verified against a real Jedi language server.
 - Bundled Python/Node/uv runtime release builder, Python and npm lock files,
-  six target runner jobs, relocation smoke, checksums, retained previous versions,
+  five target runner jobs, relocation smoke, checksums, retained previous versions,
   Unix and PowerShell installers, and push/PR checks. Target-runner installation
   smoke exercises installation, retained-generation upgrade, and checksum rejection.
 
@@ -78,25 +78,22 @@ The Python process-control and preview adapters reuse
 
 The provider catalog has 41 providers and 1495 models; catalog presence is not a
 live connectivity verdict. Subscription OAuth requires actual account login.
-The final six-target build/install run is
-[36347098564](https://github.com/qingshanfeihu/circle/actions/runs/36347098564),
-bound to code commit `e8d739061b655f7011087b43925a0828ec595e39`.
-All six target jobs passed tests, build, relocation, installation, retained-generation
-upgrade and corrupted-checksum rejection.
-[Machine-readable receipt](receipts/pi-parity-e8d7390.json) records job results
-and the six GitHub artifact ZIP digests. Runtime tarball checksums are inside each
-artifact and were verified by the target installer. The later documentation commit
-does not change the tested runtime code. No GitHub Release or tag was published.
+The current release targets are Linux and macOS on x86_64/ARM64, plus Windows
+x86_64. Their build/install results will be recorded against the new code commit.
+The earlier [six-target run](https://github.com/qingshanfeihu/circle/actions/runs/36347098564)
+and [receipt](receipts/pi-parity-e8d7390.json) remain unchanged as historical
+evidence, including the former x64-Python compatibility artifact for Windows ARM64.
+That artifact is outside the current support scope. No GitHub Release or tag was published.
 
 The v3 LangGraph event protocol is experimental; the exact framework versions are
 locked and protocol changes need explicit tests. Plan mode and approval are action
 controls, not an operating-system sandbox for trusted Python extension code.
 
-Windows ARM64 uses an x64 Python compatibility runtime: upstream sqlite-vec
-does not publish a win_arm64 wheel. The checkpoint implementation is unchanged;
-the artifact records both host target and Python architecture. This does not
-claim native ARM64 Python performance. A native variant needs an upstream binary
-build and its own acceptance receipt.
+Windows ARM64 is currently unsupported. The release matrix omits it; the
+Windows installer and manual release builder reject it before downloading or
+creating an artifact. `langgraph-checkpoint-sqlite==3.1.1` requires sqlite-vec,
+whose pinned 0.1.9 release has no Windows ARM64 wheel. A future native target
+needs a supported upstream wheel and separate acceptance receipts.
 
 Direct compatibility with third-party Pi TypeScript packages is outside the
 agreed scope. Do not describe these changes as complete Pi parity until the
@@ -114,7 +111,6 @@ platform-runner build and install receipts.
 | macOS x86_64 | PASS | x86_64 |
 | macOS ARM64 | PASS | ARM64 |
 | Windows x86_64 | PASS | x86_64 |
-| Windows ARM64 | PASS | x64 compatibility |
 
 ## Commands
 
