@@ -8,16 +8,19 @@ Streaming + exec approval via HarnessBridge.
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from circle import __version__, secret_prompt
 from circle.approvals import REJECTED_BY_USER, default_policy
 from circle.checkpoint_store import (
     copy_thread_if_possible,
@@ -38,25 +41,33 @@ from circle.context_middleware import (
 )
 from circle.extensions import CommandContext, ExtensionHost
 from circle.harness import BUILTIN_TOOL_NAMES, create_harness
-from circle.mcp_loader import format_mcp_status
-from circle.session_tree import SessionTree
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
 from circle.ink.components.ask_user_view import AskUserSession
 from circle.ink.components.dialog_frame import build_loop_frame
-from circle.ink.components.exec_approval_view import ExecApprovalSession, SessionApprovalsSession
+from circle.ink.components.exec_approval_view import (
+    ExecApprovalSession,
+    SessionApprovalsSession,
+)
 from circle.ink.components.footer import FooterPane
 from circle.ink.components.plan_panel import PlanPanel
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
 from circle.ink.dom import NodeType, create_element, create_text
-from circle.ink.parse_keypress import InputEvent, InputParser, KeyPress, MouseEvent, PasteEvent
+from circle.ink.parse_keypress import (
+    InputEvent,
+    InputParser,
+    KeyPress,
+    MouseEvent,
+    PasteEvent,
+)
 from circle.ink.theme import GLYPH_ERROR, init_palette_from_terminal, palette
+from circle.mcp_loader import format_mcp_status
 from circle.model import build_chat_model, reasoning_effort_of
 from circle.model_guard import add_retry_listener
-from circle.pricing import context_window_for
 from circle.paths import circle_home, ensure_home, normalize_workspace
-from circle import __version__, secret_prompt
+from circle.pricing import context_window_for
+from circle.session_tree import SessionTree
 from circle.settings import (
     CircleSettings,
     ModelAuth,
@@ -79,17 +90,10 @@ from circle.tui.agent_strip import (
     strip_window,
 )
 from circle.tui.content_blocks import assistant_block
-from circle.tui.controllers import InitController, InitStep, TrustController
+from circle.tui.controllers import InitController, TrustController
 from circle.tui.harness_bridge import NO_OUTPUT, HarnessBridge, StreamUpdate
-from circle.tui.message_model import MessageSnapshot
-from circle.tui.transcript_view import (
-    ViewOptions,
-    final_text,
-    latest_todos,
-    render_turn_rows,
-    turn_had_output,
-)
 from circle.tui.input_history import InputHistory
+from circle.tui.message_model import MessageSnapshot
 from circle.tui.slash_commands import (
     BUILTIN_SLASH,
     help_text,
@@ -97,6 +101,15 @@ from circle.tui.slash_commands import (
     known_slash_names,
     parse_slash,
 )
+from circle.tui.transcript_view import (
+    ViewOptions,
+    final_text,
+    latest_todos,
+    render_turn_rows,
+    turn_had_output,
+)
+
+logger = logging.getLogger(__name__)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -206,8 +219,8 @@ class CircleSessionApp:
 
         self._app = InkApp(alt_screen=True, mouse=True)
         self._app.style_pool.set_selection_bg([palette().sel_bg])
-        self._app._input_parser = _StandaloneEscapeInputParser(  # noqa: SLF001
-            self._app._input_parser, self._handle_input)  # noqa: SLF001
+        self._app._input_parser = _StandaloneEscapeInputParser(
+            self._app._input_parser, self._handle_input)
         self._transcript = Transcript()
         self._ask_panel = AskUserPanel()
         self._dialog_label = ""
@@ -462,7 +475,7 @@ class CircleSessionApp:
         remove_listener = add_retry_listener(self._on_model_retry)
         try:
             self._show_welcome()
-            while self._app._running:  # noqa: SLF001
+            while self._app._running:
                 self._maybe_update_secret_hint()
                 time.sleep(0.05)
         except KeyboardInterrupt:
@@ -470,8 +483,8 @@ class CircleSessionApp:
         finally:
             try:
                 self._footer.shutdown()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                logger.debug("footer shutdown failed", exc_info=True)
             remove_listener()
             self._bridge.cancel()
             self._app.stop()
@@ -772,20 +785,17 @@ class CircleSessionApp:
 
     def _handle_key(self, kp: KeyPress) -> None:
         # InfoTest ist_app._handle_key — same session-ring order.
-        if self._exec_approval is not None:
-            if self._exec_approval.handle_key(kp.key, kp.char):
-                return
+        if self._exec_approval is not None and self._exec_approval.handle_key(kp.key, kp.char):
+            return
 
         if self._ask_session is not None and self._handle_ask_key(kp):
             return
 
-        if self._approvals_page is not None:
-            if self._approvals_page.handle_key(kp.key, kp.char):
-                return
+        if self._approvals_page is not None and self._approvals_page.handle_key(kp.key, kp.char):
+            return
 
-        if self._input_history.in_search_mode:
-            if self._handle_search_key(kp):
-                return
+        if self._input_history.in_search_mode and self._handle_search_key(kp):
+            return
 
         if self._secret_entry is not None:
             self._handle_secret_key(kp)
@@ -822,7 +832,7 @@ class CircleSessionApp:
                 self._last_ctrl_c = now
                 return
             if now - self._last_ctrl_c < 1.5:
-                self._app._running = False  # noqa: SLF001
+                self._app._running = False
                 return
             self._last_ctrl_c = now
             self._notice([" " + _faint("(press ctrl+c again to exit)")])
@@ -830,7 +840,7 @@ class CircleSessionApp:
             return
 
         if kp.key == "ctrl+d":
-            self._app._running = False  # noqa: SLF001
+            self._app._running = False
             return
 
         if kp.key == "escape":
@@ -853,7 +863,7 @@ class CircleSessionApp:
             return
 
         if kp.key == "ctrl+l":
-            self._app._force_full_render()  # noqa: SLF001
+            self._app._force_full_render()
             return
 
         # 转录滚动键只在输入框为空时接管；非空时 home/end 归输入框的光标
@@ -1058,7 +1068,7 @@ class CircleSessionApp:
         sel = self._app.selection
         self._drag_point = (col, row)
         if sel.anchor_span is not None:
-            extend_selection(sel, self._app._curr_screen, col, row)  # noqa: SLF001
+            extend_selection(sel, self._app._curr_screen, col, row)
         else:
             update_selection(sel, col, row)
 
@@ -1156,8 +1166,7 @@ class CircleSessionApp:
             and last[2] == row
         ):
             click_count = last[3] + 1
-        if click_count > 3:
-            click_count = 3
+        click_count = min(click_count, 3)
 
         from circle.ink.selection import select_line_at, select_word_at, start_selection
 
@@ -1187,7 +1196,11 @@ class CircleSessionApp:
         return clamped_x, clamped_y
 
     def _copy_selection(self, *, clear_after: bool) -> None:
-        from circle.ink.selection import clear_selection, get_selected_text, has_selection
+        from circle.ink.selection import (
+            clear_selection,
+            get_selected_text,
+            has_selection,
+        )
         from circle.ink.termio.osc import set_clipboard
 
         sel = self._app.selection
@@ -1218,7 +1231,7 @@ class CircleSessionApp:
         actual = view.node.scroll_top - old_top
         if actual != 0:
             self._shift_selection_for_scroll(actual)
-        self._app._repaint_full()  # noqa: SLF001
+        self._app._repaint_full()
 
     def _scroll_transcript_to(self, top: int | None) -> None:
         """Home / End: to the first row, or back to the bottom (None); the detail page
@@ -1229,7 +1242,7 @@ class CircleSessionApp:
         actual = view.node.scroll_top - old_top
         if actual != 0:
             self._shift_selection_for_scroll(actual)
-        self._app._repaint_full()  # noqa: SLF001
+        self._app._repaint_full()
 
     def _shift_selection_for_scroll(self, scroll_delta: int) -> None:
         from circle.ink.selection import (
@@ -1460,7 +1473,7 @@ class CircleSessionApp:
 
     def _dispatch_slash(self, name: str, args: str) -> None:
         if name == "exit":
-            self._app._running = False  # noqa: SLF001
+            self._app._running = False
             return
         if name == "help":
             custom = [(c.name, c.description) for c in self._custom_commands.values()]
@@ -1577,8 +1590,8 @@ class CircleSessionApp:
     def _cmd_login(self, args: str) -> None:
         """OAuth provider login (/login, /connect)."""
         from circle.oauth import (
-            OAuthNotConfiguredError,
             SUPPORTED_OAUTH_PROVIDERS,
+            OAuthNotConfiguredError,
             start_oauth_login,
         )
 
@@ -1657,9 +1670,9 @@ class CircleSessionApp:
         self._archive_current()
         sessions = list(self._archive)
         # Always include current at end if not already archived this turn
-        if not any(s.thread_id == self._thread_id for s in sessions):
-            if self._transcript.message_count() > 3:
-                sessions.append(self._snapshot_record())
+        if (not any(s.thread_id == self._thread_id for s in sessions)
+                and self._transcript.message_count() > 3):
+            sessions.append(self._snapshot_record())
         if not sessions:
             self._toast("没有可恢复的会话（先聊几轮或 /new 归档当前）")
             return
@@ -1850,7 +1863,11 @@ class CircleSessionApp:
             self._toast("plan mode → 关")
 
     def _cmd_skill(self, args: str) -> None:
-        from circle.skills import discover_skills, format_skills_slash_list, load_skill_body
+        from circle.skills import (
+            discover_skills,
+            format_skills_slash_list,
+            load_skill_body,
+        )
 
         skills = discover_skills(self.workspace, self.home)
         token = (args or "").strip()
@@ -2152,7 +2169,7 @@ class CircleSessionApp:
             self._toast(f"无剪贴板工具，已写入 {path}")
 
     def _write_markdown_export(self, path: Path) -> None:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         path.parent.mkdir(parents=True, exist_ok=True)
         lines = [
             f"# Circle session `{self._thread_id}`",
@@ -2171,7 +2188,7 @@ class CircleSessionApp:
 
     def _cmd_export(self, args: str) -> None:
         ensure_home(self.home)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         raw = args.strip()
         if raw:
             path = Path(raw).expanduser()
@@ -2572,8 +2589,8 @@ class CircleSessionApp:
         self._turn_started_at = 0.0
         self._turn_elapsed = 0.0
         pal = palette()
-        lines = [f"  {pal.dim}✻ Cooked for {format_elapsed(elapsed)} · ↑ {format_tokens(tokens_in)}"
-                 f" · ↓ {format_tokens(tokens_out)} tokens{pal.reset}"]
+        lines = [(f"  {pal.dim}✻ Cooked for {format_elapsed(elapsed)} · ↑ {format_tokens(tokens_in)}"
+                  f" · ↓ {format_tokens(tokens_out)} tokens{pal.reset}")]
         snap = self._last_snap
         quiet = not answered and (snap is None or not turn_had_output(snap))
         if quiet and tokens_in == 0 and tokens_out == 0:
@@ -2936,7 +2953,7 @@ def run_circle_session(
         from circle.tui.app import CircleApp
 
         # Keep init/trust on the existing CircleApp path, then hand off
-        app = CircleApp(
+        _ = CircleApp(
             workspace, home=home, force_init=force_init, model_override=model_override
         )
         # Only run until main would start — simpler: run init/trust then session
@@ -2976,7 +2993,7 @@ def _run_gates_then_session(
                 self.trust = TrustController(settings, self.workspace, home=self.home)
                 self._stage = "trust"
             else:
-                self._ink.stop() if self._ink._running else None  # noqa: SLF001
+                self._ink.stop() if self._ink._running else None
                 return CircleSessionApp(
                     settings,
                     self.workspace,
@@ -2987,7 +3004,7 @@ def _run_gates_then_session(
             self._rebuild()
             self._ink.start()
             try:
-                while self._ink._running:  # noqa: SLF001
+                while self._ink._running:
                     if self._stage == "done":
                         return 1
                     time.sleep(0.05)
@@ -3021,7 +3038,7 @@ def _run_gates_then_session(
                             model_override=self.model_override,
                         ).run()
             finally:
-                if self._ink._running:  # noqa: SLF001
+                if self._ink._running:
                     self._ink.stop()
             return 0
 

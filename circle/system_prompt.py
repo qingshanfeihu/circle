@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import platform
 import subprocess
-from datetime import date
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
-from typing import Iterable
 
 _CONTEXT_CANDIDATES = (
     "AGENTS.override.md",
@@ -66,7 +66,7 @@ def select_session_prompt_name(model_id: str | None) -> str:
         if "copilot" in mid and "gpt-5" in mid:
             return "copilot-gpt-5"
         return "gpt"
-    if mid.startswith("o1") or mid.startswith("o3") or "/o1" in mid or "/o3" in mid:
+    if mid.startswith(("o1", "o3")) or "/o1" in mid or "/o3" in mid:
         return "gpt"
     if "gemini-" in mid or mid.startswith("gemini"):
         return "gemini"
@@ -207,6 +207,7 @@ def _is_git_repo(cwd: Path) -> bool:
             capture_output=True,
             text=True,
             timeout=2,
+            check=False,
         )
         return r.returncode == 0 and "true" in (r.stdout or "").lower()
     except (OSError, subprocess.SubprocessError):
@@ -225,7 +226,7 @@ def format_env_block(
         "<env>",
         f"  Working directory: {root.as_posix()}",
         f"  Platform: {platform.system().lower()}",
-        f"  Today's date: {date.today().isoformat()}",
+        f"  Today's date: {datetime.now(UTC).astimezone().date().isoformat()}",
         f"  Is directory a git repo: {'yes' if _is_git_repo(root) else 'no'}",
     ]
     if model_id:
@@ -309,7 +310,7 @@ def _tool_catalog_section(extension_tools: list[tuple[str, str]] | None = None) 
         "edit_file": "apply a surgical edit to an existing file",
         "glob": "find files by glob pattern",
         "grep": "search file contents with regex",
-        "execute": "run a shell command in the workspace (macOS: use python3 not python; prefer .venv311/bin/python3 for venv access)",
+        "execute": "run a shell command in the workspace (macOS: use python3 not python)",
         "write_todos": "track multi-step task progress",
         "task": "delegate to a listed subagent (general-purpose has full tools; explore is read-only)",
         "webfetch": "fetch a URL as text/markdown",

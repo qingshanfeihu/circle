@@ -7,14 +7,17 @@ MessageSnapshot: visible text, thinking preview, reasoning_chars, phase.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from langgraph.types import Command
 
 from circle.events import EventBus, bind_bus, unbind_bus
+from circle.tool_events import announce_blocked_tool_call
 from circle.tui.content_blocks import (
     message_text,
     parse_content,
@@ -23,9 +26,9 @@ from circle.tui.content_blocks import (
 )
 from circle.tui.message_model import MessageSnapshot
 from circle.tui.progress_handler import ProgressHandler
-from circle.tool_events import announce_blocked_tool_call
 from circle.tui.sink import TuiSink
 
+logger = logging.getLogger(__name__)
 
 # 回合结束却没有正文时交给 on_done 的占位；会话据此判断模型其实没有作答
 NO_OUTPUT = "（无输出）"
@@ -127,10 +130,8 @@ class HarnessBridge:
         if self._on_snapshot is not None:
             try:
                 self._on_snapshot(snap)
-            except Exception:  # noqa: BLE001 — a render error must not stop the run
-                import logging
-
-                logging.getLogger(__name__).exception("snapshot render failed")
+            except Exception:
+                logger.exception("snapshot render failed")
 
     def start(self, user_text: str) -> None:
         if self.is_running:
@@ -234,7 +235,7 @@ class HarnessBridge:
 
     def _emit_from_content(self, content: Any, *, chunk: bool) -> tuple[str, str]:
         parsed = parse_content(content)
-        phase = "output" if parsed.text else ("thinking" if parsed.thinking else "thinking")
+        phase = "output" if parsed.text else "thinking"
         self._on_update(
             StreamUpdate(
                 text=parsed.text,
@@ -381,8 +382,8 @@ class HarnessBridge:
         bus.emit("run_start")
         try:
             self._run_with(payload, config, bus)
-        except Exception:  # noqa: BLE001 — _run_with reports through on_error itself
-            pass
+        except Exception:
+            logger.debug("_run_with already reported the error", exc_info=True)
         finally:
             unbind_bus(token)
             deferred, self._deferred_resume = getattr(self, "_deferred_resume", None), None

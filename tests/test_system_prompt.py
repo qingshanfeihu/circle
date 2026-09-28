@@ -55,6 +55,8 @@ def test_build_includes_paths_env_and_agents(tmp_path: Path):
     assert "<project_context>" in prompt
     assert "Use pytest." in prompt
     assert "read_file" in prompt
+    assert "execute: run a shell command in the workspace (macOS: use python3 not python)" in prompt
+    assert ".venv311" not in prompt
     assert "Current working directory:" in prompt
 
 
