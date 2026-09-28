@@ -103,10 +103,11 @@ class HarnessBridge:
         }
         self._tool_acc: dict[str, dict] = {}
         self._usage_by_id: dict[str, tuple] = {}
-        # HITL interrupt 可携带多个 action_requests（模型并行发起多个需审批的工具调用），
-        # resume 时必须给每个都补一个 decision，否则 langchain 会抛
-        # "Number of human decisions (N) does not match number of hanging tool calls (M)"。
+        # One interrupt may contain several actions; parallel subagents may each
+        # produce a separate interrupt, which must be resumed by its own id.
         self._pending_action_count: int = 1
+        self._pending_action_groups: list[tuple[str | None, int]] = []
+        self._pending_interrupt_count = 0
         # 中断回调在本回合的工作线程里就给出的 resume（/yolo 自动放行）：本回合退出时再起
         self._deferred_resume: Any = None
 
@@ -135,6 +136,7 @@ class HarnessBridge:
         if self.is_running:
             return
         self._cancelled = False
+        self._clear_pending_interrupts()
         self._sink.reset()
         payload: Any = {"messages": [{"role": "user", "content": user_text}]}
         self._spawn(payload)
@@ -151,8 +153,16 @@ class HarnessBridge:
 
     def _start_resume(self, decision: Any) -> None:
         self._cancelled = False
+        groups = getattr(self, "_pending_action_groups", [])
         if not (isinstance(decision, dict) and set(decision) == {"decision"}):
-            self._pending_action_count = 1
+            if isinstance(decision, dict) and set(decision) == {"decisions"} and len(groups) > 1:
+                if getattr(self, "_pending_interrupt_count", len(groups)) != len(groups):
+                    raise ValueError("approval decisions cannot answer a non-approval interrupt")
+                values = decision["decisions"]
+                if not isinstance(values, list) or len(values) != sum(count for _iid, count in groups):
+                    raise ValueError("approval decision count does not match pending actions")
+                decision = self._map_approval_decisions(groups, values)
+            self._clear_pending_interrupts()
             self._spawn(Command(resume=decision))
             return
         key = str(decision.get("decision") or "reject")
@@ -160,23 +170,58 @@ class HarnessBridge:
             one = {"type": "reject", "message": "user rejected"}
         else:
             one = {"type": "approve"}
-        # 把同一个决定应用到本次中断挂起的全部 tool calls 上
-        decisions = [dict(one) for _ in range(max(1, self._pending_action_count))]
+        if groups and getattr(self, "_pending_interrupt_count", len(groups)) != len(groups):
+            raise ValueError("approval shortcut cannot answer a non-approval interrupt")
+        if len(groups) > 1:
+            values = [dict(one) for _iid, count in groups for _ in range(count)]
+            resume = self._map_approval_decisions(groups, values)
+        else:
+            count = groups[0][1] if groups else getattr(self, "_pending_action_count", 1)
+            resume = {"decisions": [dict(one) for _ in range(max(1, count))]}
+        self._clear_pending_interrupts()
+        self._spawn(Command(resume=resume))
+
+    @staticmethod
+    def _map_approval_decisions(
+        groups: list[tuple[str | None, int]], decisions: list[dict[str, Any]],
+    ) -> dict[str, dict[str, list[dict[str, Any]]]]:
+        ids = [iid for iid, _count in groups]
+        if (any(not isinstance(iid, str) or not iid for iid in ids)
+                or len(set(ids)) != len(ids)):
+            raise ValueError("parallel approvals require distinct interrupt ids")
+        offset = 0
+        replies: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for iid, count in groups:
+            replies[iid] = {"decisions": decisions[offset:offset + count]}
+            offset += count
+        return replies
+
+    def _clear_pending_interrupts(self) -> None:
         self._pending_action_count = 1
-        self._spawn(Command(resume={"decisions": decisions}))
+        self._pending_action_groups = []
+        self._pending_interrupt_count = 0
+
+    @staticmethod
+    def _action_groups(interrupts: Any) -> list[tuple[str | None, int]]:
+        items = interrupts if isinstance(interrupts, (list, tuple)) else [interrupts]
+        groups: list[tuple[str | None, int]] = []
+        for item in items:
+            value = getattr(item, "value", item)
+            requests = value.get("action_requests") if isinstance(value, dict) else None
+            if isinstance(requests, list) and requests:
+                groups.append((getattr(item, "id", None), len(requests)))
+        return groups
 
     @staticmethod
     def _count_action_requests(interrupts: Any) -> int:
-        """统计一次 HITL interrupt 携带的 action_requests 数量。"""
-        first = (
-            interrupts[0]
-            if isinstance(interrupts, (list, tuple)) and interrupts
-            else interrupts
-        )
-        value = getattr(first, "value", first)
-        if isinstance(value, dict) and value.get("action_requests"):
-            return len(value["action_requests"])
-        return 1
+        """Count actions across every pending approval interrupt."""
+        return sum(count for _iid, count in HarnessBridge._action_groups(interrupts)) or 1
+
+    def _remember_interrupts(self, interrupts: Any) -> None:
+        items = interrupts if isinstance(interrupts, (list, tuple)) else [interrupts]
+        self._pending_action_groups = self._action_groups(items)
+        self._pending_interrupt_count = len(items)
+        self._pending_action_count = self._count_action_requests(items)
 
     def _spawn(self, payload: Any) -> None:
         self._worker = threading.Thread(
@@ -428,7 +473,7 @@ class HarnessBridge:
                 state = self._agent.get_state(self._config)
                 interrupts = getattr(state, "interrupts", None) or ()
                 if interrupts:
-                    self._pending_action_count = self._count_action_requests(interrupts)
+                    self._remember_interrupts(interrupts)
                     bus.emit("run_end", payload={"awaiting_user": True})
                     self._on_interrupt(interrupts)
                     self._on_status("approval")
@@ -457,7 +502,7 @@ class HarnessBridge:
             if isinstance(result, dict):
                 interrupts = result.get("__interrupt__")
                 if interrupts:
-                    self._pending_action_count = self._count_action_requests(interrupts)
+                    self._remember_interrupts(interrupts)
                     bus.emit("run_end", payload={"awaiting_user": True})
                     self._on_interrupt(interrupts)
                     self._on_status("approval")

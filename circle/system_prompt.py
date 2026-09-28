@@ -311,7 +311,7 @@ def _tool_catalog_section(extension_tools: list[tuple[str, str]] | None = None) 
         "grep": "search file contents with regex",
         "execute": "run a shell command in the workspace (macOS: use python3 not python; prefer .venv311/bin/python3 for venv access)",
         "write_todos": "track multi-step task progress",
-        "task": "delegate to a subagent (e.g. explore)",
+        "task": "delegate to a listed subagent (general-purpose has full tools; explore is read-only)",
         "webfetch": "fetch a URL as text/markdown",
         "websearch": "search the web for current information",
         "question": "ask the user clarifying questions",

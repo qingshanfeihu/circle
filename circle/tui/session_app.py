@@ -329,9 +329,12 @@ class CircleSessionApp:
         self._snap_rendered_at = 0.0
         self._call_started_at = 0.0
         self._exec_approval: ExecApprovalSession | None = None
-        # 一次中断里的多个待审批调用逐个问，答案按顺序攒齐后一起 resume
-        self._approval_queue: list[dict[str, Any]] = []
-        self._approval_decisions: list[dict[str, Any]] = []
+        # A paused graph may have several interrupts, each with its own ordered
+        # action_requests. Collect one reply per interrupt before resuming.
+        self._interrupt_order: list[str | None] = []
+        self._interrupt_replies: dict[str | None, dict[str, Any]] = {}
+        self._approval_queue: list[tuple[str | None, dict[str, Any]]] = []
+        self._approval_decisions: dict[str | None, list[dict[str, Any]]] = {}
         # 非审批形态的中断按 payload["kind"] 分派（C2 的问答面板挂在这里）
         self._interrupt_handlers: dict[str, Callable[[dict[str, Any]], None]] = {}
         # question 工具的普通题：ask_user 中断逐个问，答完一起 resume（多个并行时按中断 id）
@@ -2584,45 +2587,73 @@ class CircleSessionApp:
             self._turn_elapsed += time.time() - self._turn_started_at
             self._turn_started_at = 0.0
         items = list(interrupts) if isinstance(interrupts, (list, tuple)) else [interrupts]
-        asks = [(getattr(item, "id", None), getattr(item, "value", item)) for item in items]
-        asks = [(iid, v) for iid, v in asks if isinstance(v, dict) and v.get("kind") == "ask_user"]
-        if asks and len(asks) == len(items):
+        pending = [(getattr(item, "id", None), getattr(item, "value", item)) for item in items]
+        ids = [iid for iid, _value in pending]
+        if len(items) > 1 and (any(not isinstance(iid, str) or not iid for iid in ids)
+                               or len(set(ids)) != len(ids)):
+            self._show_unhandled_interrupt("missing or duplicate interrupt id")
+            return
+        asks: list[tuple[str | None, dict[str, Any]]] = []
+        approvals: list[tuple[str | None, dict[str, Any]]] = []
+        for iid, value in pending:
+            if not isinstance(value, dict):
+                self._show_unhandled_interrupt(type(value).__name__)
+                return
+            if "action_requests" in value:
+                requests = value["action_requests"]
+                if not isinstance(requests, (list, tuple)) or not requests or not all(
+                        isinstance(request, dict) for request in requests):
+                    self._show_unhandled_interrupt("invalid action_requests")
+                    return
+                approvals.extend((iid, request) for request in requests)
+            elif value.get("kind") == "ask_user":
+                asks.append((iid, value))
+            else:
+                kind = str(value.get("kind") or "")
+                handler = self._interrupt_handlers.get(kind) if len(items) == 1 else None
+                if handler is not None:
+                    handler(value)
+                    return
+                self._show_unhandled_interrupt(kind or "unknown")
+                return
+        self._interrupt_order = ids
+        self._interrupt_replies = {}
+        self._ask_queue = asks
+        self._ask_replies = []
+        if approvals:
+            self._begin_approvals(approvals)
+        elif asks:
             self._begin_ask_user(asks)
-            return
-        first = items[0] if items else interrupts
-        value = getattr(first, "value", first)
-        if isinstance(value, dict) and value.get("action_requests"):
-            self._begin_approvals([r for r in value["action_requests"] if isinstance(r, dict)])
-            return
-        kind = str(value.get("kind") or "") if isinstance(value, dict) else ""
-        handler = self._interrupt_handlers.get(kind)
-        if handler is not None:
-            handler(value)
-            return
+        else:
+            self._show_unhandled_interrupt("empty")
+
+    def _show_unhandled_interrupt(self, kind: str) -> None:
         # 不认识的中断形态：不能替用户作答，如实说明、停在这里
         with self._app.lock:
             self._transcript.append_message(
-                _warn_line(f"收到无法处理的中断（{kind or type(value).__name__}），本回合已暂停。"))
+                _warn_line(f"收到无法处理的中断（{kind}），本回合已暂停。"))
             self._leave_busy()
             self._app.render()
 
-    def _begin_approvals(self, requests: list[dict[str, Any]]) -> None:
+    def _begin_approvals(self, requests: list[tuple[str | None, dict[str, Any]]]) -> None:
         with self._app.lock:
-            self._pending_calls = [dict(r) for r in requests]
+            self._pending_calls = [dict(request) for _iid, request in requests]
             self._render_turn_region()
             self._app.render()
-        if getattr(self._bridge, "auto_approve", False):  # /yolo：全部放行，不弹面板
-            self._resume_with({"decisions": [{"type": "approve"} for _ in requests]})
-            return
         self._approval_queue = list(requests)
-        self._approval_decisions = []
+        self._approval_decisions = {iid: [] for iid, _request in requests}
+        if getattr(self._bridge, "auto_approve", False):  # /yolo：全部放行，不弹面板
+            for iid, _request in requests:
+                self._approval_decisions[iid].append({"type": "approve"})
+            self._complete_approvals()
+            return
         self._next_approval()
 
     def _record_approval(self, key: str) -> None:
-        req = self._approval_queue.pop(0)
+        iid, req = self._approval_queue.pop(0)
         name = str(req.get("name") or "tool")
         approved = self._approvals.remember(self._thread_id, name, req.get("args") or {}, key)
-        self._approval_decisions.append(
+        self._approval_decisions[iid].append(
             {"type": "approve"} if approved
             else {"type": "reject", "message": REJECTED_BY_USER})
         if not approved:
@@ -2633,7 +2664,7 @@ class CircleSessionApp:
     def _next_approval(self) -> None:
         with self._app.lock:
             while self._approval_queue:
-                req = self._approval_queue[0]
+                _iid, req = self._approval_queue[0]
                 name = str(req.get("name") or "tool")
                 args = req.get("args") or {}
                 if self._plan_mode and name in _PLAN_BLOCKED_TOOLS:
@@ -2657,8 +2688,27 @@ class CircleSessionApp:
                     "scope": review.scope,
                 })
                 return
-        decisions, self._approval_decisions = self._approval_decisions, []
-        self._resume_with({"decisions": decisions})
+        self._complete_approvals()
+
+    def _complete_approvals(self) -> None:
+        for iid, decisions in self._approval_decisions.items():
+            self._interrupt_replies[iid] = {"decisions": decisions}
+        self._approval_decisions = {}
+        if self._ask_queue:
+            self._begin_ask_user(self._ask_queue)
+        else:
+            self._resume_interrupts()
+
+    def _resume_interrupts(self) -> None:
+        order = self._interrupt_order
+        if not order or any(iid not in self._interrupt_replies for iid in order):
+            self._show_unhandled_interrupt("incomplete replies")
+            return
+        value = (self._interrupt_replies[order[0]] if len(order) == 1 else
+                 {iid: self._interrupt_replies[iid] for iid in order})
+        self._interrupt_order = []
+        self._interrupt_replies = {}
+        self._resume_with(value)
 
     def _resume_with(self, value: Any) -> None:
         with self._app.lock:
@@ -2696,10 +2746,8 @@ class CircleSessionApp:
                 self._render_ask_user()
                 return
         replies, self._ask_replies = self._ask_replies, []
-        if len(replies) == 1:
-            self._resume_with(replies[0][1])
-        else:
-            self._resume_with({iid: reply for iid, reply in replies})
+        self._interrupt_replies.update(replies)
+        self._resume_interrupts()
 
     def _render_ask_user(self) -> None:
         with self._app.lock:
@@ -2751,7 +2799,9 @@ class CircleSessionApp:
         self._ask_replies = []
         self._exec_approval = None
         self._approval_queue = []
-        self._approval_decisions = []
+        self._approval_decisions = {}
+        self._interrupt_order = []
+        self._interrupt_replies = {}
         self._pending_calls = []
         self._ask_panel.clear()
         if self._ask_saved_prompt:
