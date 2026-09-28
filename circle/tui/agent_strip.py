@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from circle.ink.string_width import string_width
 from circle.ink.theme import palette, sgr_join
@@ -86,6 +87,8 @@ def card_calls(card: Mapping[str, Any]) -> int:
 
 
 def card_activity(card: Mapping[str, Any]) -> str:
+    if card.get("awaiting_approval"):
+        return "等待审批"
     title = " ".join(str(card.get("reasoning_title") or "").split())
     if title:
         return f"思考·{title}"

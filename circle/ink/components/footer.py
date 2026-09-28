@@ -6,8 +6,6 @@ import random
 import threading
 import time
 
-from ..dom import DOMElement, NodeType, create_element, create_text
-from ..theme import GLYPH_ERROR, palette, sgr_join
 from ...display_lexicon import (
     api_error_slot,
     api_waiting_aggregate_slot,
@@ -16,7 +14,6 @@ from ...display_lexicon import (
     footer_tool_slot,
     footer_worker_slot,
 )
-from .. import shimmer
 from ...pricing import (
     compute_cost,
     context_window_for,
@@ -24,6 +21,9 @@ from ...pricing import (
     cost_reference_basis,
     format_usage_costs,
 )
+from .. import shimmer
+from ..dom import DOMElement, NodeType, create_element, create_text
+from ..theme import GLYPH_ERROR, palette, sgr_join
 
 _VERBS = [
     "Thinking", "Considering", "Analyzing", "Brewing", "Pondering",
@@ -59,6 +59,12 @@ def _format_token_count(n: int) -> str:
     if n >= 1000:
         return f"{n / 1000:.1f}k"
     return f"{n:,}"
+
+
+def _format_context_budget(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    return _format_token_count(n)
 
 
 def _nonnegative_int(value: object) -> int:
@@ -102,6 +108,7 @@ class FooterPane:
         self._fork_costs: dict = {}
         self._costs_supplied = False
         self.input_tokens: int = 0
+        self.context_input_tokens: int = 0
         self.output_tokens: int = 0
         self.fork_input: int = 0
         self.fork_output: int = 0
@@ -185,6 +192,7 @@ class FooterPane:
         tokens_budget: int | None = None,
         model: str | None = None,
         input_tokens: int | None = None,
+        context_input_tokens: int | None = None,
         output_tokens: int | None = None,
         fork_input: int | None = None,
         fork_output: int | None = None,
@@ -233,6 +241,8 @@ class FooterPane:
                 self.tokens_budget = context_window_for(model)
         if input_tokens is not None:
             self.input_tokens = input_tokens
+        if context_input_tokens is not None:
+            self.context_input_tokens = _nonnegative_int(context_input_tokens)
         if output_tokens is not None:
             self.output_tokens = output_tokens
         if input_tokens == 0 and output_tokens == 0:
@@ -452,9 +462,7 @@ class FooterPane:
             ))
         # 旧快照没有逐调用费用时保留旧口径；新事件不再按页脚当前模型重算累计量。
         elif any((self.fork_input, self.fork_output, self.fork_cache_hit,
-                self.fork_cache_write, self.fork_live_output)):
-            parts.append("—")
-        elif self._usage_model_uncertain:
+                self.fork_cache_write, self.fork_live_output)) or self._usage_model_uncertain:
             parts.append("—")
         else:
             basis = cost_reference_basis(self.model)
@@ -474,9 +482,10 @@ class FooterPane:
         budget = self.tokens_budget or 0
         meter = f"CH{rate:.1f}%"
         if budget > 0:
-            pct = min(999.0, total_in / budget * 100.0)
+            pct = min(999.0, self.context_input_tokens / budget * 100.0)
             meter += (
-                f" CTX {_format_token_count(total_in)}/{budget / 1000:.1f} ({pct:.0f}%)"
+                f" CTX {_format_token_count(self.context_input_tokens)}/"
+                f"{_format_context_budget(budget)} ({pct:.0f}%)"
             )
         parts.append(meter)
         return " · ".join(parts)

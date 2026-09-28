@@ -12,8 +12,9 @@ import contextvars
 import itertools
 import logging
 import threading
-from datetime import datetime, timezone
-from typing import Any, Callable, Literal, TypedDict
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any, Literal, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ EventKind = Literal[
     "run_error",
     "tool_call",
     "tool_start",
+    "tool_waiting",
     "tool_result",
     "tool_end",
     "llm_start",
@@ -52,7 +54,7 @@ class CircleEvent(TypedDict, total=False):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 class EventBus:
@@ -91,7 +93,7 @@ class EventBus:
         for sink in list(self._sinks):
             try:
                 sink(event)
-            except Exception:  # noqa: BLE001 — one broken sink must not stop the others
+            except Exception:
                 logger.debug("event sink failed for %s", kind, exc_info=True)
         return event
 

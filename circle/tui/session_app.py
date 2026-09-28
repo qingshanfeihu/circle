@@ -459,7 +459,7 @@ class CircleSessionApp:
         )
 
     def _make_bridge(self) -> HarnessBridge:
-        return HarnessBridge(
+        bridge = HarnessBridge(
             agent=self._agent,
             thread_id=self._thread_id,
             on_update=self._on_stream_update,
@@ -469,6 +469,9 @@ class CircleSessionApp:
             on_status=self._on_status,
             on_snapshot=self._on_snapshot,
         )
+        bridge.auto_approve = self._approvals.yolo_enabled(self._thread_id)
+        self._footer.set_yolo(bridge.auto_approve)
+        return bridge
 
     def run(self) -> int:
         self._app.start()
@@ -1465,6 +1468,7 @@ class CircleSessionApp:
     def _cmd_yolo(self, args: str) -> None:
         """/yolo — 切换自动批准所有工具调用。"""
         enabled = args.strip().lower() not in ("off", "0", "false", "no")
+        self._approvals.set_yolo(self._thread_id, enabled)
         self._footer.set_yolo(enabled)
         self._bridge.auto_approve = enabled
         self._toast("yolo → 开（自动批准所有工具调用）" if enabled
@@ -2343,6 +2347,8 @@ class CircleSessionApp:
             "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
             "tokens_used": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
         }
+        if "context_input_tokens" in usage:
+            kwargs["context_input_tokens"] = int(usage["context_input_tokens"] or 0)
         if usage.get("reasoning_effort"):
             kwargs["reasoning_effort"] = str(usage["reasoning_effort"])
         self._footer.update(**kwargs)

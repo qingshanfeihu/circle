@@ -24,9 +24,14 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
+from langgraph.errors import GraphBubbleUp, GraphInterrupt
 
 from circle.display_lexicon import tool_result_is_error
-from circle.display_stream import TypedDisplayStreamNormalizer, event_deltas, extract_display_channels
+from circle.display_stream import (
+    TypedDisplayStreamNormalizer,
+    event_deltas,
+    extract_display_channels,
+)
 from circle.events import EventBus
 from circle.pricing import callback_model_name, price_call, response_model_name
 from circle.tool_recoverable import RECOVERABLE_KEY, is_recoverable_message
@@ -241,7 +246,7 @@ class ProgressHandler(BaseCallbackHandler):
               tags: dict[str, Any] | None = None, usage: dict[str, Any] | None = None) -> None:
         try:
             self._bus.emit(kind, payload=payload, tags=tags, usage=usage)  # type: ignore[arg-type]
-        except Exception:  # noqa: BLE001 — display must never break the run
+        except Exception:
             logger.debug("progress emit failed: %s", kind, exc_info=True)
 
     @staticmethod
@@ -311,7 +316,7 @@ class ProgressHandler(BaseCallbackHandler):
                 self._pricing_models[key] = pricing_model
             self._emit("llm_start", payload={"name": name, **normalizer.carrier_fields()},
                        tags=tags or None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("llm_start projection failed", exc_info=True)
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
@@ -335,7 +340,7 @@ class ProgressHandler(BaseCallbackHandler):
                 self._emit("llm_token", payload={"name": name, "content": deltas.text,
                                                  "reasoning": deltas.reasoning, **fields},
                            tags=tags or None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("llm token projection failed", exc_info=True)
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
@@ -453,6 +458,8 @@ class ProgressHandler(BaseCallbackHandler):
                 self._task_runs.add(run_id)
         if run_id:
             tags["lc_tool_run_id"] = run_id
+            if kwargs.get("tool_call_id"):
+                tags["lc_tool_call_id"] = str(kwargs["tool_call_id"])
             self._tool_tags[run_id] = dict(tags)
             preview = change_preview(name, kwargs.get("inputs"))
             if preview:
@@ -559,5 +566,9 @@ class ProgressHandler(BaseCallbackHandler):
         if settled is None:
             return
         name, tags = settled
+        if isinstance(error, GraphBubbleUp):
+            if isinstance(error, GraphInterrupt):
+                self._emit("tool_waiting", payload={"name": name, "reason": "approval"}, tags=tags)
+            return
         self._emit("tool_result", payload={"name": name, "output": f"error: {error}",
                                            "status": "error"}, tags=tags)

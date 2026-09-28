@@ -13,7 +13,8 @@ thinking tint, the same mapping as the main transcript.
 from __future__ import annotations
 
 import time
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from circle.display_lexicon import strip_leading_status_glyph, tool_result_recoverable
 from circle.ink.string_width import string_width
@@ -35,6 +36,8 @@ NO_STEPS = "暂时还没有工具调用"
 
 
 def _status_cn(card: Mapping[str, Any]) -> str:
+    if card_running(card) and card.get("awaiting_approval"):
+        return "等待审批"
     if card_running(card):
         return "运行中"
     if card.get("termination_cause") == "CANCELLED":

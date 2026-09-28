@@ -18,10 +18,15 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any
 
-from circle.display_lexicon import ERROR_WITHOUT_TEXT, structured_args, tool_result_is_error
+from circle.display_lexicon import (
+    ERROR_WITHOUT_TEXT,
+    structured_args,
+    tool_result_is_error,
+)
 from circle.display_stream import reasoning_summary
 from circle.events import CircleEvent
 from circle.pricing import UsageCostTotals
@@ -80,6 +85,9 @@ class MessageReducer:
         # 在跑的工具调用：结果按 langchain run id 对回；取不到 id 时按先进先出
         self._inflight_tool_use_ids: list[str] = []
         self._tool_run_id_map: dict[str, str] = {}
+        # The model tool_call_id survives a resumed task; LangChain run ids do not.
+        self._task_call_cards: dict[str, tuple[str, str]] = {}
+        self._task_run_cards: dict[str, str] = {}
         # 子代理调用栈：栈顶是当前子代理事件的父调用
         self._subagent_parent_stack: list[str] = []
         self._rev = 0
@@ -138,6 +146,8 @@ class MessageReducer:
             self._thinking_raw_by_round.clear()
             self._inflight_tool_use_ids.clear()
             self._tool_run_id_map.clear()
+            self._task_call_cards.clear()
+            self._task_run_cards.clear()
             self._subagent_parent_stack.clear()
             self._agent_card_idx.clear()
             self._card_thinking.clear()
@@ -210,7 +220,7 @@ class MessageReducer:
                 self._handle(kind, event)
                 self._rev += 1
                 snap = self._snapshot_locked()
-        except Exception:  # noqa: BLE001 — a bad event must not stop the screen
+        except Exception:
             logger.exception("MessageReducer dispatch error: kind=%s", kind)
         if snap is None:
             snap = self.snapshot()
@@ -262,6 +272,8 @@ class MessageReducer:
             self._on_llm_start(event)
         elif kind in ("tool_call", "tool_start"):
             self._on_tool_call(event)
+        elif kind == "tool_waiting":
+            self._on_tool_waiting(event)
         elif kind in ("tool_result", "tool_end"):
             self._on_tool_result(event)
         elif kind == "info":
@@ -289,21 +301,25 @@ class MessageReducer:
     def _card_uuid(lc_run: str) -> str:
         return f"agent:{lc_run}"
 
+    def _task_card_uuid(self, lc_run: str) -> str:
+        return self._task_run_cards.get(lc_run, self._card_uuid(lc_run))
+
     def _subagent_card(self, event: CircleEvent) -> str:
         """The card this subagent event belongs to ("" when it cannot be placed)."""
         parent = str((event.get("tags") or {}).get("parent_tool_use_id") or "")
-        uuid = self._card_uuid(parent) if parent else ""
+        uuid = self._task_card_uuid(parent) if parent else ""
         return uuid if uuid and uuid in self._agent_card_idx else ""
 
     def _open_card(self, event: CircleEvent, tool_use_id: str, input_dict: Mapping[str, Any]) -> None:
         lc_run = str((event.get("tags") or {}).get("lc_tool_run_id") or tool_use_id)
         args = structured_args(input_dict)
-        self._upsert_card(self._card_uuid(lc_run), {
+        self._upsert_card(self._task_card_uuid(lc_run), {
             "kind": "subagent",
             "name": str(args.get("subagent_type") or "agent"),
             "description": " ".join(str(args.get("description") or "").split()),
             "tool_use_id": tool_use_id,
             "status": "running",
+            "awaiting_approval": False,
             "start_ts": time.time(),
             "n_calls": 0,
             "current_tool": "",
@@ -401,13 +417,14 @@ class MessageReducer:
 
     def _close_card(self, event: CircleEvent, output: str, status: str) -> None:
         lc_run = str((event.get("tags") or {}).get("lc_tool_run_id") or "")
-        uuid = self._card_uuid(lc_run) if lc_run else ""
+        uuid = self._task_card_uuid(lc_run) if lc_run else ""
         if not uuid or uuid not in self._agent_card_idx:
             return
         error = tool_result_is_error(output, status)
         first = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
         self._card_thinking.pop(uuid, None)
         self._upsert_card(uuid, {"status": "error" if error else "ok", "end_ts": time.time(),
+                                 "awaiting_approval": False,
                                  "current_tool": "", "current_arg": {}, "summary": first[:200],
                                  "transcript": self._settled_calls(self._card_payload(uuid))})
         self._agent_board_rev += 1
@@ -577,8 +594,26 @@ class MessageReducer:
         tool_name = tags.get("name") or payload.get("name") or ""
         raw_input = payload.get("input") or {}
         input_dict: Mapping[str, Any] = raw_input if isinstance(raw_input, dict) else {"raw": str(raw_input)}
-        tool_use_id = make_uuid(run_id, seq)
         parent_tool_use_id = self._current_subagent_parent(event)
+        lc_tool_run_id = str(tags.get("lc_tool_run_id") or "")
+        stable_call_id = str(tags.get("lc_tool_call_id") or "")
+        if tool_name in SUBAGENT_TOOLS and not parent_tool_use_id and stable_call_id:
+            prior = self._task_call_cards.get(stable_call_id)
+            if prior and self._card_payload(prior[1]).get("status") == "running":
+                tool_use_id, card_uuid = prior
+                if lc_tool_run_id:
+                    self._tool_run_id_map[lc_tool_run_id] = tool_use_id
+                    self._task_run_cards[lc_tool_run_id] = card_uuid
+                if tool_use_id not in self._inflight_tool_use_ids:
+                    self._inflight_tool_use_ids.append(tool_use_id)
+                if tool_use_id not in self._subagent_parent_stack:
+                    self._subagent_parent_stack.append(tool_use_id)
+                self._update_tool_use_status(tool_use_id, status="running")
+                self._upsert_card(card_uuid, {"awaiting_approval": False,
+                                              "last_event_ts": time.time()})
+                self._agent_board_rev += 1
+                return
+        tool_use_id = make_uuid(run_id, seq)
         self._messages.append(make_assistant_message(
             uuid=tool_use_id,
             content=make_tool_use_block(tool_use_id=tool_use_id, name=tool_name, input=input_dict,
@@ -586,12 +621,33 @@ class MessageReducer:
             timestamp=event.get("ts") or "", parent_tool_use_id=parent_tool_use_id,
             subagent_type=tags.get("parent_subagent") or ""))
         self._inflight_tool_use_ids.append(tool_use_id)
-        lc_tool_run_id = tags.get("lc_tool_run_id") or ""
         if lc_tool_run_id:
             self._tool_run_id_map[lc_tool_run_id] = tool_use_id
         if tool_name in SUBAGENT_TOOLS and not parent_tool_use_id:
+            card_uuid = self._card_uuid(lc_tool_run_id or tool_use_id)
+            if lc_tool_run_id:
+                self._task_run_cards[lc_tool_run_id] = card_uuid
+            if stable_call_id:
+                self._task_call_cards[stable_call_id] = (tool_use_id, card_uuid)
             self._subagent_parent_stack.append(tool_use_id)
             self._open_card(event, tool_use_id, input_dict)
+
+    def _on_tool_waiting(self, event: CircleEvent) -> None:
+        tags = event.get("tags") or {}
+        lc_run = str(tags.get("lc_tool_run_id") or "")
+        tool_use_id = self._tool_run_id_map.pop(lc_run, "")
+        if tool_use_id in self._inflight_tool_use_ids:
+            self._inflight_tool_use_ids.remove(tool_use_id)
+        if tool_use_id in self._subagent_parent_stack:
+            self._subagent_parent_stack.remove(tool_use_id)
+        if tags.get("parent_subagent"):
+            uuid = self._subagent_card(event)
+        else:
+            uuid = self._task_card_uuid(lc_run) if lc_run else ""
+        if uuid and uuid in self._agent_card_idx:
+            self._upsert_card(uuid, {"awaiting_approval": True,
+                                     "last_event_ts": time.time()}, skip_if_finished=True)
+            self._agent_board_rev += 1
 
     def _on_tool_result(self, event: CircleEvent) -> None:
         tags = event.get("tags") or {}
@@ -606,6 +662,9 @@ class MessageReducer:
             output = str(output)
         if tool_name in SUBAGENT_TOOLS and not tags.get("parent_subagent"):
             self._close_card(event, output, str(payload.get("status") or ""))
+            stable_call_id = str(tags.get("lc_tool_call_id") or "")
+            if stable_call_id:
+                self._task_call_cards.pop(stable_call_id, None)
         lc_tool_run_id = tags.get("lc_tool_run_id") or ""
         tool_use_id = ""
         if lc_tool_run_id and lc_tool_run_id in self._tool_run_id_map:
@@ -814,7 +873,7 @@ class MessageReducer:
             return ""
         lc_task = str(tags.get("parent_tool_use_id") or "")
         if lc_task:
-            owner = str(self._card_payload(self._card_uuid(lc_task)).get("tool_use_id") or "")
+            owner = str(self._card_payload(self._task_card_uuid(lc_task)).get("tool_use_id") or "")
             if owner:
                 return owner
         return self._subagent_parent_stack[-1] if self._subagent_parent_stack else ""
@@ -831,8 +890,8 @@ class MessageReducer:
         for cb in list(self._listeners):
             try:
                 cb(snap)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("MessageReducer listener error")
 
 
-__all__ = ["AGENT_TRANSCRIPT_MAX", "MessageReducer", "SUBAGENT_TOOLS"]
+__all__ = ["AGENT_TRANSCRIPT_MAX", "SUBAGENT_TOOLS", "MessageReducer"]

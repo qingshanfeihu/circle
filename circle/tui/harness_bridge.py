@@ -25,7 +25,7 @@ from circle.tui.content_blocks import (
     thinking_preview,
 )
 from circle.tui.message_model import MessageSnapshot
-from circle.tui.progress_handler import ProgressHandler
+from circle.tui.progress_handler import ProgressHandler, extract_message_usage
 from circle.tui.sink import TuiSink
 
 logger = logging.getLogger(__name__)
@@ -351,6 +351,7 @@ class HarnessBridge:
         if self._usage_by_id.get(mid) == current:
             return None
         self._usage_by_id[mid] = current
+        normalized = extract_message_usage(msg)
         totals = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -359,6 +360,9 @@ class HarnessBridge:
             "reasoning_tokens": 0,
             "reasoning_effort": "",
         }
+        if "input_tokens" in normalized:
+            # One request's full context, including cache reads and writes.
+            totals["context_input_tokens"] = int(normalized["input_tokens"] or 0)
         for row in self._usage_by_id.values():
             totals["input_tokens"] += row[0]
             totals["output_tokens"] += row[1]

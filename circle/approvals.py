@@ -32,9 +32,10 @@ import re
 import shlex
 import threading
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Literal
 
 Verdict = Literal["DENY", "ASK", "ASK_FORCED"]
 
@@ -399,6 +400,22 @@ class ApprovalPolicy:
         self.store = store
         self.credential_files = tuple(credential_files or DEFAULT_CREDENTIAL_FILES)
         self._inside: Callable[[str], bool] = lambda _path: False
+        self._yolo_threads: set[str] = set()
+        self._yolo_lock = threading.RLock()
+
+    def set_yolo(self, thread_id: str, enabled: bool) -> None:
+        """Switch approval-free execution for one live conversation thread."""
+        if not thread_id:
+            return
+        with self._yolo_lock:
+            if enabled:
+                self._yolo_threads.add(thread_id)
+            else:
+                self._yolo_threads.discard(thread_id)
+
+    def yolo_enabled(self, thread_id: str) -> bool:
+        with self._yolo_lock:
+            return bool(thread_id and thread_id in self._yolo_threads)
 
     def bind_workspace(self, resolve: Callable[[str], Path], root: Path) -> None:
         """How the backend maps a tool path to disk, so rules can stay inside ``root``."""
@@ -455,6 +472,8 @@ class ApprovalPolicy:
         review = self.review(tool, args)
         if review.verdict == "DENY":
             return False  # the backend refuses to run it; asking first would be pointless
+        if self.yolo_enabled(thread_id):
+            return False  # policy skips the interrupt; command_guard still enforces DENY
         if review.verdict == "ASK_FORCED":
             return True
         return not self.store.matches(thread_id, tool, review.pattern)

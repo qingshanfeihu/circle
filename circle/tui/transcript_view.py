@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any
 
 from circle.display_lexicon import (
     tool_arg_summary,
@@ -266,6 +267,8 @@ def _subagent_lines(card: Mapping[str, Any], opts: ViewOptions, now: float) -> l
     meta = (f"{card.get('name') or 'agent'} · {card_calls(card)} calls · "
             f"{format_elapsed(card_elapsed(card, now))} · "
             f"{format_tokens(card_tokens(card))} tokens")
+    if card.get("awaiting_approval"):
+        meta += " · 等待审批"
     lines = [f"   ⎿ {pal.faint}{meta}{pal.reset}"]
     calls = [item for item in card.get("transcript") or ()
              if isinstance(item, Mapping) and item.get("kind") == "tool"]
