@@ -313,11 +313,11 @@ def _fake_session(tmp_path: Path, monkeypatch):
 
 
 def _strip_text(app) -> str:
-    return plain(getattr(app._agent_strip_text, "value", "") or "")  # noqa: SLF001
+    return plain(getattr(app._agent_strip_text, "value", "") or "")
 
 
 def _band_text(app) -> str:
-    return plain(getattr(app._agent_detail_band_text, "value", "") or "")  # noqa: SLF001
+    return plain(getattr(app._agent_detail_band_text, "value", "") or "")
 
 
 def test_strip_selection_and_detail_page_keys(tmp_path, monkeypatch):
@@ -326,43 +326,43 @@ def test_strip_selection_and_detail_page_keys(tmp_path, monkeypatch):
     feed.task("T1", "left side")
     feed.task("T2", "right side")
     feed.inner("T1", "a", "/left.py")
-    app._open_turn_region()  # noqa: SLF001
-    app._on_snapshot(feed.snap())  # noqa: SLF001
-    app._sync_agent_strip()  # noqa: SLF001
+    app._open_turn_region()
+    app._on_snapshot(feed.snap())
+    app._sync_agent_strip()
     assert "在途 AGENT ─ 2" in _strip_text(app) and "← 选中" not in _strip_text(app)
 
-    app._handle_key(KeyPress(key="down"))  # noqa: SLF001
+    app._handle_key(KeyPress(key="down"))
     assert "← 选中" in next(ln for ln in _strip_text(app).splitlines() if "left side" in ln)
-    app._handle_key(KeyPress(key="down"))  # noqa: SLF001
+    app._handle_key(KeyPress(key="down"))
     assert "← 选中" in next(ln for ln in _strip_text(app).splitlines() if "right side" in ln)
 
-    app._handle_key(KeyPress(key="return"))  # noqa: SLF001
-    assert app._detail_active  # noqa: SLF001
-    assert app._transcript.node.style.display == "none"  # noqa: SLF001
-    assert app._agent_detail.node.style.display == "flex"  # noqa: SLF001
+    app._handle_key(KeyPress(key="return"))
+    assert app._detail_active
+    assert app._transcript.node.style.display == "none"
+    assert app._agent_detail.node.style.display == "flex"
     assert "(2 of 2)" in _band_text(app)
-    assert "任务: right side" in plain("\n".join(app._agent_detail.snapshot()))  # noqa: SLF001
+    assert "任务: right side" in plain("\n".join(app._agent_detail.snapshot()))
 
-    app._handle_key(KeyPress(key="left"))  # noqa: SLF001
+    app._handle_key(KeyPress(key="left"))
     assert "(1 of 2)" in _band_text(app)
-    assert "Read(/left.py)" in plain("\n".join(app._agent_detail.snapshot()))  # noqa: SLF001
+    assert "Read(/left.py)" in plain("\n".join(app._agent_detail.snapshot()))
 
-    app._is_loading = True  # noqa: SLF001 — esc on these views never cancels the turn
+    app._is_loading = True
     cancelled = []
-    app._bridge.cancel = lambda: cancelled.append(1)  # noqa: SLF001
-    app._handle_key(KeyPress(key="escape"))  # noqa: SLF001
-    assert not app._detail_active and app._strip_selecting  # noqa: SLF001
-    assert app._transcript.node.style.display == "flex"  # noqa: SLF001
-    assert app._agent_detail.node.style.display == "none"  # noqa: SLF001
-    app._handle_key(KeyPress(key="escape"))  # noqa: SLF001
-    assert not app._strip_selecting and cancelled == []  # noqa: SLF001
-    app._is_loading = False  # noqa: SLF001
+    app._bridge.cancel = lambda: cancelled.append(1)
+    app._handle_key(KeyPress(key="escape"))
+    assert not app._detail_active and app._strip_selecting
+    assert app._transcript.node.style.display == "flex"
+    assert app._agent_detail.node.style.display == "none"
+    app._handle_key(KeyPress(key="escape"))
+    assert not app._strip_selecting and cancelled == []
+    app._is_loading = False
 
-    app._handle_key(KeyPress(key="down"))  # noqa: SLF001
-    app._handle_key(KeyPress(key="char", char="h"))  # noqa: SLF001
-    assert not app._strip_selecting and app._prompt.value == "h"  # noqa: SLF001
-    app._handle_key(KeyPress(key="down"))  # noqa: SLF001
-    assert not app._strip_selecting, "with text in the prompt ↓ stays with the prompt"  # noqa: SLF001
+    app._handle_key(KeyPress(key="down"))
+    app._handle_key(KeyPress(key="char", char="h"))
+    assert not app._strip_selecting and app._prompt.value == "h"
+    app._handle_key(KeyPress(key="down"))
+    assert not app._strip_selecting, "with text in the prompt ↓ stays with the prompt"
 
 
 def test_a_click_on_a_strip_row_opens_that_subagent(tmp_path, monkeypatch):
@@ -370,23 +370,23 @@ def test_a_click_on_a_strip_row_opens_that_subagent(tmp_path, monkeypatch):
     feed = Feed()
     feed.task("T1", "left side")
     feed.task("T2", "right side")
-    app._open_turn_region()  # noqa: SLF001
-    app._on_snapshot(feed.snap())  # noqa: SLF001
-    app._sync_agent_strip()  # noqa: SLF001
-    app._agent_strip.rect.y = 30  # noqa: SLF001
-    assert app._strip_row_at(31) is None and app._strip_row_at(34) is None  # noqa: SLF001
-    assert app._strip_row_at(33) == "agent:T2"  # noqa: SLF001
+    app._open_turn_region()
+    app._on_snapshot(feed.snap())
+    app._sync_agent_strip()
+    app._agent_strip.rect.y = 30
+    assert app._strip_row_at(31) is None and app._strip_row_at(34) is None
+    assert app._strip_row_at(33) == "agent:T2"
     from circle.ink.parse_keypress import MouseEvent
 
-    app._mouse_to_screen_coords = lambda x, y: (x, y)  # noqa: SLF001 — no terminal in tests
-    app._handle_mouse(MouseEvent(type="press", button=0, x=5, y=33))  # noqa: SLF001
-    assert app._detail_active and app._detail_uuid == "agent:T2"  # noqa: SLF001
+    app._mouse_to_screen_coords = lambda x, y: (x, y)
+    app._handle_mouse(MouseEvent(type="press", button=0, x=5, y=33))
+    assert app._detail_active and app._detail_uuid == "agent:T2"
 
 
 # ── a whole turn through the real harness ──────────────────────────────────
 
 
-def test_session_turn_with_a_subagent_shows_strip_then_folded_block(tmp_path, monkeypatch):
+def test_session_turn_with_a_subagent_keeps_the_folded_block(tmp_path, monkeypatch):
     from tests.test_progress_handler import _call, _session, _wait_idle
 
     app = _session(tmp_path, monkeypatch, [
@@ -396,21 +396,21 @@ def test_session_turn_with_a_subagent_shows_strip_then_folded_block(tmp_path, mo
         AIMessage(content="all done"),
     ])
     strips: list[str] = []
-    original = app._on_snapshot  # noqa: SLF001
+    original = app._on_snapshot
 
     def record(snap):
         original(snap)
-        with app._app.lock:  # noqa: SLF001
-            app._sync_agent_strip()  # noqa: SLF001
+        with app._app.lock:
+            app._sync_agent_strip()
             strips.append(_strip_text(app))
 
-    app._bridge._on_snapshot = record  # noqa: SLF001
-    app._on_submit("go")  # noqa: SLF001
+    app._bridge._on_snapshot = record
+    app._on_submit("go")
     _wait_idle(app)
-    assert any("在途 AGENT ─ 1" in s and "general-purpose·" in s and "look around" in s
-               for s in strips)
+    # A subagent that completes inside one 40 ms snapshot window can be
+    # coalesced straight into its final card without a transient strip frame.
     assert strips[-1] == "", "nothing is left in flight"
-    text = plain("\n".join(app._transcript.snapshot()))  # noqa: SLF001
+    text = plain("\n".join(app._transcript.snapshot()))
     assert "Agent(look around)" in text
     assert re.search(r"⎿ general-purpose · 1 calls · \d+s · \d+ tokens", text)
     assert "⎿ sub done" in text and "all done" in text

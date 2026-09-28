@@ -33,6 +33,7 @@ from circle.display_stream import (
     extract_display_channels,
 )
 from circle.events import EventBus
+from circle.middleware.cancellation import CancellationToken
 from circle.pricing import callback_model_name, price_call, response_model_name
 from circle.tool_recoverable import RECOVERABLE_KEY, is_recoverable_message
 from circle.tui.tool_display import MAX_CHANGE_CHARS, change_preview, file_diff_preview
@@ -219,8 +220,13 @@ def sanitize_tool_inputs(inputs: Any, *, cap: int = _INPUT_CAP) -> dict[str, Any
 class ProgressHandler(BaseCallbackHandler):
     """One per run; emits to ``bus``."""
 
-    def __init__(self, bus: EventBus, *, path_resolver: Callable[[str], Path] | None = None) -> None:
+    def __init__(self, bus: EventBus, *, path_resolver: Callable[[str], Path] | None = None,
+                 cancel_token: CancellationToken | None = None) -> None:
         self._bus = bus
+        self._cancel_token = cancel_token
+        # A cancelled streaming request must propagate out of the provider's
+        # callback loop so its connection can close instead of draining tokens.
+        self.raise_error = cancel_token is not None
         self._path_resolver = path_resolver
         self._chat_idx = 0
         self._tool_name_stack: list[str] = []
@@ -292,6 +298,8 @@ class ProgressHandler(BaseCallbackHandler):
     # model rounds
 
     def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        if self._cancel_token is not None:
+            self._cancel_token.check()
         try:
             self._note_parent(kwargs)
             key = self._key(kwargs)
@@ -320,6 +328,8 @@ class ProgressHandler(BaseCallbackHandler):
             logger.debug("llm_start projection failed", exc_info=True)
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        if self._cancel_token is not None:
+            self._cancel_token.check()
         try:
             key = self._key(kwargs)
             with self._lock:
@@ -384,7 +394,12 @@ class ProgressHandler(BaseCallbackHandler):
                                              "reasoning": replay.reasoning, **fields},
                        tags=tags or None)
         if usage and tags.get("parent_subagent"):
-            self._emit("llm_end", payload={"name": "subagent_usage", **fields}, tags=tags, usage=usage)
+            reported = response_model_name(response)
+            cost = price_call(pricing_model or reported, usage)
+            cost["response_model"] = reported
+            self._emit("llm_end", payload={"name": "subagent_usage", **fields,
+                                           "usage_call_id": rid, "usage_cost": cost},
+                       tags=tags, usage=usage)
         if usage and not tags.get("parent_subagent"):
             with self._lock:
                 duplicate = bool(rid and rid in self._settled_usage_ids)

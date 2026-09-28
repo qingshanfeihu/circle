@@ -17,6 +17,7 @@ from typing import Any
 from langgraph.types import Command
 
 from circle.events import EventBus, bind_bus, unbind_bus
+from circle.middleware.cancellation import CancellationToken
 from circle.tool_events import announce_blocked_tool_call
 from circle.tui.content_blocks import (
     message_text,
@@ -101,6 +102,7 @@ class HarnessBridge:
         self._sink = TuiSink(post=self._post_snapshot)
         self._worker: threading.Thread | None = None
         self._cancelled = False
+        self._cancel_token: CancellationToken | None = None
         self._config: dict[str, Any] = {
             "configurable": {"thread_id": thread_id},
         }
@@ -124,6 +126,8 @@ class HarnessBridge:
 
     def cancel(self) -> None:
         self._cancelled = True
+        if self._cancel_token is not None:
+            self._cancel_token.cancel()
         self._sink.cancel_run()
 
     def _post_snapshot(self, snap: MessageSnapshot) -> None:
@@ -137,6 +141,7 @@ class HarnessBridge:
         if self.is_running:
             return
         self._cancelled = False
+        self._cancel_token = CancellationToken()
         self._clear_pending_interrupts()
         self._sink.reset()
         payload: Any = {"messages": [{"role": "user", "content": user_text}]}
@@ -379,8 +384,12 @@ class HarnessBridge:
         self._bus = bus
         backend = getattr(self._agent, "_circle_backend", None)
         resolver = getattr(backend, "_resolve_path", None)
-        config = {**self._config, "callbacks": [ProgressHandler(
-            bus, path_resolver=resolver if callable(resolver) else None)]}
+        configurable = {**self._config.get("configurable", {}),
+                        "circle_cancel_token": self._cancel_token}
+        config = {**self._config, "configurable": configurable,
+                  "callbacks": [ProgressHandler(
+                      bus, path_resolver=resolver if callable(resolver) else None,
+                      cancel_token=self._cancel_token)]}
         # 中间件拒掉的调用经这条总线补发工具行（circle.tool_events）
         token = bind_bus(bus)
         bus.emit("run_start")
@@ -410,12 +419,14 @@ class HarnessBridge:
         try:
             stream_exc: BaseException | None = None
             used_stream = False
+            stream = None
             try:
-                for item in self._agent.stream(
+                stream = self._agent.stream(
                     payload,
                     config=config,
                     stream_mode="messages",
-                ):
+                )
+                for item in stream:
                     if self._cancelled:
                         self._on_status("cancelled")
                         return
@@ -473,6 +484,17 @@ class HarnessBridge:
                         final_thinking = thinking
             except Exception as exc:  # noqa: BLE001
                 stream_exc = exc
+            finally:
+                close = getattr(stream, "close", None) if self._cancelled else None
+                if callable(close):
+                    try:
+                        close()
+                    except (RuntimeError, ValueError):
+                        pass
+
+            if self._cancelled:
+                self._on_status("cancelled")
+                return
 
             if used_stream:
                 state = self._agent.get_state(self._config)
@@ -496,6 +518,7 @@ class HarnessBridge:
                 return
 
             if stream_exc is not None:
+                self._sink.flush()
                 self._on_error(stream_exc)
                 self._on_status("ready")
                 return
@@ -522,6 +545,10 @@ class HarnessBridge:
             self._on_done(final_text or NO_OUTPUT)
             self._on_status("ready")
         except Exception as exc:  # noqa: BLE001
+            if self._cancelled:
+                self._on_status("cancelled")
+                return
+            self._sink.flush()
             self._on_error(exc)
             self._on_status("ready")
 

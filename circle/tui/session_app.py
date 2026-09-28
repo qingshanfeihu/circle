@@ -2484,7 +2484,21 @@ class CircleSessionApp:
         with self._app.lock:
             if self._turn_base < 0:
                 return  # 回合已收口：迟到的快照不再上屏
+            previous = self._last_snap
             self._last_snap = snap
+            if (previous is None or previous.usage_cost != snap.usage_cost
+                    or previous.fork_usage != snap.fork_usage
+                    or previous.fork_usage_cost != snap.fork_usage_cost):
+                fork = snap.fork_usage
+                self._footer.update(
+                    main_costs=dict(snap.usage_cost),
+                    fork_costs=dict(snap.fork_usage_cost),
+                    fork_input=int(fork.get("input_tokens") or 0),
+                    fork_output=int(fork.get("output_tokens") or 0),
+                    fork_cache_hit=int(fork.get("prompt_cache_hit_tokens") or 0),
+                    fork_cache_write=int(fork.get("prompt_cache_write_tokens") or 0),
+                    fork_cache_write_1h=int(fork.get("prompt_cache_write_1h_tokens") or 0),
+                )
             self._sync_plan_panel(snap)
             # 流式 token 很密：同一形态的快照 40ms 内只画一次；消息数、状态或流式段起止一变就立刻画
             now = time.monotonic()

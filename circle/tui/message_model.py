@@ -7,10 +7,10 @@ fork card becomes a generic subagent card.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping
-
+from typing import Any
 
 _EMPTY_MAP: Mapping[str, Any] = MappingProxyType({})
 
@@ -76,6 +76,8 @@ class MessageSnapshot:
     status: str = "idle"
     usage: Mapping[str, int] = field(default_factory=lambda: _EMPTY_MAP)
     usage_cost: Mapping[str, Any] = field(default_factory=lambda: _EMPTY_MAP)
+    fork_usage: Mapping[str, int] = field(default_factory=lambda: _EMPTY_MAP)
+    fork_usage_cost: Mapping[str, Any] = field(default_factory=lambda: _EMPTY_MAP)
     llm_phase: str = ""
     output_token_count: int = 0
     llm_round: int = 0
@@ -250,27 +252,27 @@ def append_content_block(msg: Message, block: ContentBlock) -> Message:
 
 
 __all__ = [
+    "BLOCK_AGENT_CARD",
+    "BLOCK_ASK_USER",
+    "BLOCK_ERROR",
+    "BLOCK_TEXT",
+    "BLOCK_THINKING",
+    "BLOCK_TODO_LIST",
+    "BLOCK_TOOL_RESULT",
+    "BLOCK_TOOL_USE",
+    "BLOCK_WARN",
     "ContentBlock",
     "Message",
     "MessageSnapshot",
-    "BLOCK_TEXT",
-    "BLOCK_THINKING",
-    "BLOCK_TOOL_USE",
-    "BLOCK_TOOL_RESULT",
-    "BLOCK_TODO_LIST",
-    "BLOCK_ASK_USER",
-    "BLOCK_WARN",
-    "BLOCK_AGENT_CARD",
-    "BLOCK_ERROR",
-    "make_uuid",
+    "append_content_block",
+    "make_assistant_message",
+    "make_payload_block",
+    "make_system_message",
     "make_text_block",
     "make_thinking_block",
-    "make_tool_use_block",
     "make_tool_result_block",
-    "make_payload_block",
-    "make_assistant_message",
+    "make_tool_use_block",
     "make_user_message",
-    "make_system_message",
+    "make_uuid",
     "replace_content_block",
-    "append_content_block",
 ]

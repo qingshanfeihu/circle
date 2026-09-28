@@ -4,7 +4,9 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 from circle.ink.components.footer import FooterPane
+from circle.pricing import price_call
 from circle.tui.harness_bridge import HarnessBridge, format_tool_args
+from circle.tui.reducer import MessageReducer
 from tests.test_approvals import _session
 
 
@@ -58,6 +60,34 @@ def test_session_passes_latest_context_input_to_footer(tmp_path, monkeypatch):
                       "output_tokens": 100, "cache_hit": 100_000})
     text = app._footer._session_summary()
     assert "CH20.0% CTX 20.0k/" in text
+    app._footer.shutdown()
+
+
+def test_footer_includes_subagents_but_context_stays_main(tmp_path, monkeypatch):
+    app = _session(tmp_path, monkeypatch)
+    app._turn_base = 0
+    app._footer.update(model="claude-sonnet-5")
+    app._apply_usage({"input_tokens": 100, "context_input_tokens": 80,
+                      "output_tokens": 10, "cache_hit": 20})
+    reducer = MessageReducer()
+    main_usage = {"input_tokens": 100, "output_tokens": 10,
+                  "prompt_cache_hit_tokens": 20}
+    fork_usage = {"input_tokens": 900, "output_tokens": 90,
+                  "prompt_cache_hit_tokens": 600}
+    reducer.dispatch({"kind": "llm_end", "run_id": "r", "seq": 1,
+                      "payload": {"name": "usage_only", "usage_call_id": "main",
+                                  "usage_cost": price_call("claude-sonnet-5", main_usage)},
+                      "usage": main_usage})
+    reducer.dispatch({"kind": "llm_end", "run_id": "r", "seq": 2,
+                      "tags": {"parent_subagent": "general-purpose"},
+                      "payload": {"name": "subagent_usage", "usage_call_id": "fork",
+                                  "usage_cost": price_call("qwen3.8-flash", fork_usage)},
+                      "usage": fork_usage})
+    app._on_snapshot(reducer.snapshot())
+    summary = app._footer._session_summary()
+    assert "↑ 1.0k · ↓ 100 tokens" in summary
+    assert "¥" in summary and "$" in summary
+    assert "CH62.0% CTX 80/200.0k" in summary
     app._footer.shutdown()
 
 

@@ -32,7 +32,8 @@ def test_explore_spec_carries_only_read_only_tools(tmp_path: Path, monkeypatch):
     names = {t.name for t in explore["tools"]}
     assert names <= {"webfetch", "websearch", "lsp", "skill"}
     assert not names & {"apply_patch", "question", "execute", "write_file", "edit_file"}
-    (fs,) = explore["middleware"]
+    fs = next(mw for mw in explore["middleware"]
+              if type(mw).__name__ == "FilesystemMiddleware")
     assert type(fs).__name__ == "FilesystemMiddleware"
     assert sorted(t.name for t in fs.tools) == sorted(EXPLORE_FS_TOOLS)
     assert explore["interrupt_on"] == {}

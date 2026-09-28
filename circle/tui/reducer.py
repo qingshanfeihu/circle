@@ -65,12 +65,15 @@ SUBAGENT_TOOLS = frozenset({"task"})
 class MessageReducer:
     def __init__(self) -> None:
         self._messages: list[Message] = []
-        self._streaming_text: str | None = None
+        self._streaming_chunks: list[str] = []
         self._status = "idle"
         self._source_run_id = ""
         self._usage: dict[str, int] = {}
         self._usage_cost = UsageCostTotals()
         self._usage_call_ids: set[tuple[str, str]] = set()
+        self._fork_usage: dict[str, int] = {}
+        self._fork_usage_cost = UsageCostTotals()
+        self._fork_usage_call_ids: set[tuple[str, str]] = set()
         self._llm_phase = ""
         self._output_token_count = 0
         self._llm_round = 0
@@ -110,10 +113,12 @@ class MessageReducer:
     def _snapshot_locked(self) -> MessageSnapshot:
         return MessageSnapshot(
             messages=tuple(self._messages),
-            streaming_text=self._streaming_text,
+            streaming_text="".join(self._streaming_chunks) if self._streaming_chunks else None,
             status=self._status,
             usage=MappingProxyType(dict(self._usage)),
             usage_cost=MappingProxyType(self._usage_cost.snapshot()),
+            fork_usage=MappingProxyType(dict(self._fork_usage)),
+            fork_usage_cost=MappingProxyType(self._fork_usage_cost.snapshot()),
             llm_phase=self._llm_phase,
             output_token_count=self._output_token_count,
             llm_round=self._llm_round,
@@ -132,7 +137,7 @@ class MessageReducer:
     def reset(self, *, source_run_id: str = "") -> None:
         with self._lock:
             self._messages.clear()
-            self._streaming_text = None
+            self._streaming_chunks.clear()
             self._status = "idle"
             self._source_run_id = str(source_run_id or "")
             self._llm_phase = ""
@@ -195,7 +200,7 @@ class MessageReducer:
             if changed:
                 self._agent_board_rev += 1
             self._status = "cancelled"
-            self._streaming_text = None
+            self._streaming_chunks.clear()
             self._llm_phase = ""
             self._output_token_count = 0
             for tool_use_id in tuple(self._inflight_tool_use_ids):
@@ -207,24 +212,30 @@ class MessageReducer:
             snap = self._snapshot_locked()
         self._notify(snap)
 
-    def dispatch(self, event: CircleEvent) -> None:
+    def dispatch(self, event: CircleEvent, *, notify: bool = True) -> bool:
+        """Fold one event; return false only when the run is cancelled.
+
+        The TUI sink defers snapshots to its coalescing timer. Direct reducer
+        callers keep synchronous notifications for tests and other consumers.
+        """
         kind = event.get("kind") or ""
         snap = None
         try:
             with self._lock:
                 if self._status == "cancelled":
-                    return
+                    return False
                 event_run_id = str(event.get("run_id") or "")
                 if event_run_id:
                     self._source_run_id = event_run_id
                 self._handle(kind, event)
                 self._rev += 1
-                snap = self._snapshot_locked()
+                if notify:
+                    snap = self._snapshot_locked()
         except Exception:
             logger.exception("MessageReducer dispatch error: kind=%s", kind)
-        if snap is None:
-            snap = self.snapshot()
-        self._notify(snap)
+        if notify:
+            self._notify(snap if snap is not None else self.snapshot())
+        return True
 
     def _handle(self, kind: str, event: CircleEvent) -> None:
         if kind == "run_start":
@@ -538,21 +549,42 @@ class MessageReducer:
             return
         self._llm_phase = "output"
         self._output_token_count += self._estimate_tokens(content)
-        self._streaming_text = content if self._streaming_text is None else self._streaming_text + content
+        self._streaming_chunks.append(content)
 
     def _on_llm_end(self, event: CircleEvent) -> None:
         payload = event.get("payload") or {}
         is_subagent = self._is_subagent_event(event)
+        if is_subagent and payload.get("name") == "subagent_usage":
+            usage_id = str(payload.get("usage_call_id") or "")
+            identity = (str(event.get("run_id") or ""), usage_id)
+            if usage_id and identity in self._fork_usage_call_ids:
+                return
+            if usage_id:
+                self._fork_usage_call_ids.add(identity)
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                self._merge_usage_into(self._fork_usage, usage)
+                self._fork_usage_cost.add(payload.get("usage_cost"))
         if is_subagent:
             self._card_event("llm_end", event)
-        if not is_subagent:
-            self._merge_main_llm_fields(payload)
-            if self._llm_round in self._thinking_message_idx:
-                self._upsert_main_thinking(event, raw=self._thinking_raw_by_round.get(self._llm_round, ""),
-                                           payload=payload, done=True)
+            content = payload.get("content")
+            if isinstance(content, str) and content and content != "[Calling tools]":
+                parent_tool_use_id = self._current_subagent_parent(event)
+                if parent_tool_use_id:
+                    self._messages.append(make_assistant_message(
+                        uuid=make_uuid(event.get("run_id") or "", event.get("seq") or 0),
+                        content=make_text_block(content), timestamp=event.get("ts") or "",
+                        parent_tool_use_id=parent_tool_use_id,
+                        subagent_type=str((event.get("tags") or {}).get("parent_subagent") or ""),
+                    ))
+            return
+        self._merge_main_llm_fields(payload)
+        if self._llm_round in self._thinking_message_idx:
+            self._upsert_main_thinking(event, raw=self._thinking_raw_by_round.get(self._llm_round, ""),
+                                       payload=payload, done=True)
         name = payload.get("name") or ""
         usage = event.get("usage")
-        if isinstance(usage, dict) and not is_subagent and name == "usage_only":
+        if isinstance(usage, dict) and name == "usage_only":
             usage_id = str(payload.get("usage_call_id") or "")
             identity = (str(event.get("run_id") or ""), usage_id)
             if usage_id and identity in self._usage_call_ids:
@@ -566,7 +598,7 @@ class MessageReducer:
         content = payload.get("content") or ""
         if not isinstance(content, str):
             content = str(content)
-        self._streaming_text = None
+        self._streaming_chunks.clear()
         self._llm_phase = ""
         self._output_token_count = 0
         if not content or content == "[Calling tools]":
@@ -878,13 +910,17 @@ class MessageReducer:
                 return owner
         return self._subagent_parent_stack[-1] if self._subagent_parent_stack else ""
 
-    def _merge_usage(self, usage: dict[str, Any]) -> None:
+    @staticmethod
+    def _merge_usage_into(totals: dict[str, int], usage: dict[str, Any]) -> None:
         for key in ("input_tokens", "output_tokens", "total_tokens", "prompt_cache_hit_tokens",
                     "prompt_cache_miss_tokens", "prompt_cache_write_tokens",
                     "prompt_cache_write_1h_tokens"):
             value = usage.get(key)
             if isinstance(value, int):
-                self._usage[key] = self._usage.get(key, 0) + value
+                totals[key] = totals.get(key, 0) + value
+
+    def _merge_usage(self, usage: dict[str, Any]) -> None:
+        self._merge_usage_into(self._usage, usage)
 
     def _notify(self, snap: MessageSnapshot) -> None:
         for cb in list(self._listeners):

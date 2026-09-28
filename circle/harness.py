@@ -17,6 +17,7 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -33,6 +34,7 @@ from circle.middleware import (
     ToolErrorBoundaryMiddleware,
     ToolResultPruneMiddleware,
 )
+from circle.middleware.cancellation import CancellationMiddleware
 from circle.plan_backend import PlanGuardedBackend
 from circle.prompt_features import (
     build_extra_tools,
@@ -88,7 +90,8 @@ def _ensure_tool_description_profiles() -> None:
         for key in _PROFILE_KEYS:
             try:
                 register_harness_profile(key, profile)
-            except Exception:  # noqa: BLE001
+            except Exception:
+                logger.debug("tool description profile unavailable: %s", key, exc_info=True)
                 continue
     _profiles_ready = True
 
@@ -178,17 +181,27 @@ def create_harness(
     policy = approvals or default_policy(home)
     # 禁止类命令在后端拒绝执行：主代理与子代理共用这个后端，一处拦住全部
     backend.command_guard = policy.deny_message
-    policy.bind_workspace(backend._resolve_path, backend.cwd)  # noqa: SLF001
+    policy.bind_workspace(backend._resolve_path, backend.cwd)
     explore = {
         **explore,
         "tools": [t for t in tools if getattr(t, "name", None) in EXPLORE_EXTRA_TOOLS],
         # 替换子代理默认的文件系统中间件：没有 write_file / edit_file / delete / execute
-        "middleware": [FilesystemMiddleware(backend=backend, tools=list(EXPLORE_FS_TOOLS))],
+        "middleware": [FilesystemMiddleware(backend=backend, tools=list(EXPLORE_FS_TOOLS)),
+                       CancellationMiddleware()],
         # 只读子代理不需要审批；不写这一项它会继承主代理的审批表
         "interrupt_on": {},
     }
     gated: list[str] = list(GATED_TOOLS)
-    subagents: list[dict[str, Any]] = [explore]
+    # Declaring general-purpose explicitly lets the same cancellation boundary
+    # reach it; deepagents only inherits replacements for existing middleware
+    # slots into its automatically created general-purpose agent.
+    general_purpose: dict[str, Any] = {
+        **GENERAL_PURPOSE_SUBAGENT,
+        "middleware": [CancellationMiddleware()],
+    }
+    if skills:
+        general_purpose["skills"] = skills
+    subagents: list[dict[str, Any]] = [general_purpose, explore]
     extension_middleware: list[Any] = []
     if extensions is not None:
         taken = {getattr(t, "name", None) for t in tools} | set(BUILTIN_TOOL_NAMES)
@@ -200,7 +213,9 @@ def create_harness(
             taken.add(tool.name)
             tools.append(tool)
         gated.extend(name for name in extensions.interrupt_on() if name in taken)
-        subagents.extend(extensions.subagents(tools))
+        for spec in extensions.subagents(tools):
+            subagents.append({**spec, "middleware": [*spec.get("middleware", []),
+                                                      CancellationMiddleware()]})
         extension_middleware = extensions.middleware()
 
     # 通用中间件在最前：错误边界包住其后所有工具层（含扩展的 tool_boundary），
@@ -209,6 +224,7 @@ def create_harness(
     compat = ToolCallCompatibilityMiddleware(gated=interrupt_on)
     extra_mw: list[Any] = [
         ToolErrorBoundaryMiddleware(),
+        CancellationMiddleware(),
         compat,
         LoopGuardMiddleware(),
         ToolResultPruneMiddleware(),
@@ -221,8 +237,8 @@ def create_harness(
     if chat_model is not None:
         try:
             extra_mw.extend(build_context_middleware(chat_model, backend))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            logger.debug("context middleware unavailable", exc_info=True)
     extra_mw.extend(extension_middleware)
 
     kwargs: dict[str, Any] = {
@@ -245,12 +261,12 @@ def create_harness(
     agent = create_deep_agent(**kwargs)
     try:
         compat.bind(agent.nodes["tools"].bound.tools_by_name.values())
-    except Exception:  # noqa: BLE001 — 取不到工具表时只修已解析到工具的调用
+    except Exception:
         logger.debug("tool table unavailable for tool-call repair", exc_info=True)
     try:
-        agent._circle_backend = backend  # type: ignore[attr-defined]  # noqa: SLF001
-        agent._circle_approvals = policy  # type: ignore[attr-defined]  # noqa: SLF001
-        agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]  # noqa: SLF001
-    except Exception:  # noqa: BLE001
-        pass
+        agent._circle_backend = backend  # type: ignore[attr-defined]
+        agent._circle_approvals = policy  # type: ignore[attr-defined]
+        agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]
+    except Exception:
+        logger.debug("Circle harness metadata unavailable", exc_info=True)
     return agent

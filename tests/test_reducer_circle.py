@@ -4,7 +4,11 @@ settles in-flight tools and running subagent cards, and the sink posts snapshots
 
 from __future__ import annotations
 
-from circle.display_lexicon import ERROR_WITHOUT_TEXT, tool_result_is_error, tool_result_recoverable
+from circle.display_lexicon import (
+    ERROR_WITHOUT_TEXT,
+    tool_result_is_error,
+    tool_result_recoverable,
+)
 from circle.events import EventBus
 from circle.tui.message_model import (
     BLOCK_AGENT_CARD,
@@ -74,8 +78,8 @@ def test_errors_and_warnings_become_blocks():
 def test_cancel_settles_running_tools_and_subagent_cards():
     r = MessageReducer()
     _call(r, 1)
-    with r._lock:  # noqa: SLF001
-        r._upsert_card("agent:x", {"kind": "subagent", "status": "running"})  # noqa: SLF001
+    with r._lock:
+        r._upsert_card("agent:x", {"kind": "subagent", "status": "running"})
     r.cancel_run(reason="ctrl+c")
     snap = r.snapshot()
     assert snap.status == "cancelled"
@@ -88,16 +92,16 @@ def test_cancel_settles_running_tools_and_subagent_cards():
 
 def test_card_transcript_upsert_replaces_by_key():
     r = MessageReducer()
-    with r._lock:  # noqa: SLF001
-        r._upsert_card("agent:y", {"_transcript_append": {"key": "t1", "tool": "ls"}})  # noqa: SLF001
-        r._upsert_card("agent:y", {"_transcript_upsert": {"key": "t1", "status": "ok"}})  # noqa: SLF001
-        r._upsert_card("agent:y", {"_transcript_upsert": {"key": "t2", "tool": "grep"}})  # noqa: SLF001
+    with r._lock:
+        r._upsert_card("agent:y", {"_transcript_append": {"key": "t1", "tool": "ls"}})
+        r._upsert_card("agent:y", {"_transcript_upsert": {"key": "t1", "status": "ok"}})
+        r._upsert_card("agent:y", {"_transcript_upsert": {"key": "t2", "tool": "grep"}})
     card = _blocks(r.snapshot(), BLOCK_AGENT_CARD)[0]
     assert card.payload["transcript"] == [{"key": "t1", "tool": "ls", "status": "ok"},
                                           {"key": "t2", "tool": "grep"}]
 
 
-def test_sink_posts_a_snapshot_per_event():
+def test_sink_flushes_the_latest_state():
     posted = []
     sink = TuiSink(post=posted.append)
     bus = EventBus(run_id="run-1")
@@ -105,7 +109,6 @@ def test_sink_posts_a_snapshot_per_event():
     bus.emit("run_start")
     bus.emit("llm_token", payload={"content": "hello"})
     bus.emit("run_end", payload={"awaiting_user": True})
-    assert [s.status for s in posted] == ["running", "running", "done"]
-    assert posted[1].streaming_text == "hello"
+    assert posted[-1].status == "done"
     assert posted[-1].run_end_info["awaiting_user"] is True
     assert posted[-1].source_run_id == "run-1"
