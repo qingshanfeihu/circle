@@ -13,10 +13,15 @@ TERM/COLORTERM 降级，输出才与屏上其余 panel_bg 完全一致且与运�
 from __future__ import annotations
 
 import re
+from itertools import pairwise
 
-from ..theme import palette, rgb_to_hex, sgr_join as _sgr_join, sgr_to_rgb
+from ..string_width import char_width, string_width
+from ..theme import palette, rgb_to_hex, sgr_to_rgb
+from ..theme import sgr_join as _sgr_join
 
 _UNDERLINE = "\x1b[4m"
+_STRIKE = "\x1b[9m"
+_ITALIC = "\x1b[3m"
 
 _NON_SGR_RE = re.compile(r"\x1b\[[0-9;]*[^m0-9;\x1b]")
 _FENCE_RE = re.compile(r"^```(\w*)\s*$")
@@ -29,6 +34,10 @@ _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
 _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_STRIKE_RE = re.compile(r"~~(.+?)~~")
+_TASK_RE = re.compile(r"^\[([ xX])\]\s+(.+)$")
+_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
+_SGR_SPLIT_RE = re.compile(r"(\x1b\[[0-9;]*m)")
 
 _MODEL_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SGR_TEXT_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -60,7 +69,9 @@ class MarkdownRenderer:
         code_lines: list[str] = []
         code_lang = ""
 
-        for line in lines:
+        index = 0
+        while index < len(lines):
+            line = lines[index]
             fence_m = _FENCE_RE.match(line)
             if fence_m:
                 if in_code:
@@ -71,12 +82,29 @@ class MarkdownRenderer:
                 else:
                     in_code = True
                     code_lang = fence_m.group(1)
+                index += 1
                 continue
             if in_code:
                 code_lines.append(line)
+                index += 1
                 continue
+            if index + 1 < len(lines):
+                table = self._table_spec(line, lines[index + 1])
+                if table is not None:
+                    headers, alignments = table
+                    index += 2
+                    rows: list[list[str]] = []
+                    while index < len(lines):
+                        cells = self._table_cells(lines[index])
+                        if cells is None or not any(cells):
+                            break
+                        rows.append((cells + [""] * len(headers))[:len(headers)])
+                        index += 1
+                    _emit(self._render_table(headers, alignments, rows, pal), "table")
+                    continue
             rendered, role = self._render_line(line, pal)
             _emit(rendered, role)
+            index += 1
 
         if in_code:
             lang_tag = f"{pal.dim}```{code_lang}{pal.reset}" if code_lang else f"{pal.dim}```{pal.reset}"
@@ -146,25 +174,193 @@ class MarkdownRenderer:
         if ol_m:
             indent = ol_m.group(1)
             num_prefix = line[len(indent):].split(".", 1)[0]
-            content = self._inline(ol_m.group(2), pal)
+            content = self._list_content(ol_m.group(2), pal)
             return f"{indent}{num_prefix}. {content}", "list"
 
         ul_m = _UL_RE.match(line)
         if ul_m:
             indent = ul_m.group(1)
-            content = self._inline(ul_m.group(2), pal)
-            return f"{indent}• {content}", "list"
+            content = self._list_content(ul_m.group(2), pal)
+            prefix = "" if _TASK_RE.match(ul_m.group(2)) else "• "
+            return f"{indent}{prefix}{content}", "list"
 
         return self._inline(line, pal), "text"
 
     def _inline(self, text: str, pal) -> str:
-        text = _BOLD_RE.sub(lambda m: f"{pal.em}{m.group(1) or m.group(2)}{pal.reset}", text)
-        text = _INLINE_CODE_RE.sub(lambda m: f"{pal.blue}{m.group(1)}{pal.reset}", text)
-        text = _LINK_RE.sub(
-            lambda m: f"{_UNDERLINE}{m.group(1)}{pal.reset} {pal.dim}({m.group(2)}){pal.reset}",
-            text,
-        )
+        # Keep inline code literal: emphasis and deletion markers inside it are text.
+        code: list[str] = []
+        links: list[tuple[str, str]] = []
+
+        def protect(match: re.Match[str]) -> str:
+            code.append(f"{pal.blue}{match.group(1)}{pal.reset}")
+            return f"\ufff0{len(code) - 1}\ufff1"
+
+        text = _INLINE_CODE_RE.sub(protect, text)
+
+        def protect_link(match: re.Match[str]) -> str:
+            links.append((match.group(1), match.group(2)))
+            return f"\ufff2{len(links) - 1}\ufff3"
+
+        text = _LINK_RE.sub(protect_link, text)
+
+        def emphasis(value: str) -> str:
+            value = _BOLD_RE.sub(
+                lambda m: f"{pal.em}{m.group(1) or m.group(2)}{pal.reset}", value)
+            value = _STRIKE_RE.sub(
+                lambda m: f"{_sgr_join(pal.faint, _STRIKE)}{m.group(1)}{pal.reset}", value)
+            return _ITALIC_RE.sub(
+                lambda m: f"{_sgr_join(pal.text, _ITALIC)}{m.group(1) or m.group(2)}{pal.reset}",
+                value,
+            )
+
+        text = emphasis(text)
+        for index, (label, url) in enumerate(links):
+            styled = f"{_UNDERLINE}{emphasis(label)}{pal.reset} {pal.dim}({url}){pal.reset}"
+            text = text.replace(f"\ufff2{index}\ufff3", styled)
+        for index, styled in enumerate(code):
+            text = text.replace(f"\ufff0{index}\ufff1", styled)
         return text
+
+    def _list_content(self, text: str, pal) -> str:
+        task = _TASK_RE.match(text)
+        if task is None:
+            return self._inline(text, pal)
+        checked = task.group(1).lower() == "x"
+        mark = f"{pal.green if checked else pal.dim}{'☑' if checked else '☐'}{pal.reset}"
+        return f"{mark} {self._inline(task.group(2), pal)}"
+
+    @staticmethod
+    def _table_cells(line: str) -> list[str] | None:
+        raw = line.strip()
+        if "|" not in raw:
+            return None
+        cells: list[str] = []
+        current: list[str] = []
+        in_code = False
+        separators = 0
+        trailing_separator = False
+        index = 0
+        while index < len(raw):
+            char = raw[index]
+            if char == "\\" and index + 1 < len(raw) and raw[index + 1] == "|":
+                current.append("|")
+                index += 2
+                continue
+            if char == "`":
+                in_code = not in_code
+            if char == "|" and not in_code:
+                cells.append("".join(current).strip())
+                current = []
+                separators += 1
+                trailing_separator = index == len(raw) - 1
+            else:
+                current.append(char)
+            index += 1
+        cells.append("".join(current).strip())
+        if raw.startswith("|"):
+            cells.pop(0)
+        if trailing_separator:
+            cells.pop()
+        return cells if separators else None
+
+    @classmethod
+    def _table_spec(cls, header: str, separator: str) -> tuple[list[str], list[str]] | None:
+        headers = cls._table_cells(header)
+        markers = cls._table_cells(separator)
+        if not headers or not markers or len(headers) != len(markers):
+            return None
+        if not all(_TABLE_SEPARATOR_RE.fullmatch(marker) for marker in markers):
+            return None
+        aligns = ["center" if marker.startswith(":") and marker.endswith(":")
+                  else "right" if marker.endswith(":") else "left" for marker in markers]
+        return headers, aligns
+
+    @staticmethod
+    def _visible_width(text: str) -> int:
+        return string_width(_SGR_TEXT_RE.sub("", text))
+
+    @staticmethod
+    def _wrap_styled(text: str, width: int, reset: str) -> list[str]:
+        parts: list[str] = []
+        current = ""
+        active = ""
+        used = 0
+        for token in _SGR_SPLIT_RE.split(text):
+            if not token:
+                continue
+            if _SGR_TEXT_RE.fullmatch(token):
+                current += token
+                active = "" if token == reset else token
+                continue
+            for char in token:
+                cell_width = char_width(char)
+                if used and used + cell_width > width:
+                    parts.append(current + (reset if active else ""))
+                    current = active
+                    used = 0
+                current += char
+                used += cell_width
+        parts.append(current)
+        return parts
+
+    @staticmethod
+    def _column_widths(desired: list[int], budget: int) -> list[int]:
+        widths = [min(value, max(2, budget // len(desired))) for value in desired]
+        remaining = budget - sum(widths)
+        while remaining > 0 and any(width < want for width, want in zip(widths, desired)):
+            for index, want in enumerate(desired):
+                if remaining == 0:
+                    break
+                if widths[index] < want:
+                    widths[index] += 1
+                    remaining -= 1
+        return widths
+
+    def _render_table(self, headers: list[str], alignments: list[str],
+                      rows: list[list[str]], pal) -> str:
+        count = len(headers)
+        budget = self._width - (3 * count + 1)
+        if budget < 2 * count:
+            # A terminal too narrow for one character per column gets a vertical
+            # key/value layout, still without clipping any cell content.
+            vertical = []
+            for row in rows or [[""] * count]:
+                for header, cell in zip(headers, row):
+                    styled = f"{pal.em}{header}{pal.reset}: {self._inline(cell, pal)}"
+                    vertical.extend(self._wrap_styled(styled, self._width, pal.reset))
+            return "\n".join(vertical)
+        styled = [[self._inline(cell, pal) for cell in row] for row in [headers, *rows]]
+        desired = [max(2, *(self._visible_width(row[col]) for row in styled))
+                   for col in range(count)]
+        widths = self._column_widths(desired, budget)
+
+        def rule(left: str, middle: str, right: str) -> str:
+            return f"{pal.dim}{left}{middle.join('─' * (width + 2) for width in widths)}{right}{pal.reset}"
+
+        def render_row(cells: list[str], *, heading: bool) -> list[str]:
+            wrapped = [self._wrap_styled(f"{pal.em}{cell}{pal.reset}" if heading else cell,
+                                         width, pal.reset)
+                       for cell, width in zip(cells, widths)]
+            result = []
+            for line_index in range(max(map(len, wrapped))):
+                fragments = []
+                for col, width in enumerate(widths):
+                    part = wrapped[col][line_index] if line_index < len(wrapped[col]) else ""
+                    gap = width - self._visible_width(part)
+                    align = alignments[col]
+                    left = gap if align == "right" else gap // 2 if align == "center" else 0
+                    fragments.append(f" {' ' * left}{part}{' ' * (gap - left)} ")
+                result.append(f"{pal.dim}│{pal.reset}" +
+                              f"{pal.dim}│{pal.reset}".join(fragments) +
+                              f"{pal.dim}│{pal.reset}")
+            return result
+
+        lines = [rule("┌", "┬", "┐"), *render_row(styled[0], heading=True),
+                 rule("├", "┼", "┤")]
+        for row in styled[1:]:
+            lines.extend(render_row(row, heading=False))
+        lines.append(rule("└", "┴", "┘"))
+        return "\n".join(lines)
 
     def _fmt_code_block(self, lines: list[str], lang: str, pal) -> str:
         parts: list[str] = []
@@ -180,13 +376,21 @@ class MarkdownRenderer:
     def render_final(self, text: str) -> str:
         if not text:
             return ""
+        lines = text.splitlines()
+        if (_STRIKE_RE.search(text) or any(_TASK_RE.match(match.group(2))
+                                            for line in lines
+                                            if (match := _UL_RE.match(line) or _OL_RE.match(line)))
+                or any(self._table_spec(first, second) is not None
+                       for first, second in pairwise(lines))):
+            return self.render_streaming(text)
         try:
             return self._rich_render(text)
-        except Exception:
+        except Exception:  # noqa: BLE001 — rich is optional; streaming renderer is the fallback
             return self.render_streaming(text)
 
     def _rich_render(self, text: str) -> str:
         from io import StringIO
+
         from pygments.style import Style as _PygStyle
         from pygments.token import Token as _PygToken
         from rich.console import Console

@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from circle.display_lexicon import strip_leading_status_glyph, tool_result_recoverable
+from circle.ink.components.markdown_renderer import MarkdownRenderer
 from circle.ink.string_width import string_width
 from circle.ink.theme import GLYPH_MILESTONE, palette, sgr_join
 from circle.tui.agent_strip import (
@@ -131,7 +132,8 @@ def _call_line(item: Mapping[str, Any], pal: Any, now: float) -> str:
     return f"{row} {pal.dim}{summary or '工具已返回'}{pal.reset}"
 
 
-def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool) -> list[str]:
+def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool,
+                    width: int) -> list[str]:
     title = " ".join(str(item.get("title") or "").split())
     body = str(item.get("text") or "").strip()
     done = bool(item.get("done"))
@@ -153,7 +155,7 @@ def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool) -> lis
     if not expanded:
         lines[0] += f" {pal.faint}(ctrl+t 展开){pal.reset}"
         return lines
-    body_lines = body.splitlines()
+    body_lines = MarkdownRenderer(width=max(20, width - 3)).render_streaming(body).splitlines()
     if truncated and body_lines:
         body_lines[0] = f"…{body_lines[0]}"
     lines += [f"  {pal.faint}{raw}{pal.reset}" for raw in body_lines]
@@ -161,7 +163,7 @@ def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool) -> lis
 
 
 def render_detail_rows(card: Mapping[str, Any], *, now: float | None = None,
-                       expanded: bool = False) -> list[tuple[str, str | None]]:
+                       expanded: bool = False, width: int = 80) -> list[tuple[str, str | None]]:
     """The page's lines with each one's background tint (hex, or None)."""
     now = time.time() if now is None else now
     pal = palette()
@@ -179,7 +181,8 @@ def render_detail_rows(card: Mapping[str, Any], *, now: float | None = None,
             rows.append((_call_line(item, pal, now), tool_type_bg_hex(str(item.get("tool") or ""))))
             steps += 1
         elif item.get("kind") == "thinking_body" and (item.get("text") or item.get("title")):
-            rows += [(line, think_bg) for line in _thinking_lines(item, pal, expanded=expanded)]
+            rows += [(line, think_bg) for line in _thinking_lines(item, pal, expanded=expanded,
+                                                                 width=width)]
             steps += 1
             thinking += 1
     if not steps:
@@ -202,8 +205,9 @@ def render_detail_rows(card: Mapping[str, Any], *, now: float | None = None,
 
 
 def render_detail_lines(card: Mapping[str, Any], *, now: float | None = None,
-                        expanded: bool = False) -> list[str]:
-    return [line for line, _bg in render_detail_rows(card, now=now, expanded=expanded)]
+                        expanded: bool = False, width: int = 80) -> list[str]:
+    return [line for line, _bg in render_detail_rows(card, now=now, expanded=expanded,
+                                                     width=width)]
 
 
 __all__ = ["BUTTONS", "NO_STEPS", "format_chars", "render_detail_band", "render_detail_lines",

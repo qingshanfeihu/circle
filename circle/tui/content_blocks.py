@@ -57,10 +57,10 @@ def parse_content(content: Any) -> ParsedContent:
             if body:
                 thinks.append(body)
             # Anthropic streaming thinking often has no "done" flag until final
-            if block.get("thinking_done") is False or btype == "thinking" and not block.get("signature"):
-                # mid-stream thinking chunk
-                if "signature" not in block:
-                    thinking_done = False
+            if ("signature" not in block
+                    and (block.get("thinking_done") is False
+                         or btype == "thinking" and not block.get("signature"))):
+                thinking_done = False
             continue
         if btype in {"tool_use", "tool_result", "input_json"}:
             continue
@@ -117,7 +117,8 @@ def indent_continuations(text: str, prefix: str = "   ") -> str:
 
 
 def render_thinking_line(*, body: str, done: bool, expanded: bool = False,
-                         title: str | None = None, duration_s: float | None = None) -> str:
+                         title: str | None = None, duration_s: float | None = None,
+                         width: int = 80) -> str:
     """InfoTest ``_render_main_thinking_line``: ``∴ Thinking[: title]`` while running,
     ``∴ Thought[: title][ · duration]`` when settled; ctrl+t shows the body."""
     from circle.ink.components.footer import _format_elapsed
@@ -137,7 +138,10 @@ def render_thinking_line(*, body: str, done: bool, expanded: bool = False,
     line = f" {header_sgr}{header}{pal.reset}"
     body = str(body or "").strip()
     if expanded and body:
-        line += f"\n   {pal.faint}{indent_continuations(body, '   ')}{pal.reset}"
+        from circle.ink.components.markdown_renderer import MarkdownRenderer
+
+        rendered = MarkdownRenderer(width=max(20, width - 3)).render_streaming(body)
+        line += f"\n   {pal.faint}{indent_continuations(rendered, '   ')}{pal.reset}"
     elif not expanded:
         line += f" {pal.faint}(ctrl+t to expand){pal.reset}"
     return line

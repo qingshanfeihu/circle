@@ -716,7 +716,7 @@ class CircleSessionApp:
             hover=self._detail_hover)
         self._agent_detail_band.style.height = len(band)
         self._agent_detail_band_text.set_value("\n".join(band))
-        rows = render_detail_rows(card, expanded=self._thinking_expanded)
+        rows = render_detail_rows(card, expanded=self._thinking_expanded, width=width)
         # 重建不丢读者的位置：往上翻过的留在原处，贴底的继续贴底
         sticky, top = view.node.sticky_scroll, view.node.scroll_top
         view.restore([f" {line}" if line else "" for line, _bg in rows], [bg for _line, bg in rows])

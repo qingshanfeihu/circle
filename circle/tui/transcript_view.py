@@ -332,7 +332,8 @@ def render_turn_rows(snap: MessageSnapshot, opts: ViewOptions) -> list[Row]:
                     add(render_thinking_line(body=block.thinking, done=block.thinking_done,
                                              expanded=opts.thinking_expanded,
                                              title=block.thinking_title,
-                                             duration_s=block.thinking_duration_s),
+                                             duration_s=block.thinking_duration_s,
+                                             width=opts.width),
                         "thinking", think_bg)
             elif block.type == BLOCK_TEXT:
                 if block.text.strip():
