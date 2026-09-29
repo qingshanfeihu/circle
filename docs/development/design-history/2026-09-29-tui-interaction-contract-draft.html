@@ -1,0 +1,320 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Circle TUI 交互契约草案</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a single-column spec, 72ch running text, wide tables in their own scroll boxes, a sticky section nav on wide screens. */
+:root {
+  --bg: #eef0f2; --panel: #ffffff; --fg: #1c2229; --fg2: #4b5563; --faint: #8b95a1; --line: #d3d8de;
+  --accent: #0e6e66; --accent-soft: #e3f1ee; --warn: #b7600a; --warn-soft: #fbf1e3; --bad: #b3362b; --bad-soft: #fbe9e6;
+  --code-bg: #f1f3f5;
+  --mono: "JetBrains Mono", "SF Mono", Menlo, "PingFang SC", "Noto Sans CJK SC", monospace;
+  --sans: "IBM Plex Sans", -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1215; --panel: #161a1e; --fg: #dde2e7; --fg2: #aab3bd; --faint: #6b7683; --line: #2a3138;
+    --accent: #55c9ba; --accent-soft: #14302c; --warn: #f2b25a; --warn-soft: #2a2312; --bad: #ef8a7c; --bad-soft: #301a17;
+    --code-bg: #1f252b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1215; --panel: #161a1e; --fg: #dde2e7; --fg2: #aab3bd; --faint: #6b7683; --line: #2a3138;
+  --accent: #55c9ba; --accent-soft: #14302c; --warn: #f2b25a; --warn-soft: #2a2312; --bad: #ef8a7c; --bad-soft: #301a17;
+  --code-bg: #1f252b; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.7; }
+.wrap { max-width: 1160px; margin: 0 auto; padding-block: 32px 72px; padding-inline: 16px; display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 40px; }
+@media (max-width: 900px) { .wrap { grid-template-columns: minmax(0, 1fr); } nav.toc { display: none; } }
+nav.toc { position: sticky; top: env(safe-area-inset-top, 0px); align-self: start; padding-top: 6px; font-size: 13px; }
+nav.toc a { display: block; color: var(--fg2); text-decoration: none; padding: 3px 0; border-left: 2px solid transparent; padding-left: 10px; }
+nav.toc a:hover { color: var(--fg); border-color: var(--accent); }
+nav.toc .k { color: var(--faint); font-family: var(--mono); font-size: 11px; margin-right: 6px; }
+main { min-width: 0; }
+h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 6px; text-wrap: balance; }
+.lede { color: var(--fg2); max-width: 72ch; margin: 0 0 8px; }
+.meta { color: var(--faint); font-size: 13px; font-family: var(--mono); margin-bottom: 36px; }
+h2 { font-size: 19px; font-weight: 600; margin: 44px 0 12px; padding-top: 14px; border-top: 1px solid var(--line); text-wrap: balance; }
+h2 .k { color: var(--faint); font-family: var(--mono); font-size: 13px; margin-right: 10px; font-weight: 400; }
+h3 { font-size: 15.5px; font-weight: 600; margin: 24px 0 8px; }
+p { margin: 0 0 12px; max-width: 72ch; }
+ul, ol { margin: 0 0 12px; padding-left: 22px; max-width: 72ch; }
+li { margin-bottom: 5px; }
+li::marker { color: var(--faint); }
+code, .m { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.55; background: var(--code-bg); padding: 12px 14px; border-radius: 5px; overflow-x: auto; margin: 0 0 14px; }
+pre .u { font-weight: 700; } pre .a { color: var(--accent); } pre .w { color: var(--warn); } pre .f { color: var(--faint); } pre .b { color: var(--bad); }
+.tbl { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+th { color: var(--fg2); font-weight: 600; font-size: 12.5px; letter-spacing: 0.02em; background: var(--code-bg); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.m, th.m { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+.rule { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 5px 5px 0; margin: 0 0 14px; max-width: 72ch; }
+.rule b { display: block; margin-bottom: 2px; }
+.rule .why { color: var(--fg2); font-size: 14px; }
+.callout { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 10px 14px; border-radius: 0 5px 5px 0; margin: 0 0 14px; max-width: 72ch; }
+.gap { border-left: 3px solid var(--bad); background: var(--bad-soft); padding: 10px 14px; border-radius: 0 5px 5px 0; margin: 0 0 14px; max-width: 72ch; }
+.tag { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 0 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--fg2); vertical-align: 1px; }
+.tag.ok { color: var(--accent); border-color: var(--accent); }
+.tag.no { color: var(--bad); border-color: var(--bad); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px 24px; margin-bottom: 14px; }
+.grid2 .c { border-top: 1px solid var(--line); padding-top: 8px; }
+.grid2 .c b { display: block; margin-bottom: 2px; }
+.grid2 .c p { color: var(--fg2); font-size: 14px; margin: 0; }
+small { color: var(--faint); }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <a href="#s0"><span class="k">0</span>结论</a>
+  <a href="#s1"><span class="k">1</span>为什么乱</a>
+  <a href="#s2"><span class="k">2</span>产品与用户</a>
+  <a href="#s3"><span class="k">3</span>同类产品怎么做</a>
+  <a href="#s4"><span class="k">4</span>统一模型</a>
+  <a href="#s5"><span class="k">5</span>显示规则</a>
+  <a href="#s6"><span class="k">6</span>状态矩阵</a>
+  <a href="#s7"><span class="k">7</span>现状差距</a>
+  <a href="#s8"><span class="k">8</span>推进方法</a>
+</nav>
+
+<main>
+<h1>Circle TUI 交互契约草案</h1>
+<p class="lede">回答一个问题：为什么单看每一屏都还行，合在一起就乱。答案是 Circle 有渲染契约、没有交互契约。这份草案把两者补成一套，供逐项裁决。</p>
+<div class="meta">2026-09-29 · 依据：circle main（d3c8b94）全量盘点 · InfoTest 07 章 §11.11/11.16/11.23/11.25 · Claude Code / Codex / Gemini CLI / opencode / Crush / pi / Aider / Kimi 公开源码与文档</div>
+
+<h2 id="s0"><span class="k">0</span>结论</h2>
+<p>Circle 的界面是两条血统叠出来的。渲染层（块间节奏、类型底色、字形分职、单行页脚、彩虹框）从 InfoTest 移植，有文档、有守门测试。交互层（审批、提问、/approvals、计划面板、plan mode、yolo）是对标 Pi/OpenCode 另起的，每个功能自己决定放在哪、怎么抢焦点、用什么颜色、说哪种语言。渲染契约管「一行长什么样」，不管「现在该看哪、该按什么」。缺的正是后者。</p>
+<p>补法不是再画一版好看的，是先立四条交互规则，再让所有面板服从它：</p>
+<ol>
+  <li><b>一个焦点。</b>屏幕上任何时候只有一个带框的东西，它就是键盘焦点。谁要用户，谁接管这个框。</li>
+  <li><b>一种问法。</b>审批、提问、始终允许的二次确认、/approvals 页，是同一种「问答卡」的四个实例，不是四个组件。</li>
+  <li><b>一眼看出轮到谁。</b>四档注意力：静默、进行中、等你、出错。每档一种视觉信号，不叠加。</li>
+  <li><b>一种语言面。</b>屏幕句子是中文；命令名、工具名、按键名、计量单位是英文闭集。中英之间空一格。</li>
+</ol>
+<p>推进用 InfoTest 已经验证过的方法：写 A/B 方案 demo 走真实 ink 管线出 ANSI，终端里并排比，逐项裁决，落成 <code>docs/tui_contract.md</code> 和守门测试。</p>
+
+<h2 id="s1"><span class="k">1</span>为什么乱：证据</h2>
+<p>下面每条都能在代码里指到位置，不是观感。</p>
+<div class="tbl"><table>
+<tr><th>现象</th><th>位置</th><th>说明</th></tr>
+<tr><td>审批有两套实现</td><td class="m">session_app.py:2691 / session.py:172</td><td>现役队列版按钮式；旧版 y/n 数字键、一个决定套所有调用，仍被 init/trust 门用的 CircleApp 引用</td></tr>
+<tr><td>一个面板槽三个主人</td><td class="m">session_app.py:2810 2895 2925</td><td>exec 审批、question 提问、/approvals 页都写进 _ask_panel，后 update 的赢；/approvals 忙碌时也允许打开</td></tr>
+<tr><td>三种焦点样式</td><td class="m">exec_approval_view / ask_user_view / agent_detail</td><td>审批按钮黄字对淡字；提问面板青色 ❯ 加绿选中；详情页按钮 sel_bg 反底</td></tr>
+<tr><td>等用户时框还在转</td><td class="m">session_app.py:2405 · harness_bridge.py:505</td><td>审批中断到达时页脚状态仍是 running，彩虹框继续流动，忙碌词照挂。没有任何信号说「轮到你」</td></tr>
+<tr><td>plan mode 无常驻标识</td><td class="m">session_app.py:1879</td><td>只有切换时一条 toast。yolo 则标在页脚行首。同类模式两种表达</td></tr>
+<tr><td>两种 toast 同名</td><td class="m">footer.py:383 · session_app.py:1479</td><td>页脚 1.2 秒消失的，和永久留在对话里的，代码里都叫 toast</td></tr>
+<tr><td>字形串岗</td><td class="m">plan_panel.py:51 · exec_approval_view.py:62</td><td>⏺ 同时当回答和计划标题；◆ 当审批图标和结果标记而不是里程碑；▸ 常量没人用、字面量当菜单光标；● 有第五种用法（暗色「已取消」）；△ ✻ ◉ ○ ❯ ✎ ☰ ⇆ 都在五字形表之外</td></tr>
+<tr><td>「还有 N」七种写法</td><td>transcript_view / agent_strip / plan_panel / slash 输出</td><td><code>+N lines (ctrl+o to expand)</code> <code>+N 更早</code> <code>另有 N 个在途</code> <code>下面还有 N 项</code> <code>…共 N 个</code> 等</td></tr>
+<tr><td>按键记法四种</td><td>各面板提示行</td><td>enter / Enter / ⏎ / 回车；esc / Esc；↑↓ / ↓↑；⇆ / ←→</td></tr>
+<tr><td>中英混排无规则</td><td>slash_commands.py · exec_approval_view.py · footer.py</td><td>/help 全英文，审批面板英文标题配中文尾注，忙碌词英文动词配中文相位，<code>(busy — 等待当前回合完成)</code></td></tr>
+<tr><td>分隔线四种宽度</td><td class="m">session_app.py:1443 · agent_strip.py:175 · markdown_renderer.py:165</td><td>回合线 max(40, 转录宽)、strip 线 max(40, 应用宽)、markdown hr min(宽-3, 40)、详情页框宽-2</td></tr>
+<tr><td>计时格式两种，箭头含义冲突</td><td class="m">footer.py:48 · agent_strip.py:39 · agent_detail.py:85</td><td>页脚 12.3s，strip 和 Cooked 12s；↑ 在页脚是上行，在详情页是上下行合计</td></tr>
+<tr><td>中止不按契约画</td><td class="m">theme.py:26 · session_app.py:832</td><td>契约说暗色 ✖ 加「已中止」，实际是淡色 (cancelled)，且不出 Cooked 行、回合区不关</td></tr>
+<tr><td>守门扫描有盲区</td><td class="m">tests/test_render_colors.py:22</td><td>transcript_view、agent_detail、controllers 不在扫描面内</td></tr>
+</table></div>
+<p>这些不是十几个 bug，是同一个缺口的十几个投影：没有一处写明「面板放哪、焦点归谁、模式怎么标、句子怎么写」。</p>
+
+<h2 id="s2"><span class="k">2</span>产品与用户</h2>
+<p>README 的定位一句话：终端里的 AI coding agent，接自己的模型网关，在项目目录里读改跑。用户画像从仓库和实验室用法能推出来：</p>
+<ul>
+  <li><b>中文工程师，接国产或私有网关</b>（qwen3.8-flash、glm 等），模型不一定会写粗体标题、思考流是整段 prose，所以界面不能依赖模型自产的摘要。</li>
+  <li><b>会跑长任务</b>（compile-excel 一批 5 案跑 40 分钟以上，几十次工具调用，多个子代理），大部分时间是在看，不是在打字。</li>
+  <li><b>会被反复打断</b>：逐项审批一场会话几十次，Claude Code 用户也抱怨 30 到 50 次。审批的形态决定疲劳程度。</li>
+  <li><b>在 Otty / tmux 里用，浅色和深色主题都有</b>（Ghostty Catppuccin Latte 实测浅底），颜色必须从终端派生。</li>
+</ul>
+<h3>用户实际经历的六个时刻</h3>
+<p>把一场会话按「用户此刻在干什么」切开，界面要服务的就是这六个时刻，每个时刻只有一个主问题：</p>
+<div class="tbl"><table>
+<tr><th>时刻</th><th>用户的问题</th><th>屏幕必须回答</th><th>用户会按</th></tr>
+<tr><td>输入</td><td>我能打字吗，现在是什么模式</td><td>光标在框里，模式标签（若非默认）</td><td>打字、/ 命令、↑ 历史</td></tr>
+<tr><td>观察</td><td>它在干什么，卡了没有，花了多少</td><td>忙碌词加耗时加 token，工具行逐条落下，中断键</td><td>esc 中断、enter 插话、ctrl+o/t 展开</td></tr>
+<tr><td>被问</td><td>它要我干什么，选哪个，选了有什么后果</td><td>问题、对象、选项、每个选项的作用范围、默认项</td><td>数字或助记键、方向键、enter、esc</td></tr>
+<tr><td>核对</td><td>它改了什么，对不对</td><td>diff、结果摘要、失败原因</td><td>ctrl+o 展开、滚动、拖选复制</td></tr>
+<tr><td>跟进计划</td><td>做到第几步了，下一步是什么</td><td>进度、当前项、下一项</td><td>ctrl+p 展开</td></tr>
+<tr><td>出错或结束</td><td>成了没有，没成是为什么，花了多少</td><td>终帧一行，Cooked 一行</td><td>继续输入或 /undo</td></tr>
+</table></div>
+<p>现状的问题是「被问」这个时刻没有被当成独立时刻设计：审批面板长在输入框上方、框还在转、焦点样式和提问面板不同，用户要靠读文字才知道轮到自己了。</p>
+
+<h2 id="s3"><span class="k">3</span>同类产品怎么做</h2>
+<p>八个产品的公开源码和文档里，下面这些做法是共识，Circle 没理由偏离：</p>
+<div class="tbl"><table>
+<tr><th>做法</th><th>谁在用</th><th>Circle 现状</th></tr>
+<tr><td>底部栈固定，转录滚动</td><td>Claude Code、Codex、opencode、Crush、Gemini、pi、Kimi</td><td><span class="tag ok">符合</span></td></tr>
+<tr><td>审批接管输入框的位置，不是另开一个浮层</td><td>Claude Code、Codex（bottom pane 视图栈）、opencode（替换 prompt）；Crush 是唯一用居中模态的</td><td><span class="tag no">叠在输入框上方，框保留</span></td></tr>
+<tr><td>选项名写清作用范围</td><td>Codex「don't ask again for commands that start with <code>git</code>」、Gemini「for this file in all future sessions」、Claude Code 按工具类型决定持久化范围</td><td><span class="tag no">Allow always 只在二次确认里说范围</span></td></tr>
+<tr><td>拒绝可以带话</td><td>Claude Code「No, and tell Claude what to do differently」、Codex、Gemini、opencode</td><td><span class="tag no">Reject 只回一句固定英文给模型</span></td></tr>
+<tr><td>数字或助记键加方向键，默认项可见</td><td>Codex y/p/a/d/n、Crush a/s/d、Aider [Yes]、Claude Code 编号</td><td><span class="tag no">只有方向键，无数字或字母</span></td></tr>
+<tr><td>不让弹窗偷走正在打的字</td><td>Codex 等 1 秒无按键才弹；Claude Code 因此被反复投诉</td><td><span class="tag no">草稿被暂存，可打印字符落进空框</span></td></tr>
+<tr><td>模式常驻可见，按风险着色</td><td>Claude Code ⏸/⏵⏵、Gemini YOLO 红 plan 绿、opencode agent 色染框边、Aider 提示符前缀、pi 框边颜色表示思考深度</td><td><span class="tag no">yolo 在页脚行首，plan mode 无标识</span></td></tr>
+<tr><td>一个键循环模式，提示写出下一态</td><td>shift+tab：Claude Code、Codex、Gemini、Kimi；Gemini 提示「shift+tab to accept edits」</td><td><span class="tag no">只有 /plan /yolo 命令</span></td></tr>
+<tr><td>输出默认折叠，写出行数和展开键</td><td>Claude Code 3 到 4 行、Codex 5、Crush 10、Gemini 和 opencode 15</td><td><span class="tag ok">6 行，ctrl+o</span></td></tr>
+<tr><td>活动行 = 转轮 + 动词 + 耗时 + token + 中断键</td><td>Claude Code、Codex、Gemini、opencode</td><td><span class="tag ok">缺中断键提示</span></td></tr>
+<tr><td>清单三态，完成项暗色加删除线，进行中项高亮，可见条数封顶带开关</td><td>Claude Code 5 项 ctrl+t、Gemini ctrl+t、Codex ✔ 删除线、Crush N/M</td><td><span class="tag no">10 项固定面板占 14 行，无收起</span></td></tr>
+<tr><td>破坏性键要按两次</td><td>esc esc、ctrl+c 两次：Claude Code、Codex、opencode、Amp</td><td><span class="tag ok">ctrl+c 两次</span></td></tr>
+<tr><td>翻译标签，不翻译命令和按键</td><td>Qwen Code：<code>是，允许一次</code> <code>(Shift + Tab 切换)</code> <code>Enter 确认，Esc 取消</code>，YOLO 不翻</td><td><span class="tag no">无规则</span></td></tr>
+</table></div>
+<p>三处值得单独记的反面教训：opencode 的「Allow always」悄悄变成项目级持久且无法撤销（#50600）；Claude Code 的 esc 被误按成拒绝（#6643）；Codex 的思考摘要回合结束就从主视图消失（#46356）。Circle 的 /approvals revoke 和 ctrl+t 保留正文，这两点已经比它们好，规则里要守住。</p>
+
+<h2 id="s4"><span class="k">4</span>分区规则</h2>
+<p>这一节是全文的核心，其余章节都是它的下游。设计美学在终端里不是字形和颜色，是<b>什么信息、什么条件下、进哪个区、待多久、谁把它撤掉</b>。六个区各管一类信息，一条信息只属一个区。</p>
+
+<h3>4.1 六个区</h3>
+<div class="tbl"><table>
+<tr><th>区</th><th>装什么</th><th>何时出现</th><th>何时撤</th><th>形态</th></tr>
+<tr><td><b>转录</b></td><td>发生过的事</td><td>事件发生即入</td><td>永不，滚动</td><td>标记列 1、文字列 3，块间 1 空行</td></tr>
+<tr><td><b>常驻</b></td><td>正在成立的状态</td><td>状态成立</td><td>状态消失即撤，不进历史</td><td>页眉、页脚、模式词、忙碌词、子代理条</td></tr>
+<tr><td><b>计划区</b></td><td>模型维护的活文档：write_todos 的清单</td><td>计划存在且有未完成项</td><td>全部完成后回合结束撤，转录落一条通知</td><td>对话框上方一个封闭块：方角淡边（圆角只给焦点框），标题嵌上沿，默认 5 个完整行，窗口跟随当前项，滚轮或 ↑↓ 翻看，下沿右角标 2–6 / 14，内部铺洋红。<b>对话框接管期间整块隐藏，答完恢复</b>：轮到你的时候屏幕上只有问题</td></tr>
+<tr><td><b>对话框</b></td><td>阻塞回合、必须由你回答的问题</td><td>中断到达，且你 1 秒内没按键</td><td>答完框恢复原样，草稿还原</td><td>唯一的那个框换内容：标题、正文、竖排选项</td></tr>
+<tr><td><b>弹窗</b></td><td>不阻塞回合的选择列表</td><td>命令或补全触发</td><td>选完或 esc</td><td>框上方，panel 底，无边框；框里照常打字过滤</td></tr>
+<tr><td><b>页面</b></td><td>整屏接管的只读视图</td><td>你主动进入</td><td>esc 回主视图</td><td>转录区被接管，顶栏身份与按钮；底部栈不动</td></tr>
+<tr><td><b>一闪</b></td><td>操作回执</td><td>操作瞬间</td><td>1.2 秒</td><td>页脚右侧</td></tr>
+</table></div>
+
+<h3>4.2 放置表</h3>
+<p>每类信息一行。「现状」列标出和今天不同的地方。</p>
+<div class="tbl"><table>
+<tr><th>信息</th><th>条件</th><th>区</th><th>停留</th><th>现状</th></tr>
+<tr><td>你的话</td><td>发送</td><td>转录</td><td>永久</td><td>同</td></tr>
+<tr><td>模型的回答、思考行、工具行与结果</td><td>发生</td><td>转录</td><td>永久；ctrl+o / ctrl+t 只改折叠态</td><td>同</td></tr>
+<tr><td>待审批的调用</td><td>中断到达</td><td>转录（青灯 · waiting for you）</td><td>答完灯变绿或红</td><td>今天灯列留空，和没执行的分不开</td></tr>
+<tr><td>状态变更通知：模式切换、压缩完成、审批结果、规则撤销</td><td>事件发生</td><td>转录，淡色，无字形</td><td>永久</td><td>今天混用两种 toast</td></tr>
+<tr><td>终帧：失败 ✖ 红、中止 ✖ 暗</td><td>回合结束</td><td>转录</td><td>永久</td><td>中止今天是 (cancelled) 且不出用量行</td></tr>
+<tr><td>回合用量 耗时 · ↑ · ↓</td><td>回合结束</td><td>转录，文字列，dim</td><td>永久</td><td>今天带 ✻ 和 Cooked for</td></tr>
+<tr><td>斜杠命令的只读回执 /settings /session /tree</td><td>执行</td><td>转录，淡色列表</td><td>永久</td><td>同，但要补块间空行</td></tr>
+<tr><td>页眉：版本 · 模型 · 目录 · ? for shortcuts</td><td>始终</td><td>常驻</td><td>始终</td><td>今天是五行 welcome</td></tr>
+<tr><td>页脚：↑ ↓ 费用 ctx</td><td>始终</td><td>常驻</td><td>始终</td><td>今天多一份模型名和 CH</td></tr>
+<tr><td>忙碌词：动词 · 耗时 · ↓</td><td>模型回合中</td><td>常驻，框上沿左</td><td>回合结束</td><td>今天多带 esc 提示和 tokens 单位</td></tr>
+<tr><td>模式词 read-only / auto</td><td>非默认模式开着</td><td>常驻，框下沿右</td><td>切回默认</td><td>今天 yolo 在页脚行首，plan 无标识，默认态标 PERMIT</td></tr>
+<tr><td>计划清单</td><td>计划存在且有未完成项</td><td>计划区：封闭块，5 行窗口跟随当前项</td><td>全部完成后撤，转录落一条通知</td><td>今天是 14 行固定面板，符号 ●◉○ 三套</td></tr>
+<tr><td>计划翻看</td><td>滚轮在块上，或 ↑↓</td><td>计划区窗口平移一行，下沿右角范围随之变</td><td>回合开始时窗口回到当前项</td><td>今天滚轮已支持，无范围标注</td></tr>
+<tr><td>子代理条</td><td>≥ 1 个子代理在跑</td><td>常驻，页脚下方</td><td>全部结束</td><td>同，去掉提示行</td></tr>
+<tr><td>排队的插话与后续消息</td><td>已排队未发送</td><td>常驻，框下一行淡色</td><td>发出</td><td>今天是一闪，看过就没了</td></tr>
+<tr><td>重试与退避：429 等待</td><td>回合中</td><td>并入忙碌词</td><td>回合结束</td><td>今天逐条 toast 进转录</td></tr>
+<tr><td>审批</td><td>中断到达，你 1 秒无按键</td><td>对话框：标题（青灯）、命令、原因、竖排选项</td><td>答完框恢复</td><td>今天叠在框上方，框照转，横排按钮带键名</td></tr>
+<tr><td>拒绝并说明 / 自己回答</td><td>选中该项</td><td>对话框最后一行变输入</td><td>enter 发送，空着等于纯拒绝</td><td>今天拒绝只回一句固定英文</td></tr>
+<tr><td>模型提问 question</td><td>中断到达</td><td>对话框，同一张卡</td><td>答完框恢复</td><td>今天是另一个组件</td></tr>
+<tr><td>本会话都允许</td><td>选中该项</td><td>范围写进选项本身，不再二次确认</td><td>—</td><td>今天弹第二张确认卡</td></tr>
+<tr><td>机密录入 ctrl+s</td><td>你主动</td><td>对话框，掩码输入，标题说要什么</td><td>enter</td><td>今天状态写进页脚却不显示</td></tr>
+<tr><td>trust / 首次接模型</td><td>启动门</td><td>对话框，同一张卡</td><td>答完进会话</td><td>今天是另一套门屏，布局都不同</td></tr>
+<tr><td>多个待答</td><td>排队</td><td>对话框标题尾注 · 2 more</td><td>一张一张</td><td>同</td></tr>
+<tr><td>/models /resume /tree 无参数</td><td>执行</td><td>弹窗，↑↓ enter</td><td>选完或 esc</td><td>今天打印列表再让你重打命令</td></tr>
+<tr><td>斜杠补全</td><td>输入 / 后</td><td>弹窗，随输入过滤</td><td>选完或 esc</td><td>今天是页脚一闪</td></tr>
+<tr><td>/approvals 规则</td><td>无参数</td><td>弹窗，enter 撤销一条</td><td>esc</td><td>今天占审批面板的槽</td></tr>
+<tr><td>? 快捷键表</td><td>空框按 ?</td><td>弹窗，只读</td><td>esc</td><td>今天是 /hotkeys 打印进转录</td></tr>
+<tr><td>子代理详情</td><td>在途条 enter 或点名字</td><td>页面</td><td>esc</td><td>同</td></tr>
+<tr><td>已复制、草稿已保存、草稿已恢复</td><td>操作瞬间</td><td>一闪</td><td>1.2 秒</td><td>同</td></tr>
+</table></div>
+
+<h3>4.3 由分区推出的六条规则</h3>
+<div class="rule"><b>R1 唯一焦点框</b>对话框不是第二个框，是同一个框换内容。屏幕上任何时候只有一个带边框的东西。<div class="why">今天审批面板叠在框上方，两个框并列，用户要读文字才知道键盘归谁。</div></div>
+<div class="rule"><b>R2 彩虹说轮到谁</b>流动是模型的回合，黄色静止是你的回合，淡色是空闲。等你时框停转、忙碌词撤下。<div class="why">今天等你和进行中视觉相同。</div></div>
+<div class="rule"><b>R3 阻塞的问题一种卡</b>审批、提问、机密、trust 共用一个组件：标题行带青灯，正文，空行，竖排选项。键一列（数字，dim）、标签一列，当前项整行 sel_bg。助记键可按不显示。esc 永远是最保守的答案，不另写提示。</div>
+<div class="rule"><b>R4 不阻塞的列表一种弹窗</b>/models、/resume、补全、/approvals、? 共用一个组件：框上方 panel 底列表，框里照常打字过滤。</div>
+<div class="rule"><b>R5 状态词只有两个，各占一角</b>忙碌词左上、模式词右下，都是单词：<code>read-only</code>（原 plan mode，改名避免和计划块撞词）、<code>auto</code>（原 yolo）；默认的逐项审批什么都不显示。边框上不再放别的字；标题是内容，写在框里。</div>
+<div class="rule"><b>R6 通知按「以后还要看吗」分</b>要看的进转录，永久淡色；不要看的走一闪，页脚右 1.2 秒；正在成立的走常驻，撤了就没。代码里两个 toast 改名 notice 和 flash。</div>
+
+<h3>4.4 宽度、换行与对齐</h3>
+<div class="rule"><b>W1 宽度每帧读真实列数，两档</b>≥ 100：标准。&lt; 100：收缩，页眉只留身份，子代理条先缩「在做什么」列。计划块和焦点框始终全宽。</div>
+<div class="rule"><b>W2 正文换行，状态行截断</b>你的话、模型的话、问题、命令、选项、通知是正文：换行，续行对齐所在行的文字列，绝不截断。审批卡里的命令尤其不能截，用户要读完才能批。工具行、结果摘要、计划行、子代理行、页眉、页脚、忙碌词是状态行：单行，超宽按优先级截断。</div>
+<div class="rule"><b>W3 截断优先级</b>先丢右侧整个组件（页眉提示、页脚一闪、计划行的 next），再截可变段（参数尾截、「在做什么」尾截、路径从左截保留尾巴 <code>…/circle</code>），灯、名字、数字、按钮永不截。</div>
+<div class="rule"><b>A1 列按显示宽度算</b>中文两格，用 string_width，不数字符。</div>
+<div class="rule"><b>A2 左网格</b>页边距 1；标记列 1、文字列 3；子行连接符 ⎿ 列 3、子文字列 5。框内整体加 1。卡片的键、输入行的 ›、转录的灯同一列。</div>
+<div class="rule"><b>A3 右网格</b>所有靠右的东西统一止于倒数第 2 列：页眉提示、页脚一闪、页面顶栏按钮、模式词、子代理行的计量。</div>
+<div class="rule"><b>A4 列表对齐</b>名字列按本屏最长者定宽；数字列右对齐；计划编号右对齐到 2 格；双列清单列宽由内容算，不写死。</div>
+<div class="rule"><b>A5 矩形</b>铺底色或在框内的行补空格到整宽，块才是矩形；无底色的行到内容为止。</div>
+
+<h2 id="s5"><span class="k">5</span>显示规则</h2>
+<p>渲染层的既有契约（节奏、类型底色、单行页脚、彩虹框）保留。2026-09-29 裁决：灯、底色、彩虹三样全留，整屏一套语义；界面词英文。</p>
+<div class="rule"><b>D0 三装置语义</b>
+<div class="tbl" style="margin-top:8px"><table>
+<tr><th>装置</th><th>管什么</th><th>出现在哪</th></tr>
+<tr><td>灯 ●</td><td>一行的状态：黄闪跑着 / 绿成了 / 红败了 / <b>青常亮等你（第五态，新增）</b> / 不点没跑</td><td>工具行、子代理行、在途条、计划行与每一项、对话框标题</td></tr>
+<tr><td>底色</td><td>一块是谁的：读蓝 / 写绿（含 Bash）/ 思考与计划洋红 / 子代理青</td><td>转录里的工具组与思考行、计划、在途条、对话框正文（铺所问工具的色）</td></tr>
+<tr><td>彩虹</td><td>轮到谁：流动是模型的回合，黄色静止是你的回合，淡色是空闲</td><td>只在那一个框上</td></tr>
+</table></div></div>
+
+<div class="rule"><b>D1 字形分职，守 InfoTest 方案 B，补三条修正</b>
+<div class="tbl" style="margin-top:8px"><table>
+<tr><th>字形</th><th>唯一职责</th><th>现状要改的</th></tr>
+<tr><td class="m">●</td><td>状态灯四态（黄闪 / 绿 / 红 / 不点）</td><td>计划完成项、/tree 当前节点、暗色「已取消」三处停用</td></tr>
+<tr><td class="m">⏺</td><td>模型说话</td><td>计划标题改用 ▸</td></tr>
+<tr><td class="m">◆</td><td>里程碑（压缩完成、会话分叉、导出）</td><td>审批卡标题和详情页「结果」停用</td></tr>
+<tr><td class="m">▸</td><td>进度与计划</td><td>init/trust 菜单光标改 ❯，与问答卡统一</td></tr>
+<tr><td class="m">✖</td><td>错与止，中止用暗色</td><td>(cancelled) 改为暗色 ✖ 已中止，并补 Cooked 行</td></tr>
+<tr><td class="m">∴ ⎿ ↳</td><td>从属连接，不表状态</td><td>不变</td></tr>
+<tr><td class="m">❯</td><td>问答卡与菜单的当前项光标（新增，唯一光标）</td><td>▸ 光标退役</td></tr>
+<tr><td class="m">△ ✻ ◉ ○ ☰ ⇆ ✎</td><td>退役</td><td>△ 警示改 ✖ 黄色；✻ Cooked 改无字形缩进 2；◉ ○ 改 ▸ 与空格；☰ ⇆ ✎ 删除</td></tr>
+</table></div></div>
+
+<div class="rule"><b>D2 焦点样式一种</b>当前项：<code>sel_bg</code> 底 + 文字提亮。选中项（多选）：前缀 <code>❯</code> 变绿。三处现有样式统一到这一种。</div>
+
+<div class="rule"><b>D3 折叠句一种</b><code>… 还有 N 行 · ctrl+o 展开</code>。行 / 项 / 个 按量词换，键名按面换（ctrl+o 输出、ctrl+t 思考、ctrl+p 计划、↑↓ 翻看）。七种写法收成这一种，声明在 <code>display_lexicon.py</code>。</div>
+
+<div class="rule"><b>D4 数字格式一种</b>耗时：60 秒内 <code>12.3s</code>，之后 <code>2m 05s</code>，全部面同一函数。token：<code>↑ 24.1k ↓ 451</code>，↑ 只表示上行，↓ 只表示下行，合计写 <code>24.5k tokens</code> 不带箭头。费用两位小数带币种。</div>
+
+<div class="rule"><b>D5 分隔线一种</b>转录里不画横线，块间靠 1 空行。strip 上沿和详情页顶栏保留 <code>pal.line</code> 全宽。markdown hr 宽 = 正文宽。</div>
+
+<div class="rule"><b>D6 语言面（2026-09-29 裁决：界面词英文）</b>
+<ul style="margin-top:6px">
+<li>界面词英文、小写、短，和桌上其他工具一个口音；内容（你的话、模型的话、计划项、子代理自述）不翻。单宽字符让列对齐。</li>
+<li>按键提示只在页眉右侧一处 <code>? for shortcuts</code>；其余行只陈述，不教操作。</li>
+<li>英文闭集：命令名 <code>/plan</code>、工具短名 <code>Read</code>、按键名 <code>enter esc ctrl+t shift+tab ↑↓</code>、计量 <code>tokens ctx</code>、模型名、模式名 <code>yolo plan</code>。</li>
+<li>↑↓ 自带 tokens 含义不写单位；裸计数才带单位（<code>3.1k tokens</code>）。</li>
+<li>demo：<code>docs/demo/tui_schemes_20260929/demo.py show</code>，十一页每区一页，走真实 ink 管线，实时重绘（灯闪、彩虹流、滚轮可滚计划块）。</li>
+</ul></div>
+
+<h2 id="s6"><span class="k">6</span>状态矩阵</h2>
+<p>每个状态一行，写清三件事：焦点框是什么、哪些键活着、其他键去哪。这张表是 R1 到 R4 的机读形式，也是守门测试的用例表。</p>
+<div class="tbl"><table>
+<tr><th>状态</th><th>档</th><th>焦点框</th><th>专属键</th><th>可打印字符</th><th>esc</th><th>ctrl+c</th></tr>
+<tr><td>静默</td><td>0</td><td>输入框，淡色静态</td><td>↑↓ 历史或滚动 · tab 补全 · ctrl+r 搜索 · shift+tab 循环模式 · ctrl+p 计划</td><td>进输入框</td><td>清空输入</td><td>两次退出</td></tr>
+<tr><td>进行中</td><td>1</td><td>输入框，彩虹流动，上沿忙碌词</td><td>enter 插话 · alt+enter 排队 · ctrl+o/t 展开</td><td>进输入框</td><td>中断回合</td><td>中断回合</td></tr>
+<tr><td>审批</td><td>2</td><td>问答卡，琥珀静态</td><td>1/2/3 · y/a/n · ←→ · enter</td><td><b>吞掉</b>，不落进任何地方</td><td>拒绝</td><td>中断回合</td></tr>
+<tr><td>拒绝并说明</td><td>2</td><td>问答卡变一行输入</td><td>enter 发送</td><td>进那一行</td><td>回到审批</td><td>中断回合</td></tr>
+<tr><td>提问（question）</td><td>2</td><td>问答卡</td><td>数字 · ↑↓ · 空格多选 · o 自填 · enter</td><td>吞掉</td><td>取消，两步确认</td><td>中断回合</td></tr>
+<tr><td>自填答案</td><td>2</td><td>问答卡变一行输入</td><td>enter 提交</td><td>进那一行</td><td>回到选项</td><td>中断回合</td></tr>
+<tr><td>/approvals 页</td><td>2</td><td>问答卡</td><td>↑↓ · enter 撤销</td><td>吞掉</td><td>关闭</td><td>关闭</td></tr>
+<tr><td>计划展开</td><td>不变</td><td>不变</td><td>ctrl+p 收起 · 滚轮</td><td>收起并进输入框</td><td>收起</td><td>按当前档</td></tr>
+<tr><td>strip 选择</td><td>不变</td><td>不变</td><td>↑↓ · enter 详情</td><td>退出选择并进输入框</td><td>退出选择</td><td>按当前档</td></tr>
+<tr><td>详情页</td><td>不变</td><td>不变</td><td>←→ 兄弟 · ⌫ 返回</td><td>退出并进输入框</td><td>返回</td><td>按当前档</td></tr>
+<tr><td>反向搜索</td><td>0</td><td>输入框，页脚显示搜索</td><td>ctrl+r 下一条 · enter 采用</td><td>扩展查询</td><td>还原草稿</td><td>还原草稿</td></tr>
+<tr><td>机密录入</td><td>0</td><td>输入框掩码</td><td>enter 确认</td><td>掩码输入</td><td>取消</td><td>取消</td></tr>
+<tr><td>中止</td><td>3 → 0</td><td>回到输入框，草稿恢复</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+</table></div>
+<div class="callout">审批状态下可打印字符必须吞掉，这是和现状差别最大的一条。现在它们落进被清空的输入框，用户按 y 想批准，结果输入框里多了个 y，审批卡没反应。</div>
+
+<h2 id="s7"><span class="k">7</span>现状差距清单</h2>
+<p>按规则编号映射，方便拆任务。标 <span class="tag">结构</span> 的要动组件归属，标 <span class="tag">文案</span> 的只改字符串和格式函数。</p>
+<div class="tbl"><table>
+<tr><th>规则</th><th>差距</th><th>类型</th><th>涉及</th></tr>
+<tr><td>R1</td><td>ask_panel 独立区取消，三租户搬进焦点框；旧版 MainController 审批删除</td><td><span class="tag">结构</span></td><td class="m">session_app · dialog_frame · session.py</td></tr>
+<tr><td>R2</td><td>审批中断到达时框停转、忙碌词撤下、边框变琥珀；转录待审批行加「等你」</td><td><span class="tag">结构</span></td><td class="m">footer · dialog_frame · harness_bridge</td></tr>
+<tr><td>R3</td><td>审批卡加数字和助记键、拒绝带话、范围写进标签、二次确认卡取消、1 秒打字延迟</td><td><span class="tag">结构</span></td><td class="m">exec_approval_view · approvals</td></tr>
+<tr><td>R3</td><td>question 面板改用同一组件</td><td><span class="tag">结构</span></td><td class="m">ask_user_view</td></tr>
+<tr><td>R4</td><td>plan / yolo 标签挂框左下沿；shift+tab 循环；PERMIT 一类默认态标签不出现</td><td><span class="tag">结构</span></td><td class="m">dialog_frame · session_app</td></tr>
+<tr><td>R5</td><td>两个 toast 改名 notice / flash，按分类表重新归属每一处调用</td><td><span class="tag">文案</span></td><td class="m">session_app · footer</td></tr>
+<tr><td>R6</td><td>计划面板改一行状态条 + ctrl+p 展开为转录块</td><td><span class="tag">结构</span></td><td class="m">plan_panel</td></tr>
+<tr><td>D1</td><td>字形按表修正 12 处，RETIRED_GLYPHS 扩充，守门扫描面补 transcript_view / agent_detail / controllers</td><td><span class="tag">文案</span></td><td class="m">theme · plan_panel · exec_approval_view · test_render_colors</td></tr>
+<tr><td>D2</td><td>三种焦点样式收成 sel_bg</td><td><span class="tag">文案</span></td><td class="m">exec_approval_view · ask_user_view</td></tr>
+<tr><td>D3 D4</td><td>折叠句、耗时、token 格式收成单函数</td><td><span class="tag">文案</span></td><td class="m">display_lexicon · footer · agent_strip · agent_detail</td></tr>
+<tr><td>D5</td><td>回合分隔线删除；hr 宽度对齐正文</td><td><span class="tag">文案</span></td><td class="m">session_app:1443 · markdown_renderer</td></tr>
+<tr><td>D6</td><td>/help /hotkeys /approvals 页、审批卡、忙碌词相位改中文；按键记法统一</td><td><span class="tag">文案</span></td><td class="m">slash_commands · exec_approval_view · footer</td></tr>
+<tr><td>—</td><td>中止补 Cooked 行、关闭回合区；机密录入状态改走 hold_status，不再误触发忙碌计时</td><td><span class="tag">文案</span></td><td class="m">session_app:832 · session_app:940</td></tr>
+</table></div>
+<div class="gap">盘点里还有几条不属于显示契约但会被用户当成界面问题的：粘贴占位符 <code>[Pasted text #N]</code> 和 <code>↵</code> 原样发给模型；alt+enter 在多数终端被解析成 shift+enter，排队功能实际按不出来；未知 slash 命令直接当聊天发出；未处理的 ctrl+字母会把字母打进输入框；API key 录入时明文可见。建议和契约一起排，不然新界面上线第一天就会撞上。</div>
+
+<h2 id="s8"><span class="k">8</span>推进方法</h2>
+<p>沿用 InfoTest 2026-09-24 那轮的方法，它已经在这套 ink 管线上跑通过一次：</p>
+<ol>
+  <li><b>先裁决规则，再画。</b>本文 R1 到 R6、D1 到 D6 逐条过，每条要么采纳、要么改写、要么否掉并写理由。规则定了，方案数量会自然收敛。</li>
+  <li><b>写方案 demo，走真实管线。</b>仿 <code>docs/demo/tui_schemes_20260924/demo.py</code>，在 circle 里建 <code>scripts/tui_schemes_demo.py</code>：同一份 mock 会话（含审批、提问、计划、子代理、中止五个场景），A 方案 = 现状，B 方案 = 本契约，用 <code>theme.palette()</code> 和 <code>Output.write</code> 出 ANSI。不写 HTML，终端里看到的才算数。</li>
+  <li><b>Otty 并排比。</b>两个 pane 各跑一个方案，同一宽度，浅色和深色主题各看一遍。逐场景裁决，记录在 demo 的 index 页。</li>
+  <li><b>落契约。</b>裁决结果写成 <code>docs/tui_contract.md</code>，格式沿用 07 章 §11.25 的编号条款：每条一句规则、一句为什么、一个守门测试名。</li>
+  <li><b>守门先行。</b>先把状态矩阵写成 <code>tests/test_interaction_contract.py</code>（每行一个用例：这个状态下按这个键，焦点框是什么、字符去了哪），再改实现。字形和语言面扩 <code>test_render_colors.py</code> 的扫描面和词表。</li>
+  <li><b>按差距清单分批。</b>第一批只做 R1 R2 R3（审批接管焦点框），这是用户抱怨的源头，做完就能在真机上验证方向对不对。R4 到 R6、D 系列各成一批。</li>
+</ol>
+<p>第一批的验收标准只有一句：模型发起审批时，用户不读任何文字，靠框的颜色和停转就知道轮到自己，按一个数字键就能答。</p>
+</main>
+</div>
+
+</body></html>
