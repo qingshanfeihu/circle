@@ -583,7 +583,17 @@ class ProgressHandler(BaseCallbackHandler):
         name, tags = settled
         if isinstance(error, GraphBubbleUp):
             if isinstance(error, GraphInterrupt):
-                self._emit("tool_waiting", payload={"name": name, "reason": "approval"}, tags=tags)
+                interrupts = error.args[0] if error.args else ()
+                values = [getattr(item, "value", item) for item in interrupts]
+                if any(isinstance(value, dict) and value.get("kind") == "ask_user"
+                       for value in values):
+                    reason = "question"
+                elif any(isinstance(value, dict) and "action_requests" in value
+                         for value in values):
+                    reason = "approval"
+                else:
+                    reason = "interrupt"
+                self._emit("tool_waiting", payload={"name": name, "reason": reason}, tags=tags)
             return
         self._emit("tool_result", payload={"name": name, "output": f"error: {error}",
                                            "status": "error"}, tags=tags)

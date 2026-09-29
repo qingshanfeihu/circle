@@ -89,6 +89,8 @@ def card_calls(card: Mapping[str, Any]) -> int:
 def card_activity(card: Mapping[str, Any]) -> str:
     if card.get("awaiting_approval"):
         return "等待审批"
+    if card.get("awaiting_question"):
+        return "等待回答"
     title = " ".join(str(card.get("reasoning_title") or "").split())
     if title:
         return f"思考·{title}"
