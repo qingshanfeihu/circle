@@ -420,7 +420,6 @@ class HarnessBridge:
         final_thinking = ""
         try:
             stream_exc: BaseException | None = None
-            used_stream = False
             stream = None
             try:
                 stream = self._agent.stream(
@@ -432,7 +431,6 @@ class HarnessBridge:
                     if self._cancelled:
                         self._on_status("cancelled")
                         return
-                    used_stream = True
                     msg = item[0] if isinstance(item, tuple) else item
                     if is_plan_reminder(msg) or is_loop_reminder(msg):
                         continue
@@ -500,7 +498,7 @@ class HarnessBridge:
                 self._on_status("cancelled")
                 return
 
-            if stream_exc is not None and not used_stream:
+            if stream_exc is not None:
                 self._sink.flush()
                 self._on_error(stream_exc)
                 self._on_status("ready")
