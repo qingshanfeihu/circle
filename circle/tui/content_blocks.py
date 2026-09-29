@@ -7,10 +7,13 @@ session shell can drive transcript + footer the same way.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from circle.ink.theme import GLYPH_AGENT, palette, sgr_join
+
+_SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
 
 
 @dataclass
@@ -116,6 +119,33 @@ def indent_continuations(text: str, prefix: str = "   ") -> str:
     )
 
 
+def _faint_markdown(rendered: str, faint: str) -> str:
+    """Keep markdown attributes while making every fragment use thinking's tint."""
+    def tint(match: re.Match[str]) -> str:
+        params = match.group(1).split(";")
+        attrs: list[str] = []
+        index = 0
+        while index < len(params):
+            code = params[index]
+            if code in {"38", "48"} and index + 1 < len(params):
+                index += 5 if params[index + 1] == "2" else 3
+            else:
+                if code in {"1", "2", "3", "4", "9"}:
+                    attrs.append(code)
+                index += 1
+        # Clear markdown attributes without resetting the row's background tint.
+        return sgr_join("\x1b[22;23;24;29m", *(f"\x1b[{attr}m" for attr in attrs), faint)
+
+    return _SGR_RE.sub(tint, rendered)
+
+
+def render_thinking_markdown(body: str, width: int) -> str:
+    from circle.ink.components.markdown_renderer import MarkdownRenderer
+
+    rendered = MarkdownRenderer(width=max(20, width)).render_streaming(body)
+    return _faint_markdown(rendered, palette().faint)
+
+
 def render_thinking_line(*, body: str, done: bool, expanded: bool = False,
                          title: str | None = None, duration_s: float | None = None,
                          width: int = 80) -> str:
@@ -138,9 +168,7 @@ def render_thinking_line(*, body: str, done: bool, expanded: bool = False,
     line = f" {header_sgr}{header}{pal.reset}"
     body = str(body or "").strip()
     if expanded and body:
-        from circle.ink.components.markdown_renderer import MarkdownRenderer
-
-        rendered = MarkdownRenderer(width=max(20, width - 3)).render_streaming(body)
+        rendered = render_thinking_markdown(body, width - 3)
         line += f"\n   {pal.faint}{indent_continuations(rendered, '   ')}{pal.reset}"
     elif not expanded:
         line += f" {pal.faint}(ctrl+t to expand){pal.reset}"

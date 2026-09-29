@@ -1,9 +1,13 @@
 """Stream/thinking content-block parsing (InfoTest-compatible)."""
 
+import re
+
+from circle.ink.theme import palette
 from circle.tui.content_blocks import (
     assistant_block,
     message_text,
     parse_content,
+    render_thinking_line,
     thinking_preview,
 )
 
@@ -24,3 +28,16 @@ def test_assistant_block_indents():
     out = assistant_block("hello\nworld")
     assert out.startswith(" ⏺ hello") or "hello" in out.split("\n")[0]
     assert "world" in out
+
+
+def test_expanded_main_thinking_stays_faint_after_markdown_styles():
+    rendered = render_thinking_line(
+        body="First I check **config**.\nThen I edit the file.",
+        done=True,
+        expanded=True,
+    )
+    faint_params = palette().faint[2:-1]
+    for word in ("First", "config", ".\n", "Then"):
+        before = rendered[:rendered.index(word)]
+        active = re.findall(r"\x1b\[[0-9;]*m", before)[-1]
+        assert active.endswith(f"{faint_params}m"), (word, active)

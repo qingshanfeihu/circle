@@ -218,6 +218,33 @@ def test_detail_lists_every_call_and_reasoning_in_order():
     assert any(ln.strip().startswith("…z") for ln in expanded)
 
 
+def test_expanded_subagent_thinking_keeps_faint_color_after_bold():
+    body = "First I check **config**.\nThen I edit the file."
+    card = {"status": "running", "start_ts": 1.0, "transcript": [
+        {"kind": "thinking_body", "text": body, "chars": len(body), "done": True},
+    ]}
+    rendered = "\n".join(render_detail_lines(card, expanded=True))
+    faint_params = theme.palette().faint[2:-1]
+    for word in ("First", "config", ".\x1b", "Then"):
+        before = rendered[:rendered.index(word)]
+        active = ANSI.findall(before)[-1]
+        assert active.endswith(f"{faint_params}m"), (word, active)
+
+
+def test_truncated_subagent_thinking_starting_inside_fence_preserves_code_and_prose():
+    tail = "def __init__(self):\n    x = a * b * c\n```\nThen I edit **config**."
+    card = {"status": "running", "start_ts": 1.0, "transcript": [
+        {"kind": "thinking_body", "text": tail, "chars": len(tail) + 6000,
+         "truncated": True, "done": True},
+    ]}
+    rendered = "\n".join(render_detail_lines(card, expanded=True))
+    assert "def __init__(self):" in plain(rendered)
+    assert "x = a * b * c" in plain(rendered)
+    assert "Then I edit config." in plain(rendered)
+    assert "Then I edit" not in next((line for line in rendered.splitlines()
+                                      if theme.palette().blue in line), "")
+
+
 def test_detail_marks_the_recoverable_failure_muted_and_the_end_result():
     feed = _detail_feed()
     feed.finish("T", "found it")

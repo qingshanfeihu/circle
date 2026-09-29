@@ -12,12 +12,12 @@ thinking tint, the same mapping as the main transcript.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
 
 from circle.display_lexicon import strip_leading_status_glyph, tool_result_recoverable
-from circle.ink.components.markdown_renderer import MarkdownRenderer
 from circle.ink.string_width import string_width
 from circle.ink.theme import GLYPH_MILESTONE, palette, sgr_join
 from circle.tui.agent_strip import (
@@ -29,11 +29,13 @@ from circle.tui.agent_strip import (
     format_elapsed,
     format_tokens,
 )
+from circle.tui.content_blocks import render_thinking_markdown
 from circle.tui.transcript_view import subagent_call_row, tool_type_bg_hex
 
 # 顶栏纯文字按钮（InfoTest 07 §11.25(6)，图标退役）：(动作, 文字)；键盘 esc/⌫、←→ 不变
 BUTTONS = (("back", "主视图"), ("prev", "上一个"), ("next", "下一个"))
 NO_STEPS = "暂时还没有工具调用"
+_FENCE_BOUNDARY_RE = re.compile(r"(?m)^[ \t]*(?:`{3,}|~{3,})[ \t]*$")
 
 
 def _status_cn(card: Mapping[str, Any]) -> str:
@@ -155,7 +157,19 @@ def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool,
     if not expanded:
         lines[0] += f" {pal.faint}(ctrl+t 展开){pal.reset}"
         return lines
-    body_lines = MarkdownRenderer(width=max(20, width - 3)).render_streaming(body).splitlines()
+    if truncated:
+        # The reducer keeps only the tail, so the opening-fence parity is gone.
+        # Keep the uncertain prefix literal and resume Markdown after its first
+        # complete fence line (the closing fence when the tail begins in code).
+        boundary = _FENCE_BOUNDARY_RE.search(body)
+        prefix = body[:boundary.start()] if boundary else body
+        body_lines = prefix.rstrip("\n").splitlines()
+        if boundary:
+            rest = body[boundary.end():].lstrip("\n")
+            if rest:
+                body_lines.extend(render_thinking_markdown(rest, width - 3).splitlines())
+    else:
+        body_lines = render_thinking_markdown(body, width - 3).splitlines()
     if truncated and body_lines:
         body_lines[0] = f"…{body_lines[0]}"
     lines += [f"  {pal.faint}{raw}{pal.reset}" for raw in body_lines]
