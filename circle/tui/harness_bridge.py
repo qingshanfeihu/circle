@@ -131,6 +131,9 @@ class HarnessBridge:
         if self._cancel_token is not None:
             self._cancel_token.cancel()
         self._sink.cancel_run()
+        policy = getattr(self._agent, "_circle_approvals", None)
+        if policy is not None:
+            policy.end_visible_turn(self._thread_id)
 
     def _post_snapshot(self, snap: MessageSnapshot) -> None:
         if self._on_snapshot is not None:
@@ -144,6 +147,9 @@ class HarnessBridge:
             return
         self._cancelled = False
         self._cancel_token = CancellationToken()
+        policy = getattr(self._agent, "_circle_approvals", None)
+        if policy is not None:
+            policy.begin_visible_turn(self._thread_id)
         self._clear_pending_interrupts()
         self._sink.reset()
         payload: Any = {"messages": [{"role": "user", "content": user_text}]}
@@ -404,6 +410,10 @@ class HarnessBridge:
             deferred, self._deferred_resume = getattr(self, "_deferred_resume", None), None
             if deferred is not None and not self._cancelled:
                 self._start_resume(deferred)
+            elif self._cancelled or not self._pending_interrupt_count:
+                policy = getattr(self._agent, "_circle_approvals", None)
+                if policy is not None:
+                    policy.end_visible_turn(self._thread_id)
 
     def announce_blocked(self, call: dict[str, Any], text: str) -> None:
         """A call refused at the approval prompt: give it a row in this turn."""

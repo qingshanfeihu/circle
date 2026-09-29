@@ -402,6 +402,21 @@ class ApprovalPolicy:
         self._inside: Callable[[str], bool] = lambda _path: False
         self._yolo_threads: set[str] = set()
         self._yolo_lock = threading.RLock()
+        # A paused HITL node is re-entered on resume. Its `when` predicates
+        # must see the same rules and yolo setting as before the interrupt.
+        self._visible_turns: dict[str, tuple[bool, set[tuple[str, str]]]] = {}
+
+    def begin_visible_turn(self, thread_id: str) -> None:
+        with self._yolo_lock:
+            self._visible_turns[thread_id] = (
+                thread_id in self._yolo_threads,
+                {(str(rule.get("tool") or ""), str(rule.get("pattern") or ""))
+                 for rule in self.store.rules(thread_id)},
+            )
+
+    def end_visible_turn(self, thread_id: str) -> None:
+        with self._yolo_lock:
+            self._visible_turns.pop(thread_id, None)
 
     def set_yolo(self, thread_id: str, enabled: bool) -> None:
         """Switch approval-free execution for one live conversation thread."""
@@ -416,6 +431,11 @@ class ApprovalPolicy:
     def yolo_enabled(self, thread_id: str) -> bool:
         with self._yolo_lock:
             return bool(thread_id and thread_id in self._yolo_threads)
+
+    def visible_turn_yolo(self, thread_id: str) -> bool:
+        with self._yolo_lock:
+            frozen = self._visible_turns.get(thread_id)
+            return frozen[0] if frozen is not None else thread_id in self._yolo_threads
 
     def bind_workspace(self, resolve: Callable[[str], Path], root: Path) -> None:
         """How the backend maps a tool path to disk, so rules can stay inside ``root``."""
@@ -468,14 +488,20 @@ class ApprovalPolicy:
                           review.pattern, review.scope)
         return decision == "approve"
 
-    def needs_approval(self, tool: str, args: Any, thread_id: str) -> bool:
+    def needs_approval(self, tool: str, args: Any, thread_id: str, *,
+                       allow_yolo: bool = True) -> bool:
         review = self.review(tool, args)
         if review.verdict == "DENY":
             return False  # the backend refuses to run it; asking first would be pointless
-        if self.yolo_enabled(thread_id):
+        with self._yolo_lock:
+            frozen = self._visible_turns.get(thread_id) if allow_yolo else None
+            yolo = frozen[0] if frozen is not None else thread_id in self._yolo_threads
+        if allow_yolo and yolo:
             return False  # policy skips the interrupt; command_guard still enforces DENY
         if review.verdict == "ASK_FORCED":
             return True
+        if frozen is not None:
+            return (tool, review.pattern) not in frozen[1]
         return not self.store.matches(thread_id, tool, review.pattern)
 
     def interrupt_on(self, gated: Iterable[str]) -> dict[str, dict[str, Any]]:

@@ -2698,7 +2698,7 @@ class CircleSessionApp:
             self._app.render()
         self._approval_queue = list(requests)
         self._approval_decisions = {iid: [] for iid, _request in requests}
-        if getattr(self._bridge, "auto_approve", False):  # /yolo：全部放行，不弹面板
+        if self._approvals.visible_turn_yolo(self._thread_id):  # 本回合开始时的 /yolo
             for iid, _request in requests:
                 self._approval_decisions[iid].append({"type": "approve"})
             self._complete_approvals()
