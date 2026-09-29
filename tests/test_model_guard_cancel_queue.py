@@ -1,4 +1,4 @@
-"""Cancel a real Bridge turn during Retry-After and drain later messages FIFO."""
+"""Cancel a real Bridge turn during Retry-After and drain queued messages."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _wait_for(predicate, timeout=8):
     pytest.fail("cancelled worker or queued turns did not finish")
 
 
-def test_cancel_interrupts_backoff_and_drains_messages_in_arrival_order(tmp_path, monkeypatch):
+def test_cancel_drains_steering_first_and_each_class_in_order(tmp_path, monkeypatch):
     RateLimitedTurnModel.seen = []
     app = _app(tmp_path, monkeypatch)
     app.model_override = guard_model(RateLimitedTurnModel())
@@ -60,15 +60,25 @@ def test_cancel_interrupts_backoff_and_drains_messages_in_arrival_order(tmp_path
     try:
         app._on_submit("FIRST")
         _wait_for(lambda: any(event.get("event") == "retry" for event in retries))
+        app._on_submit("FOLLOWUP-1", kind="followup")
+        app._on_submit("STEERING-1", kind="steering")
+        app._on_submit("FOLLOWUP-2", kind="followup")
+        app._on_submit("STEERING-2", kind="steering")
+        assert [text for _kind, text in app._msg_queue] == [
+            "FOLLOWUP-1", "STEERING-1", "FOLLOWUP-2", "STEERING-2",
+        ]
         start = time.monotonic()
         app._handle_key(KeyPress(key="escape"))
-        app._on_submit("SECOND", kind="followup")
-        app._on_submit("THIRD", kind="steering")
-        _wait_for(lambda: app._last_assistant_plain == "THIRD-done"
+        _wait_for(lambda: app._last_assistant_plain == "FOLLOWUP-2-done"
                   and not app._bridge.is_running and not app._msg_queue)
         assert time.monotonic() - start < 4
-        assert RateLimitedTurnModel.seen == ["FIRST", "SECOND", "THIRD"]
+        assert RateLimitedTurnModel.seen == [
+            "FIRST", "STEERING-1", "STEERING-2", "FOLLOWUP-1", "FOLLOWUP-2",
+        ]
         transcript = "\n".join(app._transcript.snapshot())
-        assert transcript.index("SECOND-done") < transcript.index("THIRD-done")
+        assert (transcript.index("STEERING-1-done")
+                < transcript.index("STEERING-2-done")
+                < transcript.index("FOLLOWUP-1-done")
+                < transcript.index("FOLLOWUP-2-done"))
     finally:
         remove()

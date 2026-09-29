@@ -1473,7 +1473,10 @@ class CircleSessionApp:
         with self._app.lock:
             if self._bridge.is_running or self._is_loading or not self._msg_queue:
                 return
-            _, text = self._msg_queue.pop(0)
+            # Steering keeps its original priority; each class stays FIFO.
+            index = next((i for i, (kind, _text) in enumerate(self._msg_queue)
+                          if kind != "followup"), 0)
+            _, text = self._msg_queue.pop(index)
             self._start_user_turn(text)
 
     def _drain_after_worker(self) -> None:
