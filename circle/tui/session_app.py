@@ -411,6 +411,8 @@ class CircleSessionApp:
 
     def _rebuild_agent(self, *, model: Any | None = None) -> None:
         """Rebuild harness with current settings / plan mode."""
+        if self._bridge.is_running or self._is_loading:
+            raise RuntimeError("当前回合仍在运行，不能重建 agent")
         chat = model or build_chat_model(
             self.settings, home=self.home, model_override=self.model_override
         )
@@ -1437,6 +1439,10 @@ class CircleSessionApp:
         self._start_user_turn(text)
 
     def _start_user_turn(self, text: str) -> None:
+        if self._bridge.is_running or self._is_loading:
+            self._msg_queue.append(("steering", text))
+            self._toast(f"已排队 steering（{len(self._msg_queue)}）")
+            return
         self._push_undo_checkpoint()
         self._session_tree.add("user", text)
 
@@ -2076,6 +2082,9 @@ class CircleSessionApp:
     def _cmd_mcp(self, args: str) -> None:
         token = (args or "").strip().lower()
         if token in {"reload", "refresh", "connect"}:
+            if self._bridge.is_running or self._is_loading:
+                self._toast("(busy — 等待当前回合完成后再重载 MCP)")
+                return
             try:
                 self._rebuild_agent()
             except Exception as exc:  # noqa: BLE001

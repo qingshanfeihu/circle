@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
 from circle.oauth import start_oauth_login
-from circle.settings import is_folder_trusted, load_credentials, load_settings
+from circle.settings import is_folder_trusted, load_settings
 from circle.testing import ScriptedModel
 from circle.tui.controllers import InitController, TrustController
 from circle.tui.session_app import CircleSessionApp
@@ -32,19 +31,19 @@ def _app(tmp_path: Path, monkeypatch) -> CircleSessionApp:
 
 def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
-    app._transcript.append_message("a")  # noqa: SLF001
-    app._transcript.append_message("b")  # noqa: SLF001
-    app._session_title = "t"  # noqa: SLF001
-    app._last_assistant_plain = "hi"  # noqa: SLF001
-    app._clipboard_set = lambda _t: False  # type: ignore[method-assign]  # noqa: SLF001
+    app._transcript.append_message("a")
+    app._transcript.append_message("b")
+    app._session_title = "t"
+    app._last_assistant_plain = "hi"
+    app._clipboard_set = lambda _t: False  # type: ignore[method-assign]
 
     # editor stubs
     editor = tmp_path / "ed.sh"
     editor.write_text("#!/bin/sh\nprintf 'e\\n' > \"$1\"\n", encoding="utf-8")
     editor.chmod(0o755)
     monkeypatch.setenv("EDITOR", str(editor))
-    app._app.suspend_for_external = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
-    app._app.resume_from_external = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
+    app._app.suspend_for_external = lambda: None  # type: ignore[method-assign]
+    app._app.resume_from_external = lambda: None  # type: ignore[method-assign]
 
     # Avoid async compact hanging the suite: run sync via direct model path later
     commands = {
@@ -86,7 +85,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
 
     # Re-login after logout in the map order — reorder carefully
     # First ensure export file exists before import
-    app._on_submit(f"/export {tmp_path / 'out.md'}")  # noqa: SLF001
+    app._on_submit(f"/export {tmp_path / 'out.md'}")
     assert (tmp_path / "out.md").is_file()
 
     # login again so reload works after we may logout
@@ -96,19 +95,19 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         cmd = commands.get(name)
         assert cmd, name
         if name == "logout":
-            app._on_submit("/login anthropic")  # noqa: SLF001
+            app._on_submit("/login anthropic")
         if name in {"reload", "plan", "init"}:
             if name == "reload":
-                app._on_submit("/login anthropic")  # noqa: SLF001
+                app._on_submit("/login anthropic")
             # Keep ScriptedModel after /login clears the override.
             app.model_override = ScriptedModel(responses=[AIMessage(content="ok")])
             try:
-                app._rebuild_agent(model=app.model_override)  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                pass
-        app._on_submit(cmd)  # noqa: SLF001
+                app._rebuild_agent(model=app.model_override)
+            except RuntimeError as exc:
+                assert "当前回合仍在运行" in str(exc)
+        app._on_submit(cmd)
         # must not raise; transcript grows
-        assert app._transcript.message_count() > 0  # noqa: SLF001
+        assert app._transcript.message_count() > 0
 
     # compact separately (async) — uses deepagents compact_conversation on the thread
     import time
@@ -117,13 +116,17 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
 
     from circle.context_middleware import thread_config
 
-    # Drop any still-running /init bridge worker so compact is not blocked.
-    app._leave_busy()  # noqa: SLF001
+    # Stop and join any /init worker before rebuilding on the same thread.
+    app._bridge.cancel()
+    worker = app._bridge._worker
+    if worker is not None:
+        worker.join(timeout=10)
+    app._leave_busy()
     app.model_override = ScriptedModel(responses=[AIMessage(content="SUM")])
-    app._rebuild_agent(model=app.model_override)  # noqa: SLF001
-    app._bridge = app._make_bridge()  # noqa: SLF001
-    app._agent.update_state(  # noqa: SLF001
-        thread_config(app._thread_id),  # noqa: SLF001
+    app._rebuild_agent(model=app.model_override)
+    app._bridge = app._make_bridge()
+    app._agent.update_state(
+        thread_config(app._thread_id),
         {
             "messages": [
                 HumanMessage(content="c1"),
@@ -131,13 +134,13 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
             ]
         },
     )
-    app._transcript.append_message("c1")  # noqa: SLF001
-    app._transcript.append_message("c2")  # noqa: SLF001
-    app._on_submit("/compact")  # noqa: SLF001
+    app._transcript.append_message("c1")
+    app._transcript.append_message("c2")
+    app._on_submit("/compact")
     deadline = time.time() + 10
     snap = ""
     while time.time() < deadline:
-        snap = "\n".join(app._transcript.snapshot())  # noqa: SLF001
+        snap = "\n".join(app._transcript.snapshot())
         if "compact 失败" in snap or "SUM" in snap or "compacted" in snap.lower():
             break
         time.sleep(0.05)
@@ -145,9 +148,9 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
     assert "SUM" in snap or "compacted" in snap.lower()
 
     # exit last
-    app._app._running = True  # noqa: SLF001
-    app._on_submit("/exit")  # noqa: SLF001
-    assert app._app._running is False  # noqa: SLF001
+    app._app._running = True
+    app._on_submit("/exit")
+    assert app._app._running is False
 
 
 def test_editor_does_not_stop_session(tmp_path: Path, monkeypatch):
@@ -157,13 +160,13 @@ def test_editor_does_not_stop_session(tmp_path: Path, monkeypatch):
     editor.chmod(0o755)
     monkeypatch.setenv("EDITOR", str(editor))
     calls: list[str] = []
-    app._app._running = True  # noqa: SLF001
-    app._app.suspend_for_external = lambda: calls.append("suspend")  # type: ignore[method-assign]  # noqa: SLF001
-    app._app.resume_from_external = lambda: calls.append("resume")  # type: ignore[method-assign]  # noqa: SLF001
-    app._on_submit("/editor")  # noqa: SLF001
+    app._app._running = True
+    app._app.suspend_for_external = lambda: calls.append("suspend")  # type: ignore[method-assign]
+    app._app.resume_from_external = lambda: calls.append("resume")  # type: ignore[method-assign]
+    app._on_submit("/editor")
     assert calls == ["suspend", "resume"]
-    assert app._app._running is True  # noqa: SLF001
-    assert "from-ed" in app._prompt.value  # noqa: SLF001
+    assert app._app._running is True
+    assert "from-ed" in app._prompt.value
 
 
 def test_compact_uses_model_override(tmp_path: Path, monkeypatch):
@@ -175,9 +178,9 @@ def test_compact_uses_model_override(tmp_path: Path, monkeypatch):
 
     app = _app(tmp_path, monkeypatch)
     app.model_override = ScriptedModel(responses=[AIMessage(content="OVERRIDE_SUM")])
-    app._rebuild_agent(model=app.model_override)  # noqa: SLF001
-    app._agent.update_state(  # noqa: SLF001
-        thread_config(app._thread_id),  # noqa: SLF001
+    app._rebuild_agent(model=app.model_override)
+    app._agent.update_state(
+        thread_config(app._thread_id),
         {
             "messages": [
                 HumanMessage(content="one"),
@@ -185,13 +188,13 @@ def test_compact_uses_model_override(tmp_path: Path, monkeypatch):
             ]
         },
     )
-    app._transcript.append_message("one")  # noqa: SLF001
-    app._transcript.append_message("two")  # noqa: SLF001
-    app._on_submit("/summarize")  # noqa: SLF001
+    app._transcript.append_message("one")
+    app._transcript.append_message("two")
+    app._on_submit("/summarize")
     deadline = time.time() + 10
     snap = ""
     while time.time() < deadline:
-        snap = "\n".join(app._transcript.snapshot())  # noqa: SLF001
+        snap = "\n".join(app._transcript.snapshot())
         if "OVERRIDE_SUM" in snap or "compact 失败" in snap or "compacted" in snap.lower():
             break
         time.sleep(0.05)
@@ -211,7 +214,7 @@ def test_trust_on_untrusted_workspace(tmp_path: Path, monkeypatch):
         model_override=ScriptedModel(responses=[AIMessage(content="z")]),
     )
     assert not is_folder_trusted(app2.settings, other)
-    app2._on_submit("/trust")  # noqa: SLF001
+    app2._on_submit("/trust")
     assert is_folder_trusted(app2.settings, other)
     assert (other / ".agent").is_dir()
 
