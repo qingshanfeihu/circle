@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in Circle does not work the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep it short and concrete. If it does not fit on one screen, trim it.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: State the bug in a few sentences. Paste the exact error text if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows it. Commands, prompts, or a session transcript (`/export`).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Circle version
+      description: Output of `circle --version`.
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS and terminal
+      description: For example "macOS 15, Ghostty" or "Ubuntu 24.04, tmux in Alacritty".
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and protocol
+      description: For example "qwen3.8-flash, anthropic protocol". Do not paste keys or URLs that contain credentials.

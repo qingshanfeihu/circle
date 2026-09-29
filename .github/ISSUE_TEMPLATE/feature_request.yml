@@ -1,0 +1,24 @@
+name: Feature request
+description: Something Circle should do that it does not do today.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way? Describe the situation, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like
+      description: If it could be an extension, a skill, or a custom command instead of a core change, say why it cannot.
+    validations:
+      required: true
+  - type: checkboxes
+    id: implement
+    attributes:
+      label: Implementation
+      options:
+        - label: I am willing to implement this myself.

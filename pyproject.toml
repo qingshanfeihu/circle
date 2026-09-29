@@ -5,10 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "circle"
 version = "0.1.0"
-description = "Circle — compile harness with a zero-Python install path"
+description = "A terminal coding agent for your own model endpoint"
 requires-python = ">=3.11"
 readme = "README.md"
 dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/qingshanfeihu/circle"
+Documentation = "https://github.com/qingshanfeihu/circle/blob/main/docs/index.md"
+Issues = "https://github.com/qingshanfeihu/circle/issues"
+Changelog = "https://github.com/qingshanfeihu/circle/blob/main/CHANGELOG.md"
 
 [project.scripts]
 circle = "circle.cli:main"

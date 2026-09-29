@@ -1,193 +1,68 @@
-# Circle
+<p align="center">
+  <img src="docs/images/logo.svg" width="96" height="96" alt="Circle">
+</p>
 
-终端里的 AI coding agent。接你自己的模型网关，在项目目录里读改跑。
+<h1 align="center">Circle</h1>
+
+<p align="center">A terminal coding agent for your own model endpoint.</p>
+
+<p align="center">
+  <a href="docs/index.md">Docs</a> ·
+  <a href="docs/quickstart.md">Quickstart</a> ·
+  <a href="docs/known-issues.md">Known issues</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="README.zh-CN.md">中文</a>
+</p>
+
+---
+
+Circle reads and edits the code in a folder you choose, and runs commands there. It works with any service or gateway that speaks the OpenAI or Anthropic API. It asks before it runs a command or changes a file, and the screen shows at a glance whether it is working or waiting for you.
+
+**Circle is early software (0.1.x).** There is no operating-system sandbox, OAuth sign-in is not available, and sessions do not reopen after a restart. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
 
 ## Install
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
-```
-
-钉版本：
+Circle needs macOS or Linux and Python 3.11 or newer.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.1.0/install.sh | CIRCLE_VERSION=0.1.0 bash
-```
-
-## Quick start
-
-```bash
-circle
-# 或指定目录
-circle ~/code/my-project
-```
-
-第一次会引导你接模型（URL + KEY 或 OAuth），再确认 trust 当前工作区，然后进入会话。之后在同一台机器上直接 `circle` 即可。
-
-配置与凭据在 `~/.circle/`（可用环境变量 `CIRCLE_HOME` 改路径）。
-
-## Commands
-
-会话里输入 `/` 查看全部命令，常用：
-
-| Command | 作用 |
-|---------|------|
-| `/help` | 命令列表 |
-| `/login` `/logout` | 登录 / 退出（`/connect` = `/login`） |
-| `/models` | 查看或切换模型 |
-| `/new` | 新会话（`/clear` 同义） |
-| `/resume` | 恢复会话（`/sessions` 同义） |
-| `/compact` | 压缩上下文（`/summarize` 同义） |
-| `/plan` | 开关 plan mode（优先探索与写 `/plan.md`；变更仍需确认） |
-| `/yolo` | 本会话自动批准需审批的工具调用（`/auto` 同义；`/yolo off` 恢复逐项审批） |
-| `/export` `/share` | 导出 / 本地分享副本 |
-| `/undo` `/redo` | 撤销 / 重做上一回合 |
-| `/hotkeys` | 快捷键说明 |
-| `/exit` | 退出（`/quit` `/q`） |
-
-快捷键：`ctrl+t` 展开思考 · `ctrl+o` 展开工具输出 · `ctrl+r` 历史搜索 · ↑↓ 提示历史（输入框为空且历史翻到头时改为滚动对话）·
-输入框为空时 PgUp/PgDn 翻半屏、Home/End 到顶/到底 · 鼠标拖选即复制，拖到对话区上下边缘会自动滚动、选区跟着扩展。
-
-界面分七个区，完整规则见 [docs/development/tui-contract.md](docs/development/tui-contract.md)：转录（发生过的事）、常驻（页眉、页脚、模式词、忙碌词、子代理条）、计划区、对话框、弹窗、页面、一闪。
-屏幕上只有一个圆角输入框，它的颜色说轮到谁：彩虹流动是模型在跑，黄色静止是在等你，淡色是空闲。忙碌时 `Brewing… · 12.4s · ↓ 1.9k` 嵌在框上沿左侧；
-框下沿右侧是模式词，只有非默认模式才显示：`read-only`（`/plan`）或 `auto`（`/yolo`），默认逐项审批什么都不显示。页眉一行是版本、模型、目录，右侧唯一一处键位提示 `? for shortcuts`（空输入框按 `?`）。页脚一行：`↑ ↓ · 费用 · cache · ctx`。
-对话里块与块之间恰好空一行：一段思考和紧跟的回答算一块，连续的工具调用算一块。每行工具带一盏灯：黄闪在跑、绿成了、红败了、**青色常亮是在等你**、不点是没跑。
-被折起的内容才写键位：折叠行 `… +15 lines · ctrl+o`，折起的思考行末尾 `ctrl+t`。
-工具行连同 `⎿` 结果按类型铺底色：查阅（读文件、搜索、网页、skill）蓝、改文件与命令（含 Bash）绿、子代理青，思考与计划洋红；回答正文不铺底色。
-
-需要你回答的问题（工具审批、模型的 `question`）不是另开一个面板，而是输入框换了内容：黄色静止的边框，标题行带青灯，正文，竖排选项。
-按数字选；`y` / `a` / `n` 也行但不显示；`esc` 拒绝；`3 Reject and explain` 让框的最后一行变成输入，原因会随拒绝交给模型。
-卡片在时打字不会进输入框，也不会误答；你正在打字时卡片等你停手 1 秒再出现。`2 Allow … for this session` 把范围写在选项里，`/approvals` 里可以撤销。
-
-子代理（`task`）运行时，底部在途条每行一个：灯、名字、在做什么（思考标题，没有就是派给它的任务）、耗时 · token。
-最多显示 6 行，超出的折叠 `… +N more`。输入框为空时按 ↓ 进入选择，↑↓ 移动，⏎（或点击该行）打开它的详情页：
-逐次工具调用与结果、每轮思考（`ctrl+t` 展开正文，只保留每轮末尾一段），←→ 切换到其他子代理，esc 返回；顶栏右侧的 `main · prev · next` 也可以直接点。
-主对话里 task 行下面折叠显示子代理的调用次数、耗时、token，运行中再列最近 3 次调用，`ctrl+o` 列出全部。
-
-模型用 `write_todos` 记录计划时，对话框上方是一个封闭的计划块：默认 5 个完整行，窗口跟随当前项，鼠标滚轮翻看，下沿右角标 `2–6 / 14`。
-显示的是模型实际记下的状态，回合结束不会把没做完的项改成完成。审批或提问接管输入框期间计划块隐藏，答完恢复。
-每个用户回合结束有一行 `12s · ↑ 1.2k · ↓ 340`（含子代理；停下等审批的时间不计），模型什么都没返回时另有一行红字说明；中止的回合是一行暗色 `✖ Interrupted`。
-`ctrl+o` / `ctrl+t` / `/thinking` 会按各回合的快照把整段对话重画一遍。
-
-## Skills
-
-Circle 兼容 [skills.sh](https://skills.sh) / Agent Skills 生态：和多数 harness 一样读 **`.agents/skills`**，并兼容 `.opencode/skills`、`.pi/skills`、`.claude/skills`。
-
-安装（任选其一）：
-
-```bash
-# 推荐：装到通用 .agents/skills（Circle / Cursor / Codex 等都会读）
-npx skills add <owner/repo> --skill <name> -a amp -y
-
-# 或装到所有支持 .agents/skills 的 agent
-npx skills add <owner/repo> --skill <name> -a amp,cursor,codex -y
-```
-
-Circle 还会额外读取：
-
-| 位置 | 说明 |
-|------|------|
-| `~/.agents/skills/` · 项目 `.agents/skills/` | skills.sh 通用目录 |
-| `~/.config/opencode/skills` · `.opencode/skills` | OpenCode |
-| `~/.pi/agent/skills` · `.pi/skills` | Pi |
-| `~/.circle/skills/` · `.circle/skills/` · `.agent/skills/` | Circle 私有目录 |
-
-系统提示只放名称与简介；全文用 `read_file`、工具 `skill`，或 `/skill <name>` / `/skill:name`。
-
-自定义 slash：在 `.circle/commands/*.md` 或 `.opencode/commands/*.md`（兼容 OpenCode frontmatter）。
-
-MCP：在 `~/.circle/settings.json` 配置 `mcp_servers` 后会真正加载工具；`/mcp` 查看，`/mcp reload` 重连。
-
-会话分支：`/tree` `/fork` `/clone`。Plan mode（`/plan`）硬拦截写改与 shell（仅允许 `/plan.md`）。
-
-## Extensions
-
-扩展是一段 Python，给 Circle 加工具、slash 命令、中间件、子代理、工具结果渲染和事件处理，不用改 Circle 本体。
-一个扩展一个目录，里面的 `extension.py` 定义 `register(api)`：
-
-| 位置 | 何时加载 |
-|------|----------|
-| `~/.circle/extensions/<name>/extension.py` | 总是 |
-| 项目 `.circle/extensions/<name>/extension.py` | 仅当该工作区已受信任（`/trust`） |
-
-```python
-def register(api):
-    def lookup(args):
-        return {"ok": True, "hits": []}          # dict 以 JSON 返回给模型；抛 api.ToolError 表示失败
-    api.register_tool("my_lookup", "Look something up.",
-                      {"type": "object", "properties": {"q": {"type": "string"}}},
-                      lookup, read_only=True)    # 非只读工具走审批，与 execute/write 一致
-    api.register_command("hello", "Say hello", lambda args, ctx: ctx.toast("hello " + args))
-```
-
-其余接口：`register_middleware(mw, slot)`（`model_call` / `tool_boundary` / `after_model`）、
-`register_subagent(spec, tools=[工具名])`（工具白名单）、`register_renderer("tool_result:<工具名>", fn)`、
-`on(event, handler)`（`session_start` / `turn_start` / `turn_end` / `tool_result`）。
-工具或命令与内置重名会被拒绝；`register` 抛异常时这个扩展整体不加载，不影响其他扩展。
-`/extensions` 查看状态，`/extensions reload` 重新加载；`~/.circle/settings.json` 里
-`"extensions": {"<name>": {"enabled": false}}` 关闭某个扩展。
-
-## 审批
-
-`execute`、`write_file`、`edit_file`、`apply_patch`、`delete` 和非只读的扩展工具先经审批。每次调用按内容分三类：
-
-| 判定 | 哪些调用 | 行为 |
-|------|----------|------|
-| 拒绝 | `sudo`/`su`/`doas`/`pkexec`；点名凭据文件的命令（默认 `.env*`、`*.pem`、`id_rsa`、`credentials.json`、`token.json` 等） | 不弹审批、不执行，模型收到拒绝原因；由 sandbox 后端在执行前拦截，子代理同样生效 |
-| 每次都问 | 删除（`rm`、`find -delete`、`delete` 工具、删文件的补丁）、破坏性 git（`reset --hard`、`clean -f`、强推、`branch -D`、丢弃改动）、`dd`/`mkfs`/`truncate`、无法解析的命令 | 审批面板没有「始终允许」 |
-| 询问 | 其余 | 可选「始终允许」：命令按原文精确匹配；文件改动只覆盖工作区内的路径；扩展工具覆盖该工具的全部调用 |
-
-`/yolo` 打开后，审批策略对「询问」与「每次都问」直接放行，不产生审批中断；
-开关在回合中也对下一次工具调用生效。打开前已经挂起的中断仍由 TUI 自动批准。
-「拒绝」一类照旧由 sandbox 后端在执行前拦截，不受 `/yolo` 影响。
-不开 `/yolo` 时，并行子代理遇到审批会一起暂停，等待逐项决定后再恢复。
-
-模型执行的命令继承启动 circle 时的环境变量（`PATH`、`HOME`、语言、`SSL_CERT_FILE` 等），名字像机密的
-不传：变量名按非字母数字切段后，任一段是 `KEY`、`TOKEN`、`SECRET`、`PASS`/`PASSWORD`/`PASSWD`、
-`PASSPHRASE`、`CREDENTIAL`、`COOKIE`、`PRIVATE`（含复数），或以 `PASS`/`PASSWORD`/`PASSWD`/`TOKEN`/
-`SECRET`/`APIKEY` 结尾，就去掉。circle 自己放进环境的模型 API key 因此到不了这些命令里。
-
-「始终允许」按会话线程记在 `~/.circle/approvals/`（命令只存哈希），重启或 `/resume` 后仍然有效；
-`/approvals` 打开审批管理页（←→ 选规则、enter 撤销、esc 关闭），`/approvals list` 以文字列出，`/approvals revoke <序号>` 直接撤销。凭据文件表可在 `settings.json` 用
-`"credential_files": ["*.secret", ".env*"]` 替换（按文件名通配）。命令分类只读命令文本，能覆盖常见写法，
-挡不住有意的变形。
-
-## 运行守卫
-
-全屏界面运行时，日志写入 `~/.circle/logs/circle.log`（5 MB 轮转三份），不输出到终端。
-
-- 工具抛出异常时，模型收到一条脱敏后的错误结果，回合继续。
-- 工具名大小写、参数键拼写、JSON 字符串字段会先修正再执行；参数仍不合 schema 时不执行，告诉模型哪些字段错。
-- 模型重复同一调用、连续拿到空结果或来回重读同一文件时，会收到换思路的提醒（`CIRCLE_LOOP_GUARD=0` 关闭；
-  阈值 `CIRCLE_LOOP_DUP_THRESHOLD` / `CIRCLE_LOOP_EMPTY_THRESHOLD` / `CIRCLE_LOOP_WINDOW` / `CIRCLE_LOOP_SOFT_BUDGET`）。
-- 长会话里较早的大段工具输出只保留开头（`CIRCLE_PRUNE_TOOL_OUTPUTS=0` 关闭，`CIRCLE_PRUNE_PROTECT_TOKENS` 调保护窗口）。
-
-模型请求（`circle/model_guard.py`）：
-
-- 失败按类型分别重试：限流（429）、服务端错误（408/409/5xx）、网络中断、流内报错，各有次数与总时长上限；
-  端点给了 `Retry-After` 就按它等。欠费（402、`insufficient_quota`）不重试。已经输出过内容的请求不重试，
-  避免同一段文字出现两次。等待时会话里会提示。
-- 端点以 400/422 拒收某个参数（effort、thinking、betas、stream_options 等）时，去掉它重发，本会话之后都不再发送。
-- 流只剩保活、`CIRCLE_LLM_STALL_TIMEOUT` 秒（默认 180）没有内容时断开；还没产出内容就重发一次。
-- 输出陷入复读：还没给出正文或工具调用时，附一条提醒重发（最多两次）；已经有正文就在此处结束。
-  `CIRCLE_LLM_REPEAT_GUARD=0` 关闭。
-- 流结束却没有 finish_reason：没内容就重发一次；有内容则保留，并记日志说明可能被截断。
-- 输出额度在给出任何回答前就用完（finish_reason 为 `max_tokens`/`length`，通常是被思考吃光）：会话里提示
-  「模型的输出额度在给出回答前就被思考用完，本轮没有回答」并记日志，不当成空回复静默结束。
-
-思考深度 `CIRCLE_REASONING_EFFORT`（Anthropic 协议缺省 `xhigh`）按模型族落地：
-声明了档位的模型取不超过所请求的最高档；老一代 Claude 改发思考预算；
-模型目录里还没有的 Claude 型号按新一代处理，发自适应思考加 effort。
-OpenAI 协议只有显式设置了才发送。Circle 不会关闭思考。
-模型目录里没有声明思考档位的模型（目录外的 Claude 型号与非 Claude 模型）拿到的是 SDK 的 4096 缺省输出
-额度，思考会先把它吃光，所以不到 4096 时提到 32000。
-
-## Dev
-
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/qingshanfeihu/circle
+cd circle
+python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-pytest -q
 ```
+
+There is also a prebuilt binary and an installer script. The only release is old and covers macOS on Apple silicon; see the [Quickstart](docs/quickstart.md#1-install) before you use it.
+
+## Run
+
+```bash
+cd ~/code/my-project
+circle
+```
+
+The first time, Circle asks for a base URL, a key and a model, then asks you to trust the folder. After that, type a task and press `enter`. Type `/` to see the commands and `?` to see the keys.
+
+## Learn more
+
+| | |
+|---|---|
+| [Quickstart](docs/quickstart.md) | Install, connect a model, run a first task. |
+| [The interface](docs/interface.md) | What the lamps, tints and frame mean. |
+| [Run Circle safely](docs/security.md) | What is asked, what is refused, what is not protected. |
+| [Choose a model](docs/models.md) | Endpoints, switching, thinking depth. |
+| [Skills](docs/skills.md), [Commands](docs/custom-commands.md), [MCP](docs/mcp.md), [Extensions](docs/extensions.md) | Make Circle yours. |
+| [All documentation](docs/index.md) | Guides and reference. |
+
+## Development
+
+```bash
+pip install -e '.[dev]'
+python -m pytest -q
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) for coding agents, and the [architecture](docs/development/architecture.md). Report security problems as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+No license has been chosen yet.
