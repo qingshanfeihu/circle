@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import StructuredTool, tool
 from langgraph.errors import GraphInterrupt
 from pydantic import Field
 
@@ -276,6 +276,75 @@ def test_loop_guard_is_stored_once_and_reused(tmp_path, monkeypatch):
     assert sum(is_loop_reminder(m) for m in result["messages"]) == 1
     assert [m.model_dump(exclude_none=True) for m in model.seen[-2]] == [
         m.model_dump(exclude_none=True) for m in model.seen[-1][:len(model.seen[-2])]
+    ]
+
+
+def test_loop_guard_warns_again_after_window_when_long_turn_starts_looping():
+    middleware = LoopGuardMiddleware(window=8)
+    messages = _turn(*[("read_file", {"file_path": f"f{i}.py"}, "content")
+                       for i in range(25)])
+    first = middleware.before_model({"messages": messages}, None)
+    assert first is not None
+    assert "not a request to stop" in first["messages"][0].content
+    messages.extend(first["messages"])
+    for i in range(7):
+        messages.extend((_call("grep", {"pattern": "needle"}, f"repeat-{i}"),
+                         ToolMessage(content="No matches", tool_call_id=f"repeat-{i}")))
+    assert middleware.before_model({"messages": messages}, None) is None
+    messages.extend((_call("grep", {"pattern": "needle"}, "repeat-7"),
+                     ToolMessage(content="No matches", tool_call_id="repeat-7")))
+    prior = [msg.model_dump(exclude_none=True) for msg in messages]
+    second = middleware.before_model({"messages": messages}, None)
+    assert second is not None
+    assert "same arguments" in second["messages"][0].content
+    assert "came back empty" in second["messages"][0].content
+    messages.extend(second["messages"])
+    assert [msg.model_dump(exclude_none=True) for msg in messages[:len(prior)]] == prior
+    messages.extend((_call("grep", {"pattern": "needle"}, "repeat-8"),
+                     ToolMessage(content="No matches", tool_call_id="repeat-8")))
+    assert middleware.before_model({"messages": messages}, None) is None
+
+
+def test_loop_guard_requires_a_current_condition_after_cooldown():
+    middleware = LoopGuardMiddleware(window=8, soft_budget=1000)
+    messages = _turn(*[("grep", {"pattern": "same"}, "hit")] * 3)
+    first = middleware.before_model({"messages": messages}, None)
+    assert first is not None
+    messages.extend(first["messages"])
+    for i in range(8):
+        messages.extend((_call("grep", {"pattern": f"distinct-{i}"}, f"d-{i}"),
+                         ToolMessage(content="hit", tool_call_id=f"d-{i}")))
+    assert middleware.before_model({"messages": messages}, None) is None
+    for i in range(3):
+        messages.extend((_call("grep", {"pattern": "again"}, f"a-{i}"),
+                         ToolMessage(content="hit", tool_call_id=f"a-{i}")))
+    assert middleware.before_model({"messages": messages}, None) is not None
+
+
+def test_harness_persists_a_second_loop_notice(tmp_path, monkeypatch):
+    monkeypatch.setenv("CIRCLE_LOOP_WINDOW", "3")
+    monkeypatch.setenv("CIRCLE_LOOP_SOFT_BUDGET", "4")
+    monkeypatch.setenv("CIRCLE_LOOP_EMPTY_THRESHOLD", "3")
+
+    @tool
+    def tick(i: int) -> str:
+        """Return a numbered test result."""
+        return "No matches" if i >= 4 else f"content {i}"
+
+    responses = [_call("tick", {"i": i}, f"tick-{i}") for i in range(7)]
+    responses.append(AIMessage(content="done"))
+    model = RecordingModel(responses=responses)
+    agent = create_harness(model, root_dir=tmp_path, extra_tools=[tick])
+    config = {"configurable": {"thread_id": "long-loop"}}
+    result = agent.invoke({"messages": [HumanMessage(content="go")]}, config=config)
+    assert len(model.seen) == 8
+    assert is_loop_reminder(model.seen[4][-1])
+    assert is_loop_reminder(model.seen[7][-1])
+    assert "not a request to stop" in model.seen[4][-1].content
+    assert "came back empty" in model.seen[7][-1].content
+    assert sum(is_loop_reminder(msg) for msg in result["messages"]) == 2
+    assert [msg.model_dump(exclude_none=True) for msg in model.seen[6]] == [
+        msg.model_dump(exclude_none=True) for msg in model.seen[7][:len(model.seen[6])]
     ]
 
 

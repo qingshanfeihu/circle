@@ -9,8 +9,9 @@ Before each model call the tool calls since the last real user message are check
 - more than 25 calls in the turn with none of the above: a note that this is fine
   while each call brings something new.
 
-The reminder is appended to the stored conversation after a tool result, at most
-once per user turn. Thresholds come from ``CIRCLE_LOOP_*``;
+The reminder is appended to the stored conversation after a tool result. A
+later reminder needs at least ``CIRCLE_LOOP_WINDOW`` main model replies since
+the previous one. Thresholds come from ``CIRCLE_LOOP_*``;
 ``CIRCLE_LOOP_GUARD=0`` turns it off.
 """
 
@@ -25,7 +26,7 @@ from itertools import pairwise
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from circle.middleware.plan_tail import is_plan_reminder
 
@@ -209,7 +210,11 @@ class LoopGuardMiddleware(AgentMiddleware):
             if not messages or not isinstance(messages[-1], ToolMessage):
                 return None
             last_user = _last_user_index(messages)
-            if any(is_loop_reminder(msg) for msg in messages[last_user:]):
+            previous = next((i for i in range(len(messages) - 1, last_user - 1, -1)
+                             if is_loop_reminder(messages[i])), None)
+            if (previous is not None
+                    and sum(isinstance(msg, AIMessage) for msg in messages[previous + 1:])
+                    < self.window):
                 return None
             stats = analyze(messages, window=self.window)
             text = build_reminder(stats, dup_threshold=self.dup_threshold,
