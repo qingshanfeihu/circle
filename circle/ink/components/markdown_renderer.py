@@ -13,6 +13,7 @@ TERM/COLORTERM 降级，输出才与屏上其余 panel_bg 完全一致且与运�
 from __future__ import annotations
 
 import re
+import unicodedata
 from itertools import pairwise
 
 from ..string_width import char_width, string_width
@@ -24,15 +25,14 @@ _STRIKE = "\x1b[9m"
 _ITALIC = "\x1b[3m"
 
 _NON_SGR_RE = re.compile(r"\x1b\[[0-9;]*[^m0-9;\x1b]")
-_FENCE_RE = re.compile(r"^```(\w*)\s*$")
+_FENCE_RE = re.compile(r"^(?P<indent> *)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 _HR_RE = re.compile(r"^(\s*)([-*_])\s*\2\s*\2[\s\2]*$")
 _OL_RE = re.compile(r"^(\s*)\d+\.\s+(.+)$")
 _UL_RE = re.compile(r"^(\s*)[-*+]\s+(.+)$")
 _QUOTE_RE = re.compile(r"^(\s*)>\s?(.*)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
-_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
+_URL_RE = re.compile(r"(?<!\w)(?:https?://|www\.)[^\s<>]+")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 _TASK_RE = re.compile(r"^\[([ xX])\]\s+(.+)$")
@@ -41,6 +41,85 @@ _SGR_SPLIT_RE = re.compile(r"(\x1b\[[0-9;]*m)")
 
 _MODEL_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SGR_TEXT_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _punctuation(char: str) -> bool:
+    return bool(char) and unicodedata.category(char)[0] in "PS"
+
+
+def _delimiter_sides(text: str, start: int, end: int, marker: str) -> tuple[bool, bool]:
+    before = text[start - 1] if start else " "
+    after = text[end] if end < len(text) else " "
+    left = not after.isspace() and (
+        not _punctuation(after) or before.isspace() or _punctuation(before)
+    )
+    right = not before.isspace() and (
+        not _punctuation(before) or after.isspace() or _punctuation(after)
+    )
+    if marker == "_":
+        return left and (not right or _punctuation(before)), right and (
+            not left or _punctuation(after)
+        )
+    return left, right
+
+
+def _replace_emphasis(text: str, marker: str, size: int, style: str,
+                      reset: str) -> str:
+    """Apply one delimiter width only where CommonMark flanking permits it."""
+    runs = list(re.finditer(re.escape(marker) + "+", text))
+    stack: list[re.Match[str]] = []
+    pairs: list[tuple[re.Match[str], re.Match[str]]] = []
+    for run in runs:
+        if len(run.group()) != size:
+            continue
+        escape_start = run.start()
+        while escape_start and text[escape_start - 1] == "\\":
+            escape_start -= 1
+        if (run.start() - escape_start) % 2:
+            continue
+        can_open, can_close = _delimiter_sides(text, run.start(), run.end(), marker)
+        if can_close and stack and stack[-1].end() < run.start():
+            pairs.append((stack.pop(), run))
+        elif can_open:
+            stack.append(run)
+    if not pairs:
+        return text
+    opens: dict[int, int] = {}
+    closes: dict[int, int] = {}
+    consumed: set[int] = set()
+    for opener, closer in pairs:
+        opens[opener.end()] = opens.get(opener.end(), 0) + 1
+        closes[closer.start()] = closes.get(closer.start(), 0) + 1
+        consumed.update(range(opener.start(), opener.end()))
+        consumed.update(range(closer.start(), closer.end()))
+    out: list[str] = []
+    depth = 0
+    for index in range(len(text) + 1):
+        if index in closes:
+            depth -= closes[index]
+            out.append(style if depth else reset)
+        if index in opens:
+            depth += opens[index]
+            out.append(style)
+        if index < len(text) and index not in consumed:
+            out.append(text[index])
+    return "".join(out)
+
+
+def _fence_open(line: str) -> tuple[str, int, str, int] | None:
+    match = _FENCE_RE.match(line)
+    if match is None:
+        return None
+    fence = match.group("fence")
+    info = match.group("info").strip()
+    if fence[0] == "`" and "`" in info:
+        return None
+    return fence[0], len(fence), info.split(maxsplit=1)[0] if info else "", len(match.group("indent"))
+
+
+def _fence_close(line: str, marker: str, count: int) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= count and set(stripped) == {marker}
 
 
 class MarkdownRenderer:
@@ -68,24 +147,28 @@ class MarkdownRenderer:
         in_code = False
         code_lines: list[str] = []
         code_lang = ""
+        code_marker = ""
+        code_count = 0
+        code_indent = 0
 
         index = 0
         while index < len(lines):
             line = lines[index]
-            fence_m = _FENCE_RE.match(line)
-            if fence_m:
-                if in_code:
-                    _emit(self._fmt_code_block(code_lines, code_lang, pal), "code_body")
-                    code_lines = []
-                    code_lang = ""
-                    in_code = False
-                else:
-                    in_code = True
-                    code_lang = fence_m.group(1)
+            if in_code and _fence_close(line, code_marker, code_count):
+                _emit(self._fmt_code_block(code_lines, code_lang, pal), "code_body")
+                code_lines = []
+                code_lang = ""
+                in_code = False
                 index += 1
                 continue
             if in_code:
-                code_lines.append(line)
+                code_lines.append(line[min(len(line) - len(line.lstrip(" ")), code_indent):])
+                index += 1
+                continue
+            fence = _fence_open(line)
+            if fence is not None:
+                code_marker, code_count, code_lang, code_indent = fence
+                in_code = True
                 index += 1
                 continue
             if index + 1 < len(lines):
@@ -190,6 +273,7 @@ class MarkdownRenderer:
         # Keep inline code literal: emphasis and deletion markers inside it are text.
         code: list[str] = []
         links: list[tuple[str, str]] = []
+        urls: list[str] = []
 
         def protect(match: re.Match[str]) -> str:
             code.append(f"{pal.blue}{match.group(1)}{pal.reset}")
@@ -203,22 +287,31 @@ class MarkdownRenderer:
 
         text = _LINK_RE.sub(protect_link, text)
 
+        def protect_url(match: re.Match[str]) -> str:
+            urls.append(match.group())
+            return f"\ufff4{len(urls) - 1}\ufff5"
+
+        text = _URL_RE.sub(protect_url, text)
+
         def emphasis(value: str) -> str:
-            value = _BOLD_RE.sub(
-                lambda m: f"{pal.em}{m.group(1) or m.group(2)}{pal.reset}", value)
+            for marker in ("*", "_"):
+                value = _replace_emphasis(value, marker, 2, pal.em, pal.reset)
             value = _STRIKE_RE.sub(
                 lambda m: f"{_sgr_join(pal.faint, _STRIKE)}{m.group(1)}{pal.reset}", value)
-            return _ITALIC_RE.sub(
-                lambda m: f"{_sgr_join(pal.text, _ITALIC)}{m.group(1) or m.group(2)}{pal.reset}",
-                value,
-            )
+            for marker in ("*", "_"):
+                value = _replace_emphasis(value, marker, 1,
+                                          _sgr_join(pal.text, _ITALIC), pal.reset)
+            return value
 
         text = emphasis(text)
         for index, (label, url) in enumerate(links):
-            styled = f"{_UNDERLINE}{emphasis(label)}{pal.reset} {pal.dim}({url}){pal.reset}"
+            styled_label = emphasis(_URL_RE.sub(protect_url, label))
+            styled = f"{_UNDERLINE}{styled_label}{pal.reset} {pal.dim}({url}){pal.reset}"
             text = text.replace(f"\ufff2{index}\ufff3", styled)
         for index, styled in enumerate(code):
             text = text.replace(f"\ufff0{index}\ufff1", styled)
+        for index, url in enumerate(urls):
+            text = text.replace(f"\ufff4{index}\ufff5", url)
         return text
 
     def _list_content(self, text: str, pal) -> str:

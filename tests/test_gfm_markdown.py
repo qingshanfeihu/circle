@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from circle.ink.components.markdown_renderer import MarkdownRenderer
 from circle.ink.string_width import char_width, string_width
 from circle.ink.theme import palette, sgr_join
@@ -96,6 +98,41 @@ def test_existing_inline_formats_still_render() -> None:
     assert "\x1b[4m" in rendered
     linked_code = MarkdownRenderer(width=55).render_streaming("[use `code`](https://example.test)")
     assert _plain(linked_code) == "use code (https://example.test)"
+
+
+def test_emphasis_keeps_intraword_underscores_spaced_stars_urls_and_code() -> None:
+    source = ("Updated tool_result_prune.py; set CIRCLE_HOME and ANTHROPIC_API_KEY; "
+              "see https://example.com/some_path_here and https://example.com/a*b*c; "
+              "x = a * b * c; "
+              "`inline_code * literal *`; *italic* and _italic_.")
+    rendered = MarkdownRenderer(width=120).render_streaming(source)
+    assert _plain(rendered) == ("Updated tool_result_prune.py; set CIRCLE_HOME and "
+                                "ANTHROPIC_API_KEY; see https://example.com/some_path_here "
+                                "and https://example.com/a*b*c; "
+                                "x = a * b * c; inline_code * literal *; italic and italic.")
+    assert rendered.count(sgr_join(palette().text, "\x1b[3m")) == 2
+
+
+def test_nested_flanking_stars_pair_inside_out() -> None:
+    rendered = MarkdownRenderer(width=60).render_streaming("*foo *bar* baz*")
+    assert _plain(rendered) == "foo bar baz"
+    assert rendered.count(sgr_join(palette().text, "\x1b[3m")) == 3
+
+
+def test_url_used_as_link_label_remains_literal() -> None:
+    source = "[https://example.com/a*b*c](https://example.com/a*b*c)"
+    rendered = MarkdownRenderer(width=80).render_streaming(source)
+    assert _plain(rendered) == "https://example.com/a*b*c (https://example.com/a*b*c)"
+
+
+@pytest.mark.parametrize("fence", ["```c++", "~~~python", "  ```c++"])
+def test_fenced_code_keeps_identifier_and_arithmetic_literal(fence: str) -> None:
+    source = f"- code sample\n{fence}\n  int my_var = other_var * 2 * x;\n{fence.split('c++')[0].split('python')[0]}\nafter"
+    rendered = MarkdownRenderer(width=80).render_streaming(source)
+    assert "int my_var = other_var * 2 * x;" in _plain(rendered)
+    assert "int myvar" not in _plain(rendered)
+    assert palette().blue in next(line for line in rendered.splitlines() if "int my_var" in line)
+    assert "after" in _plain(rendered)
 
 
 def test_partial_stream_turns_into_the_same_final_table() -> None:
