@@ -393,7 +393,8 @@ class HarnessBridge:
         backend = getattr(self._agent, "_circle_backend", None)
         resolver = getattr(backend, "_resolve_path", None)
         configurable = {**self._config.get("configurable", {}),
-                        "circle_cancel_token": self._cancel_token}
+                        "circle_cancel_token": self._cancel_token,
+                        "circle_visible_turn": True}
         config = {**self._config, "configurable": configurable,
                   "callbacks": [ProgressHandler(
                       bus, path_resolver=resolver if callable(resolver) else None,

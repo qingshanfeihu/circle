@@ -14,7 +14,8 @@ from tests.test_parallel_interrupts import ParallelSubagentModel
 def _request(thread_id: str, command: str) -> SimpleNamespace:
     return SimpleNamespace(
         tool_call={"args": {"command": command}},
-        runtime=SimpleNamespace(config={"configurable": {"thread_id": thread_id}}),
+        runtime=SimpleNamespace(config={"configurable": {
+            "thread_id": thread_id, "circle_visible_turn": True}}),
     )
 
 
@@ -59,7 +60,7 @@ def test_yolo_still_approves_an_already_pending_interrupt(tmp_path: Path, monkey
     assert app._exec_approval is None
 
 
-def test_yolo_parallel_subagents_execute_without_interrupt(tmp_path: Path):
+def test_yolo_does_not_approve_direct_parallel_subagents(tmp_path: Path):
     home, ws = tmp_path / "home", tmp_path / "ws"
     ws.mkdir()
     policy = default_policy(home)
@@ -71,8 +72,8 @@ def test_yolo_parallel_subagents_execute_without_interrupt(tmp_path: Path):
         {"messages": [{"role": "user", "content": "MAIN"}]},
         config={"configurable": {"thread_id": "parallel"}},
     )
-    assert not result.get("__interrupt__")
-    assert all((ws / f"SUB{index}.done").exists() for index in range(2))
+    assert result.get("__interrupt__")
+    assert not any(ws.iterdir())
 
 
 def test_yolo_does_not_bypass_backend_denial(tmp_path: Path):

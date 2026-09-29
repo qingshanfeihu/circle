@@ -509,7 +509,11 @@ class ApprovalPolicy:
         for tool in gated:
             def when(request: Any, _tool: str = tool) -> bool:
                 args = (getattr(request, "tool_call", None) or {}).get("args")
-                return self.needs_approval(_tool, args, _thread_of(request))
+                runtime = getattr(request, "runtime", None)
+                config = getattr(runtime, "config", None) or {}
+                visible = (config.get("configurable") or {}).get("circle_visible_turn") is True
+                return self.needs_approval(_tool, args, _thread_of(request),
+                                           allow_yolo=visible)
 
             out[tool] = {"allowed_decisions": ["approve", "reject"], "when": when}
         return out

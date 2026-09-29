@@ -1824,6 +1824,8 @@ class CircleSessionApp:
                     )]},
                     config=thread_config(self._thread_id),
                 )
+                if result.get("__interrupt__"):
+                    raise RuntimeError("遇到需要审批的工具调用；压缩已停止，请在普通对话中处理")
                 out_msgs = result.get("messages") or []
                 last = out_msgs[-1] if out_msgs else None
                 content = getattr(last, "content", "") if last is not None else ""
