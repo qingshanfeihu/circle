@@ -241,8 +241,8 @@ def create_harness(
         except Exception:
             logger.debug("context middleware unavailable", exc_info=True)
     extra_mw.extend(extension_middleware)
-    # Last model wrapper: append the current plan after pruning/summarization,
-    # without changing the system prompt or checkpointed conversation.
+    # Persist an occasional plan reminder after tool results. Its before_model
+    # hook leaves a durable message instead of changing only the model request.
     extra_mw.append(PlanTailMiddleware())
 
     kwargs: dict[str, Any] = {

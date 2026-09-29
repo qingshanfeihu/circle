@@ -9,8 +9,8 @@
   results or rereads the same target, it gets a reminder to change strategy.
 - ``ToolResultPruneMiddleware``: old tool outputs beyond a protected window are cut
   to a short head so long sessions keep room for new work.
-- ``PlanTailMiddleware``: attach the current unfinished plan to each main model
-  request without changing the checkpointed conversation.
+- ``PlanTailMiddleware``: persist a throttled reminder for this turn's plan
+  after a tool result.
 
 Ported from InfoTest's IST-Core middleware; the compile-engine branches were left out.
 """

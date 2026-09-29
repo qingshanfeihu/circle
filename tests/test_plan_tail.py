@@ -1,4 +1,4 @@
-"""The current plan appears only in model requests, with legal provider roles."""
+"""Checkpointed plan reminders, their cadence, and provider message shape."""
 
 from __future__ import annotations
 
@@ -7,13 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
 from pydantic import Field
 
 from circle.harness import create_harness
-from circle.middleware.plan_tail import PlanTailMiddleware, plan_tail
-from circle.middleware.tool_result_prune import prune_messages
+from circle.middleware.plan_tail import PlanTailMiddleware, is_plan_reminder, plan_tail
 from circle.model import build_chat_model
 from circle.settings import CircleSettings, ModelAuth, save_credentials
 from circle.testing import ScriptedModel
@@ -33,90 +32,108 @@ def _todos() -> list[dict[str, str]]:
             {"content": "Check the output", "status": "pending"}]
 
 
+def _call(name: str, call_id: str, args: dict | None = None) -> AIMessage:
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args or {},
+                                              "id": call_id, "type": "tool_call"}])
+
+
+def _history(rounds: int) -> list[Any]:
+    messages: list[Any] = [HumanMessage(content="compile"),
+                           _call("write_todos", "plan", {"todos": _todos()}),
+                           ToolMessage(content="plan saved", tool_call_id="plan")]
+    for i in range(rounds):
+        messages.extend((_call("tick", f"tick-{i}"),
+                         ToolMessage(content="ok", tool_call_id=f"tick-{i}")))
+    return messages
+
+
 @pytest.mark.parametrize("protocol,model_name", [
     ("anthropic", "claude-sonnet-4-5"),
     ("openai", "gpt-5.1"),
 ])
-def test_plan_is_only_in_the_request_and_provider_roles_are_legal(
-        tmp_path, protocol: str, model_name: str) -> None:
+def test_reminder_is_a_separate_message_after_tool_result(tmp_path, protocol, model_name):
     home = tmp_path / "home"
     save_credentials({"api_key": "sk-test"}, home)
     settings = CircleSettings(initialized=True, auth=ModelAuth(
         protocol=protocol, base_url="http://127.0.0.1:9", model=model_name,
     ))
     model = build_chat_model(settings, home=home)
-    original = [
-        HumanMessage(content="Compile these cases"),
-        AIMessage(content="", tool_calls=[{"name": "execute", "args": {"command": "pwd"},
-                                           "id": "call_1", "type": "tool_call"}]),
-        ToolMessage(content="working directory", name="execute", tool_call_id="call_1"),
-    ]
+    original = _history(10)
     state = {"messages": original, "todos": _todos()}
+    reminder = PlanTailMiddleware._reminder(state)
+    assert reminder is not None and is_plan_reminder(reminder)
+    assert "privately" in reminder.content
+    assert "not a user message" in reminder.content
+    assert "Do not reply" in reminder.content
+    assert original[-1].content == "ok"
+
     system = SystemMessage(content="Stable system prompt")
-    request = ModelRequest(model=model, messages=original, state=state, system_message=system)
-    seen = []
-
-    def handler(current):
-        seen.append(current)
-        return ModelResponse(result=[AIMessage(content="ok")])
-
-    middleware = PlanTailMiddleware()
-    middleware.wrap_model_call(request, handler)
-    middleware.wrap_model_call(request, handler)
-    assert len(seen) == 2
-    assert request.messages is original and len(original) == 3
-    assert original[-1].content == "working directory"
-    assert state["messages"] is original and state["todos"] == _todos()
-    assert all(current.system_message is system for current in seen)
-    assert all(len(current.messages) == 4 for current in seen)
-    reminder = seen[0].messages[-1]
-    assert isinstance(reminder, HumanMessage)
-    assert reminder.content.startswith("This is your current write_todos plan;")
-    assert "[x] Read the manual" in reminder.content
-    assert "[>] Compile the cases" in reminder.content
-    assert "[ ] Check the output" in reminder.content
-    assert seen[1].messages[-1].content == reminder.content
-
-    payload = model._get_request_payload([system, *seen[0].messages])
+    payload = model._get_request_payload([system, *original, reminder])
     wire = payload["messages"]
     if protocol == "anthropic":
-        assert [entry["role"] for entry in wire] == ["user", "assistant", "user"]
         assert [block["type"] for block in wire[-1]["content"]] == ["tool_result", "text"]
         assert wire[-1]["content"][-1]["text"] == reminder.content
     else:
-        assert [entry["role"] for entry in wire] == ["system", "user", "assistant", "tool", "user"]
+        assert [entry["role"] for entry in wire[-2:]] == ["tool", "user"]
         assert wire[-1]["content"] == reminder.content
 
 
-def test_last_user_message_is_extended_without_mutating_history() -> None:
-    last = HumanMessage(content=[{"type": "text", "text": "Continue"}])
-    state = {"messages": [last], "todos": _todos()}
-    request = ModelRequest(model=ScriptedModel(responses=[AIMessage(content="ok")]),
-                           messages=state["messages"], state=state)
-    changed = PlanTailMiddleware._with_plan(request)
-    assert len(changed.messages) == 1
-    assert changed.messages[0] is not last
-    assert changed.messages[0].content[0] == {"type": "text", "text": "Continue"}
-    assert "write_todos plan" in changed.messages[0].content[-1]["text"]
-    assert state["messages"] == [last] and len(last.content) == 1
+def test_cadence_completion_and_current_turn_only(monkeypatch):
+    middleware = PlanTailMiddleware()
+    assert middleware.before_model({"messages": _history(9), "todos": _todos()}, None) is None
+    state = {"messages": _history(10), "todos": _todos()}
+    first = middleware.before_model(state, None)
+    assert first is not None and is_plan_reminder(first["messages"][0])
+    state["messages"].extend(first["messages"])
+    state["messages"].extend((_call("tick", "next"), ToolMessage(content="ok", tool_call_id="next")))
+    assert middleware.before_model(state, None) is None
+    for i in range(9):
+        state["messages"].extend((_call("tick", f"more-{i}"),
+                                  ToolMessage(content="ok", tool_call_id=f"more-{i}")))
+    assert middleware.before_model(state, None) is not None
+    state["todos"] = [{"content": "done", "status": "completed"}]
+    assert middleware.before_model(state, None) is None
 
+    state["todos"] = _todos()
+    state["messages"].append(HumanMessage(content="unrelated question"))
+    state["messages"].extend((_call("tick", "unrelated"),
+                              ToolMessage(content="ok", tool_call_id="unrelated")))
+    assert middleware.before_model(state, None) is None
+    state["messages"].extend((_call("write_todos", "bad", {"todos": _todos()}),
+                              ToolMessage(content="invalid plan", tool_call_id="bad",
+                                          status="error")))
+    for i in range(10):
+        state["messages"].extend((_call("tick", f"failed-{i}"),
+                                  ToolMessage(content="ok", tool_call_id=f"failed-{i}")))
+    assert middleware.before_model(state, None) is None
+    state["messages"].append(HumanMessage(content="continue"))
+    state["messages"].extend(_history(10)[1:])
+    assert middleware.before_model(state, None) is not None
 
-@pytest.mark.parametrize("todos", [None, [], [{"content": "done", "status": "completed"}]])
-def test_no_unfinished_plan_adds_no_reminder(todos) -> None:
-    request = ModelRequest(model=ScriptedModel(responses=[AIMessage(content="ok")]),
-                           messages=[HumanMessage(content="go")], state={"todos": todos})
-    assert PlanTailMiddleware._with_plan(request) is request
-
-
-def test_subagent_does_not_inherit_the_main_plan(monkeypatch) -> None:
     monkeypatch.setattr("circle.middleware.plan_tail.get_config",
                         lambda: {"configurable": {"ls_agent_type": "subagent"}})
-    request = ModelRequest(model=ScriptedModel(responses=[AIMessage(content="ok")]),
-                           messages=[HumanMessage(content="work")], state={"todos": _todos()})
-    assert PlanTailMiddleware._with_plan(request) is request
+    assert middleware.before_model(state, None) is None
 
 
-def test_plan_tail_is_bounded_and_keeps_the_active_step() -> None:
+def test_compaction_hiding_the_write_call_refreshes_the_reminder():
+    state = {"messages": _history(1), "todos": _todos()}
+    state["_summarization_event"] = {
+        "cutoff_index": 3,
+        "summary_message": HumanMessage(content="Summary", additional_kwargs={
+            "lc_source": "summarization",
+        }),
+    }
+    reminder = PlanTailMiddleware._reminder(state)
+    assert reminder is not None
+    state["messages"].append(reminder)
+    state["messages"].extend((_call("tick", "again"), ToolMessage(content="ok", tool_call_id="again")))
+    assert PlanTailMiddleware._reminder(state) is None
+
+
+def test_async_hook_and_bounded_plan():
+    state = {"messages": _history(10), "todos": _todos()}
+    result = asyncio.run(PlanTailMiddleware().abefore_model(state, None))
+    assert result is not None and is_plan_reminder(result["messages"][0])
     todos = [{"content": f"finished {i}", "status": "completed"} for i in range(20)]
     todos += [{"content": "active " + "中" * 160, "status": "in_progress"}]
     todos += [{"content": f"later {i}", "status": "pending"} for i in range(5)]
@@ -127,51 +144,31 @@ def test_plan_tail_is_bounded_and_keeps_the_active_step() -> None:
     assert lines[1].startswith("… ")
 
 
-def test_write_todos_repr_result_is_never_pruned() -> None:
-    big = "x" * 120_000
-    result = "Updated todo list to [" + big + "]"
-    messages = [ToolMessage(content=result, name="write_todos", tool_call_id="plan")]
-    messages.extend(ToolMessage(content=big, name="read_file", tool_call_id=f"read-{i}")
-                    for i in range(3))
-    pruned = prune_messages(messages)
-    assert pruned[0].content == result
-    assert "pruned to free context" in pruned[1].content
-    assert messages[1].content == big
+def test_real_harness_persists_one_reminder_and_keeps_request_prefix(tmp_path: Path):
+    @tool
+    def tick(i: int) -> str:
+        """Advance a harmless test step."""
+        return str(i)
 
-
-def test_async_model_hook_uses_the_same_request_only_tail() -> None:
-    request = ModelRequest(model=ScriptedModel(responses=[AIMessage(content="ok")]),
-                           messages=[HumanMessage(content="go")], state={"todos": _todos()})
-    seen = []
-
-    async def handler(current):
-        seen.append(current)
-        return ModelResponse(result=[AIMessage(content="ok")])
-
-    asyncio.run(PlanTailMiddleware().awrap_model_call(request, handler))
-    assert "[>] Compile the cases" in seen[0].messages[-1].content
-    assert len(request.messages) == 1
-
-
-def test_real_harness_repeats_current_plan_without_persisting_the_reminder(tmp_path: Path) -> None:
     todos = _todos()
-    model = RecordingModel(responses=[
-        AIMessage(content="", tool_calls=[{"name": "write_todos", "args": {"todos": todos},
-                                           "id": "plan-call", "type": "tool_call"}]),
-        AIMessage(content="first reply"),
-        AIMessage(content="second reply"),
-    ])
-    agent = create_harness(model, root_dir=tmp_path)
+    responses = [_call("write_todos", "plan-call", {"todos": todos})]
+    responses += [_call("tick", f"tick-{i}", {"i": i}) for i in range(10)]
+    responses.append(AIMessage(content="done"))
+    model = RecordingModel(responses=responses)
+    agent = create_harness(model, root_dir=tmp_path, extra_tools=[tick])
     config = {"configurable": {"thread_id": "plan-tail"}}
-    first = agent.invoke({"messages": [HumanMessage(content="compile") ]}, config=config)
-    assert first["todos"] == todos and len(model.seen) == 2
-    assert "[>] Compile the cases" in model.seen[1][-1].content
-    assert not any("This is your current write_todos plan" in str(message.content)
-                   for message in first["messages"])
+    result = agent.invoke({"messages": [HumanMessage(content="compile")]}, config=config)
+    assert result["todos"] == todos
+    assert len(model.seen) == 12
+    assert not any(is_plan_reminder(msg) for msg in model.seen[10])
+    assert is_plan_reminder(model.seen[11][-1])
+    assert [msg.model_dump(exclude_none=True) for msg in model.seen[10]] == [
+        msg.model_dump(exclude_none=True) for msg in model.seen[11][:len(model.seen[10])]
+    ]
+    saved = agent.get_state(config).values["messages"]
+    assert sum(is_plan_reminder(msg) for msg in saved) == 1
+    assert saved[-1].content == "done"
 
-    second = agent.invoke({"messages": [HumanMessage(content="continue")]}, config=config)
-    assert second["todos"] == todos and len(model.seen) == 3
-    assert "[>] Compile the cases" in model.seen[2][-1].content
-    assert model.seen[2][-1].content.count("This is your current write_todos plan") == 1
-    assert not any("This is your current write_todos plan" in str(message.content)
-                   for message in agent.get_state(config).values["messages"])
+    agent.invoke({"messages": [HumanMessage(content="new topic")]}, config=config)
+    assert sum(is_plan_reminder(msg) for msg in model.seen[-1]) == 1
+    assert not is_plan_reminder(model.seen[-1][-1])

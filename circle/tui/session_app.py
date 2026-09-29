@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from langchain_core.messages import HumanMessage
+
 from circle import __version__, secret_prompt
 from circle.approvals import REJECTED_BY_USER, default_policy
 from circle.checkpoint_store import (
@@ -1816,7 +1818,10 @@ class CircleSessionApp:
             err: BaseException | None = None
             try:
                 result = self._agent.invoke(
-                    {"messages": [{"role": "user", "content": compact_prompt(hint=hint)}]},
+                    {"messages": [HumanMessage(
+                        content=compact_prompt(hint=hint),
+                        additional_kwargs={"circle_internal": "compact"},
+                    )]},
                     config=thread_config(self._thread_id),
                 )
                 out_msgs = result.get("messages") or []
@@ -2243,8 +2248,6 @@ class CircleSessionApp:
         self._reset_turn_regions()
         self._transcript.restore(lines)
         try:
-            from langchain_core.messages import HumanMessage
-
             inject_thread_message(
                 self._agent,
                 self._thread_id,
