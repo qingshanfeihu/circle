@@ -88,27 +88,6 @@ def test_batch_is_written_once_and_raw_output_and_thinking_survive(monkeypatch):
     ]
 
 
-def test_legacy_boundary_is_frozen_into_ids(monkeypatch):
-    monkeypatch.setenv("CIRCLE_PRUNE_PROTECT_TOKENS", "40000")
-    messages = [
-        HumanMessage(content="go"), _call(0),
-        ToolMessage(content="x" * 40_000, id="result-0", name="tick", tool_call_id="tick-0"),
-        _call(1), ToolMessage(content="small", id="result-1", name="tick",
-                              tool_call_id="tick-1"),
-    ]
-    state = {"messages": messages, "_circle_pruned_tool_ids": ["result-0"],
-             "_circle_strip_thinking_after": "result-0"}
-    update = ToolResultPruneMiddleware().before_model(state, None)
-    assert update == {"_circle_strip_thinking_ids": ["ai-1"]}
-    state.update(update)
-    messages.extend((_call(2), ToolMessage(content="small", id="result-2",
-                                           name="tick", tool_call_id="tick-2")))
-    projected = prune_messages(messages, pruned_ids={"result-0"},
-                               strip_thinking_ids=set(state["_circle_strip_thinking_ids"]))
-    assert [b["type"] for b in projected[3].content] == ["text"]
-    assert projected[5].content[0]["type"] == "thinking"
-
-
 def test_only_latest_todos_is_protected_and_exemptions_remain(monkeypatch):
     monkeypatch.setenv("CIRCLE_PRUNE_PROTECT_TOKENS", "0")
     big = "x" * 100_000

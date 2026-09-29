@@ -32,15 +32,12 @@ _PROTECTED_TOOLS = frozenset({"question", "skill"})
 _CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x20000, 0x2A6DF))
 _PRUNED_IDS = "_circle_pruned_tool_ids"
 _STRIP_IDS = "_circle_strip_thinking_ids"
-_LEGACY_STRIP_AFTER = "_circle_strip_thinking_after"
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
 
 
 class PruneState(AgentState):
     _circle_pruned_tool_ids: NotRequired[list[str]]
     _circle_strip_thinking_ids: NotRequired[list[str]]
-    # Old checkpoints used a moving projection past this single boundary.
-    _circle_strip_thinking_after: NotRequired[str]
 
 
 def _enabled() -> bool:
@@ -126,19 +123,6 @@ def _new_prune_ids(messages: list[Any], old_ids: set[str]) -> list[str]:
     return [id_ for id_, _size in reversed(candidates)]
 
 
-def _legacy_thinking_ids(state: Mapping[str, Any]) -> list[str]:
-    """Freeze an old checkpoint's currently stripped AI messages once."""
-    boundary_id = state.get(_LEGACY_STRIP_AFTER)
-    if not boundary_id:
-        return []
-    messages = list(state.get("messages") or [])
-    boundary = next((i for i, msg in enumerate(messages) if msg.id == boundary_id), None)
-    if boundary is None:
-        return []
-    return [msg.id for msg in messages[boundary + 1:]
-            if isinstance(msg, AIMessage) and msg.id]
-
-
 def prune_messages(messages: list[Any], *, pruned_ids: set[str] | frozenset[str],
                    strip_thinking_ids: set[str] | frozenset[str] = frozenset()) -> list[Any]:
     """Project a persisted decision without changing any stored message."""
@@ -165,26 +149,20 @@ class ToolResultPruneMiddleware(AgentMiddleware):
     state_schema = PruneState
 
     def before_model(self, state: Mapping[str, Any], runtime: Any) -> dict[str, Any] | None:
-        # A pre-upgrade checkpoint already sent a request with these blocks
-        # stripped. Freeze that projection before considering another batch.
-        old_strip_ids = list(state.get(_STRIP_IDS) or [])
-        migration = state.get(_STRIP_IDS) is None and state.get(_LEGACY_STRIP_AFTER)
-        if migration:
-            old_strip_ids = _legacy_thinking_ids(state)
-        update: dict[str, Any] = {_STRIP_IDS: old_strip_ids} if migration else {}
         if not _enabled():
-            return update or None
+            return None
         old_ids = list(state.get(_PRUNED_IDS) or [])
         messages = _visible_raw_messages(state)
         new_ids = _new_prune_ids(messages, set(old_ids))
         if not new_ids:
-            return update or None
+            return None
         ids = {msg.id for msg in messages if msg.id in new_ids}
         first_index = next(i for i, msg in enumerate(messages) if msg.id in ids)
         newly_invalid = [msg.id for msg in messages[first_index + 1:]
                          if isinstance(msg, AIMessage) and msg.id]
+        old_strip_ids = list(state.get(_STRIP_IDS) or [])
         logger.info("tool_result_prune: pruned %d old tool results", len(new_ids))
-        return {**update, _PRUNED_IDS: [*old_ids, *new_ids],
+        return {_PRUNED_IDS: [*old_ids, *new_ids],
                 _STRIP_IDS: list(dict.fromkeys([*old_strip_ids, *newly_invalid]))}
 
     async def abefore_model(self, state: Mapping[str, Any], runtime: Any) -> dict[str, Any] | None:
@@ -195,10 +173,7 @@ class ToolResultPruneMiddleware(AgentMiddleware):
         # must keep projecting the same bytes even if the setting changes.
         state = request.state if isinstance(request.state, Mapping) else {}
         ids = frozenset(state.get(_PRUNED_IDS) or ())
-        strip_ids = frozenset(
-            _legacy_thinking_ids(state) if state.get(_STRIP_IDS) is None
-            else state.get(_STRIP_IDS) or ()
-        )
+        strip_ids = frozenset(state.get(_STRIP_IDS) or ())
         if not ids and not strip_ids:
             return request
         try:
