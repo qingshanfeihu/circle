@@ -217,11 +217,12 @@ def create_harness(
         for spec in extensions.subagents(tools):
             configured = {**spec, "middleware": [*spec.get("middleware", []),
                                                   CancellationMiddleware()]}
-            if spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"]:
-                # An explicit caller spec overrides deepagents' default GP agent.
-                subagents[0] = configured
-            else:
+            existing = next((index for index, item in enumerate(subagents)
+                             if item["name"] == spec["name"]), None)
+            if existing is None:
                 subagents.append(configured)
+            else:
+                subagents[existing] = configured
         extension_middleware = extensions.middleware()
 
     # 通用中间件在最前：错误边界包住其后所有工具层（含扩展的 tool_boundary），

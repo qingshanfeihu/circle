@@ -66,3 +66,57 @@ def register(api):
     app._on_submit("/extensions reload")
     reloaded_description = app._agent.nodes["tools"].bound.tools_by_name["task"].description
     assert "- general-purpose: Extension-defined project inspector." in reloaded_description
+
+
+def _registered_agents(tmp_path, monkeypatch, registrations):
+    home, workspace = tmp_path / "home", tmp_path / "workspace"
+    workspace.mkdir()
+    for extension_name, agent_name, description in registrations:
+        extension = home / "extensions" / extension_name / "extension.py"
+        extension.parent.mkdir(parents=True)
+        extension.write_text(
+            "def register(api):\n"
+            "    api.register_subagent({\n"
+            f"        'name': {agent_name!r},\n"
+            f"        'description': {description!r},\n"
+            "        'system_prompt': 'custom agent',\n"
+            "    })\n",
+            encoding="utf-8",
+        )
+    host = ExtensionHost(
+        home=home, workspace=workspace, trusted=True,
+        reserved_tools=set(BUILTIN_TOOL_NAMES), reserved_commands=set(),
+    ).load()
+    captured: dict = {}
+    original = harness_mod.create_deep_agent
+
+    def captured_create(**kwargs):
+        captured.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(harness_mod, "create_deep_agent", captured_create)
+    agent = create_harness(ScriptedModel(responses=[AIMessage(content="ok")]),
+                           root_dir=workspace, home=home, extensions=host)
+    return captured["subagents"], agent.nodes["tools"].bound.tools_by_name["task"].description
+
+
+def test_extension_can_replace_builtin_explore(tmp_path, monkeypatch):
+    specs, description = _registered_agents(tmp_path, monkeypatch, [
+        ("custom_explore", "explore", "Custom explorer."),
+    ])
+    assert [spec["name"] for spec in specs] == ["general-purpose", "explore"]
+    assert specs[1]["description"] == "Custom explorer."
+    assert description.count("- explore:") == 1
+    assert "- explore: Custom explorer." in description
+
+
+def test_later_extension_replaces_earlier_subagent_with_same_name(tmp_path, monkeypatch):
+    specs, description = _registered_agents(tmp_path, monkeypatch, [
+        ("a_first", "reviewer", "First reviewer."),
+        ("b_second", "reviewer", "Second reviewer."),
+    ])
+    assert [spec["name"] for spec in specs] == ["general-purpose", "explore", "reviewer"]
+    assert specs[2]["description"] == "Second reviewer."
+    assert description.count("- reviewer:") == 1
+    assert "- reviewer: Second reviewer." in description
+    assert "First reviewer." not in description
