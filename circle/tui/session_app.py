@@ -1022,6 +1022,11 @@ class CircleSessionApp:
         col, row = self._mouse_to_screen_coords(me.x, me.y)
 
         if me.type == "wheel":
+            if self._plan_panel_at(col, row):
+                direction = -1 if me.button == 0 else 1 if me.button == 1 else 0
+                if direction and self._plan_panel.scroll(direction):
+                    self._app.render()
+                return
             # 划选中滚轮同样扩选：选区锚点随内容走、落点留在鼠标下
             if me.button == 0:
                 self._scroll_transcript(-3)
@@ -1064,6 +1069,16 @@ class CircleSessionApp:
                 self._copy_selection(clear_after=False)
             self._app.notify_selection_change()
             self._app.render()
+
+    def _plan_panel_at(self, col: int, row: int) -> bool:
+        """Hit the whole visible panel, including its title and count rows."""
+        panel = getattr(self, "_plan_panel", None)
+        if panel is None or not panel.is_visible:
+            return False
+        rect = panel.node.rect
+        return (rect.width > 0 and rect.height > 0
+                and rect.x <= col < rect.x + rect.width
+                and rect.y <= row < rect.y + rect.height)
 
     def _drag_to(self, col: int, row: int) -> None:
         from circle.ink.selection import extend_selection, update_selection
@@ -2441,6 +2456,7 @@ class CircleSessionApp:
 
     def _open_turn_region(self) -> None:
         self._close_turn_region()
+        self._plan_panel.follow()
         self._turn_base = self._transcript.message_count()
         self._turn_entries = []
         self._last_snap = None

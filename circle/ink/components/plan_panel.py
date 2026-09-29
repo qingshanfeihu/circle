@@ -2,8 +2,8 @@
 (InfoTest ``plan_panel.PlanPanel``).
 
 Shows each item's real status. At the end of a turn the items are left as the model
-left them — an unfinished item is not drawn as done. Long lists show a window of
-``MAX_ITEMS`` around the first unfinished item and say how many are above and below.
+left them — an unfinished item is not drawn as done. Long lists keep a fixed-height
+window of ``MAX_ITEMS`` that follows the first unfinished item until the user scrolls.
 """
 
 from __future__ import annotations
@@ -42,23 +42,30 @@ def plan_window(todos: list[dict], max_items: int = MAX_ITEMS) -> tuple[int, int
     return start, start + max_items
 
 
-def plan_lines(todos: list[dict], *, width: int = 100) -> list[str]:
+def plan_lines(todos: list[dict], *, width: int = 100,
+               start: int | None = None) -> list[str]:
     if not todos:
         return []
     pal = palette()
     done = sum(1 for t in todos if t.get("status") == "completed")
     lines = [f" {pal.em}{GLYPH_AGENT} Plan{pal.reset} {pal.dim}· {done}/{len(todos)} complete{pal.reset}"]
-    start, end = plan_window(todos)
-    if start:
-        lines.append(f"   {pal.faint}… 上面还有 {start} 项{pal.reset}")
+    long = len(todos) > MAX_ITEMS
+    if start is None:
+        start, end = plan_window(todos)
+    else:
+        start = max(0, min(int(start), max(0, len(todos) - MAX_ITEMS)))
+        end = min(len(todos), start + MAX_ITEMS)
+    if long:
+        lines.append(f"   {pal.faint}… 上面还有 {start} 项{pal.reset}" if start else "")
     room = max(10, int(width or 0) - 6)
     for todo in todos[start:end]:
         status = str(todo.get("status") or "pending")
         content = _fit(str(todo.get("content") or ""), room)
         color = pal.dim if status == "completed" else pal.text
         lines.append(f"   {_status_glyph(status)} {color}{content}{pal.reset}")
-    if end < len(todos):
-        lines.append(f"   {pal.faint}… 下面还有 {len(todos) - end} 项{pal.reset}")
+    if long:
+        hidden = len(todos) - end
+        lines.append(f"   {pal.faint}… 下面还有 {hidden} 项{pal.reset}" if hidden else "")
     return lines
 
 
@@ -71,6 +78,7 @@ class PlanPanel:
         self._node.append_child(self._text)
         self._todos: list[dict] = []
         self._width = 100
+        self._start = 0
 
     @property
     def node(self):
@@ -84,11 +92,42 @@ class PlanPanel:
     def todos(self) -> list[dict]:
         return list(self._todos)
 
+    @property
+    def window(self) -> tuple[int, int]:
+        return self._start, min(len(self._todos), self._start + MAX_ITEMS)
+
     def update(self, todos: list[dict] | None, *, width: int | None = None) -> None:
-        self._todos = [dict(t) for t in (todos or []) if isinstance(t, dict)]
-        if width:
+        incoming = [dict(t) for t in (todos or []) if isinstance(t, dict)]
+        changed = incoming != self._todos
+        self._todos = incoming
+        if width is not None:
             self._width = int(width)
-        lines = plan_lines(self._todos, width=self._width)
+        if changed:
+            self._start = plan_window(self._todos)[0]
+        else:
+            self._start = max(0, min(self._start, max(0, len(self._todos) - MAX_ITEMS)))
+        self._render()
+
+    def scroll(self, delta: int) -> bool:
+        """Move the long-plan window one item per wheel notch, stopping at either end."""
+        if len(self._todos) <= MAX_ITEMS or not delta:
+            return False
+        next_start = max(0, min(self._start + int(delta), len(self._todos) - MAX_ITEMS))
+        if next_start == self._start:
+            return False
+        self._start = next_start
+        self._render()
+        return True
+
+    def follow(self) -> None:
+        """A new turn starts at the first unfinished step again."""
+        start = plan_window(self._todos)[0]
+        if start != self._start:
+            self._start = start
+            self._render()
+
+    def _render(self) -> None:
+        lines = plan_lines(self._todos, width=self._width, start=self._start)
         if not lines:
             self._node.style.height = 0
             self._text.set_value("")
