@@ -65,11 +65,11 @@ def test_batch_is_written_once_and_raw_output_and_thinking_survive(monkeypatch):
     decision = middleware.before_model({"messages": messages}, None)
     assert decision is not None
     assert decision["_circle_pruned_tool_ids"] == ["result-0", "result-1"]
-    assert decision["_circle_strip_thinking_after"] == "result-0"
+    assert decision["_circle_strip_thinking_ids"] == ["ai-1"]
     state = {**decision, "messages": messages}
     assert middleware.before_model(state, None) is None
     projected = prune_messages(messages, pruned_ids=set(decision["_circle_pruned_tool_ids"]),
-                               strip_after=decision["_circle_strip_thinking_after"])
+                               strip_thinking_ids=set(decision["_circle_strip_thinking_ids"]))
     assert "pruned to free context" in projected[2].content
     assert projected[2].content.startswith(chunk[:160])
     assert messages[2].content == chunk
@@ -78,6 +78,35 @@ def test_batch_is_written_once_and_raw_output_and_thinking_survive(monkeypatch):
     ]
     assert [b["type"] for b in projected[3].content] == ["text"]
     assert len(messages[3].content) == 3
+    messages.extend((_call(2), ToolMessage(content="small", name="tick",
+                                           id="result-2", tool_call_id="tick-2")))
+    assert middleware.before_model(state, None) is None
+    next_request = prune_messages(messages, pruned_ids=set(decision["_circle_pruned_tool_ids"]),
+                                  strip_thinking_ids=set(decision["_circle_strip_thinking_ids"]))
+    assert [b["type"] for b in next_request[5].content] == [
+        "thinking", "redacted_thinking", "text",
+    ]
+
+
+def test_legacy_boundary_is_frozen_into_ids(monkeypatch):
+    monkeypatch.setenv("CIRCLE_PRUNE_PROTECT_TOKENS", "40000")
+    messages = [
+        HumanMessage(content="go"), _call(0),
+        ToolMessage(content="x" * 40_000, id="result-0", name="tick", tool_call_id="tick-0"),
+        _call(1), ToolMessage(content="small", id="result-1", name="tick",
+                              tool_call_id="tick-1"),
+    ]
+    state = {"messages": messages, "_circle_pruned_tool_ids": ["result-0"],
+             "_circle_strip_thinking_after": "result-0"}
+    update = ToolResultPruneMiddleware().before_model(state, None)
+    assert update == {"_circle_strip_thinking_ids": ["ai-1"]}
+    state.update(update)
+    messages.extend((_call(2), ToolMessage(content="small", id="result-2",
+                                           name="tick", tool_call_id="tick-2")))
+    projected = prune_messages(messages, pruned_ids={"result-0"},
+                               strip_thinking_ids=set(state["_circle_strip_thinking_ids"]))
+    assert [b["type"] for b in projected[3].content] == ["text"]
+    assert projected[5].content[0]["type"] == "thinking"
 
 
 def test_only_latest_todos_is_protected_and_exemptions_remain(monkeypatch):
@@ -135,6 +164,12 @@ def test_real_tool_loop_batches_and_keeps_prefix_between_batches(tmp_path: Path,
     assert model.seen[5][2].content[0]["type"] == "thinking"
     assert [block["type"] for block in model.seen[5][4].content] == ["text"]
     assert [block["type"] for block in model.seen[6][4].content] == ["text"]
+    assert model.seen[6][12].content[0]["type"] == "thinking"  # AI after the first batch
+    assert [block["type"] for block in model.seen[7][12].content] == ["text"]
+    assert model.seen[8][16].content[0]["type"] == "thinking"  # AI after the second batch
+    assert _is_prefix(model.seen[5], model.seen[6])
+    assert _is_prefix(model.seen[7], model.seen[8])
+    assert len(agent.get_state(config).values["_circle_strip_thinking_ids"]) == 6
 
     # A new harness against the same checkpointer reuses the saved projection.
     checkpoint = agent.checkpointer
