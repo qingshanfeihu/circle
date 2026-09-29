@@ -30,7 +30,10 @@ from circle.middleware.tool_call_compat import (
     resolve_name,
 )
 from circle.middleware.tool_error_boundary import TOOL_EXECUTION_FAULT_PREFIX
-from circle.middleware.tool_result_prune import prune_messages
+from circle.middleware.tool_result_prune import (
+    ToolResultPruneMiddleware,
+    prune_messages,
+)
 from circle.testing import ScriptedModel
 
 CRASHY = '''
@@ -192,7 +195,7 @@ def test_unknown_tools_still_get_the_tool_node_answer(tmp_path):
 
 
 def test_compat_is_bound_to_the_final_tool_table(tmp_path, monkeypatch):
-    import circle.harness as harness
+    from circle import harness
 
     captured: dict[str, Any] = {}
     real = harness.create_deep_agent
@@ -285,14 +288,17 @@ def test_loop_guard_can_be_turned_off(monkeypatch):
 
 
 def _tool(text: str, name: str = "read_file", i: int = 0) -> ToolMessage:
-    return ToolMessage(content=text, name=name, tool_call_id=f"t{i}")
+    return ToolMessage(content=text, name=name, tool_call_id=f"t{i}", id=f"message-{i}")
 
 
 def test_old_tool_outputs_are_cut_once_the_recent_window_is_full(monkeypatch):
     monkeypatch.delenv("CIRCLE_PRUNE_PROTECT_TOKENS", raising=False)
     big = "x" * 120_000  # ≈30k tokens each
     msgs = [HumanMessage(content="go"), _tool(big, i=0), _tool(big, i=1), _tool(big, i=2)]
-    out = prune_messages(msgs)
+    decision = ToolResultPruneMiddleware().before_model({"messages": msgs}, None)
+    assert decision is not None
+    assert decision["_circle_pruned_tool_ids"] == ["message-0", "message-1"]
+    out = prune_messages(msgs, pruned_ids=set(decision["_circle_pruned_tool_ids"]))
     assert out is not msgs
     assert out[3].content == big  # newest stays whole
     for pruned in out[1:3]:
@@ -303,11 +309,14 @@ def test_old_tool_outputs_are_cut_once_the_recent_window_is_full(monkeypatch):
 def test_pruning_keeps_small_sessions_json_and_protected_tools(monkeypatch):
     monkeypatch.delenv("CIRCLE_PRUNE_PROTECT_TOKENS", raising=False)
     small = [HumanMessage(content="go"), _tool("x" * 1000), _tool("y" * 1000, i=1)]
-    assert prune_messages(small) is small
+    assert ToolResultPruneMiddleware().before_model({"messages": small}, None) is None
+    assert prune_messages(small, pruned_ids=set()) is small
     doc = json.dumps({"k": "v" * 120_000})
     big = "x" * 120_000
     msgs = [_tool(doc, i=0), _tool(big, name="skill", i=1), _tool(big, i=2), _tool(big, i=3),
             _tool(big, i=4)]
-    out = prune_messages(msgs)
+    decision = ToolResultPruneMiddleware().before_model({"messages": msgs}, None)
+    assert decision is not None
+    out = prune_messages(msgs, pruned_ids=set(decision["_circle_pruned_tool_ids"]))
     assert out[0].content == doc and out[1].content == big
     assert "pruned to free context" in out[2].content and out[4].content == big
