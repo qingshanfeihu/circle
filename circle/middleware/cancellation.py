@@ -26,6 +26,11 @@ class CancellationToken:
         if self._event.is_set():
             raise CircleCancelled("Circle turn cancelled")
 
+    def wait(self, seconds: float) -> None:
+        """Wait for a retry delay, waking immediately when the turn is cancelled."""
+        self._event.wait(seconds)
+        self.check()
+
 
 def _token(config: Any) -> CancellationToken | None:
     configurable = config.get("configurable") if isinstance(config, dict) else None

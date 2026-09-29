@@ -837,6 +837,7 @@ class CircleSessionApp:
                     self._notice([" " + _faint("(cancelled)")])
                     self._leave_busy()
                     self._app.render()
+                    self._drain_after_worker()
                 self._last_ctrl_c = now
                 return
             if now - self._last_ctrl_c < 1.5:
@@ -858,6 +859,7 @@ class CircleSessionApp:
                     self._dismiss_user_panels()
                     self._notice([" " + _faint("(cancelled)")])
                     self._leave_busy()
+                    self._drain_after_worker()
             else:
                 self._prompt.clear()
             self._app.render()
@@ -1431,10 +1433,11 @@ class CircleSessionApp:
         if parsed is not None:
             self._dispatch_slash(parsed.name, parsed.args)
             return
-        if self._bridge.is_running or self._is_loading:
+        if self._bridge.is_running or self._is_loading or self._msg_queue:
             self._msg_queue.append((kind, text))
             label = "follow-up" if kind == "followup" else "steering"
             self._toast(f"已排队 {label}（{len(self._msg_queue)}）")
+            self._drain_message_queue()
             return
         self._start_user_turn(text)
 
@@ -1465,19 +1468,24 @@ class CircleSessionApp:
         self._bridge.start(text)
 
     def _drain_message_queue(self) -> None:
-        if self._bridge.is_running or self._is_loading or not self._msg_queue:
-            return
-        steering = [(k, t) for k, t in self._msg_queue if k != "followup"]
-        followups = [(k, t) for k, t in self._msg_queue if k == "followup"]
-        if steering:
-            _, text = steering[0]
-            self._msg_queue = steering[1:] + followups
+        with self._app.lock:
+            if self._bridge.is_running or self._is_loading or not self._msg_queue:
+                return
+            _, text = self._msg_queue.pop(0)
             self._start_user_turn(text)
-            return
-        if followups:
-            _, text = followups[0]
-            self._msg_queue = followups[1:]
-            self._start_user_turn(text)
+
+    def _drain_after_worker(self) -> None:
+        """Drain after the old graph worker really exits, including cancellation."""
+        bridge = self._bridge
+        worker = bridge._worker
+
+        def _wait_and_drain() -> None:
+            if worker is not None and worker is not threading.current_thread():
+                worker.join()
+            if self._bridge is bridge:
+                self._drain_message_queue()
+
+        threading.Thread(target=_wait_and_drain, name="circle-queue-drain", daemon=True).start()
 
     def _notice(self, lines: list[str]) -> None:
         """One block of notice lines, one blank line away from the block above."""
@@ -2599,11 +2607,7 @@ class CircleSessionApp:
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"text": visible})
-            # 延迟 drain：等 bridge 完全退出 running 状态后再消费队列
-            import threading
-            timer = threading.Timer(0.15, self._drain_message_queue)
-            timer.daemon = True
-            timer.start()
+            self._drain_after_worker()
 
     def _on_error(self, exc: BaseException) -> None:
         with self._app.lock:
@@ -2617,7 +2621,7 @@ class CircleSessionApp:
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"error": _format_llm_error(exc)})
-            self._drain_message_queue()
+            self._drain_after_worker()
 
     def _turn_totals(self) -> tuple[float, int, int]:
         """Elapsed (without waits on the user) and this turn's tokens: the main agent's

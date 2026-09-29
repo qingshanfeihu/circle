@@ -40,13 +40,16 @@ import random
 import re
 import threading
 import time
+from collections.abc import AsyncIterator, Callable, Iterator
 from copy import copy
-from typing import Any, AsyncIterator, Callable, Iterator, NamedTuple
+from typing import Any, NamedTuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
+from langgraph.config import get_config
 from pydantic import PrivateAttr
 
+from circle.middleware.cancellation import CancellationToken, CircleCancelled
 from circle.text_repetition import RepetitionMonitor
 
 logger = logging.getLogger(__name__)
@@ -71,22 +74,26 @@ MAX_PARAM_DROPS = 4
 MAX_REPEAT_RECOVERIES = 2
 
 _REPEAT_RECOVERY = (
-    "<system-reminder>\n"
-    "You have been repeating the same text over and over without making progress.\n"
-    "Stop and take a different approach:\n"
-    "- If you were about to produce a large result in one go, produce a small first "
-    "piece instead, then continue.\n"
-    "- If you were about to call a tool, call it now rather than restating the intention.\n"
-    "- If something is blocking you, say what it is instead of restarting.\n"
-    "Do not repeat the text you have been repeating.\n"
-    "</system-reminder>",
-    "<system-reminder>\n"
-    "You are still repeating yourself after a previous reminder. Abandon the current "
-    "plan.\n"
-    "1. State in one sentence what you were trying to produce and why you could not "
-    "start.\n"
-    "2. Do the smallest useful piece of it.\n"
-    "</system-reminder>",
+    (
+        "<system-reminder>\n"
+        "You have been repeating the same text over and over without making progress.\n"
+        "Stop and take a different approach:\n"
+        "- If you were about to produce a large result in one go, produce a small first "
+        "piece instead, then continue.\n"
+        "- If you were about to call a tool, call it now rather than restating the intention.\n"
+        "- If something is blocking you, say what it is instead of restarting.\n"
+        "Do not repeat the text you have been repeating.\n"
+        "</system-reminder>"
+    ),
+    (
+        "<system-reminder>\n"
+        "You are still repeating yourself after a previous reminder. Abandon the current "
+        "plan.\n"
+        "1. State in one sentence what you were trying to produce and why you could not "
+        "start.\n"
+        "2. Do the smallest useful piece of it.\n"
+        "</system-reminder>"
+    ),
 )
 
 _TIMEOUT_NAMES = frozenset({"APITimeoutError", "ReadTimeout", "ConnectTimeout", "WriteTimeout",
@@ -133,7 +140,7 @@ def _notify(event: dict[str, Any]) -> None:
     for fn in targets:
         try:
             fn(event)
-        except Exception:  # noqa: BLE001 — a display hook must not break the request
+        except Exception:
             logger.debug("retry listener failed", exc_info=True)
 
 
@@ -159,8 +166,8 @@ def _error_codes(exc: BaseException) -> list[str]:
     if callable(reader):
         try:
             nodes.append(reader())
-        except Exception:  # noqa: BLE001 — diagnostics must not hide the original error
-            pass
+        except Exception:  # diagnostics must not hide the original error
+            logger.debug("could not read error response JSON", exc_info=True)
     while nodes:
         node = nodes.pop()
         if not isinstance(node, dict):
@@ -290,8 +297,8 @@ def _explicit_params(exc: BaseException) -> set[str]:
     if callable(reader):
         try:
             nodes.append(reader())
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            logger.debug("could not read rejected parameter response JSON", exc_info=True)
     for node in nodes:
         if isinstance(node, dict):
             inner = node.get("error") if isinstance(node.get("error"), dict) else node
@@ -426,6 +433,38 @@ async def _asleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+def _active_cancel_token() -> CancellationToken | None:
+    try:
+        config = get_config()
+    except RuntimeError:
+        return None
+    configurable = config.get("configurable") or {}
+    token = configurable.get("circle_cancel_token")
+    return token if isinstance(token, CancellationToken) else None
+
+
+def _check_cancel() -> None:
+    token = _active_cancel_token()
+    if token is not None:
+        token.check()
+
+
+def _retry_wait(seconds: float) -> None:
+    token = _active_cancel_token()
+    if token is None:
+        _sleep(seconds)
+    else:
+        token.wait(seconds)
+
+
+async def _aretry_wait(seconds: float) -> None:
+    token = _active_cancel_token()
+    if token is None:
+        await _asleep(seconds)
+    else:
+        await asyncio.to_thread(token.wait, seconds)
+
+
 def _has_native(obj: Any, name: str) -> bool:
     """Whether the wrapped class implements ``name`` itself rather than inheriting
     LangChain's default, which just runs the sync method (already guarded) in a thread."""
@@ -496,6 +535,7 @@ class _GuardMixin:
         attempts = _Attempts()
         messages = list(messages)
         while True:
+            _check_cancel()
             yielded = substantive = answered = saw_finish = False
             finish = ""
             last_progress = time.monotonic()
@@ -547,6 +587,8 @@ class _GuardMixin:
                 attempts.stall_resent = True
                 logger.warning("stream stalled before any content; resending once")
             except Exception as exc:
+                if isinstance(exc, CircleCancelled):
+                    raise
                 if yielded:
                     raise
                 if self._drop_rejected_param(exc, kwargs, attempts):
@@ -554,7 +596,7 @@ class _GuardMixin:
                 wait = attempts.wait_for(exc)
                 if wait is None:
                     raise
-                _sleep(wait)
+                _retry_wait(wait)
 
     async def _astream(self, messages: list, stop: Any = None, run_manager: Any = None,
                        **kwargs: Any) -> AsyncIterator[Any]:
@@ -566,6 +608,7 @@ class _GuardMixin:
         attempts = _Attempts()
         messages = list(messages)
         while True:
+            _check_cancel()
             yielded = substantive = answered = saw_finish = False
             finish = ""
             last_progress = time.monotonic()
@@ -611,6 +654,8 @@ class _GuardMixin:
                     raise
                 attempts.stall_resent = True
             except Exception as exc:
+                if isinstance(exc, CircleCancelled):
+                    raise
                 if yielded:
                     raise
                 if self._drop_rejected_param(exc, kwargs, attempts):
@@ -618,7 +663,7 @@ class _GuardMixin:
                 wait = attempts.wait_for(exc)
                 if wait is None:
                     raise
-                await _asleep(wait)
+                await _aretry_wait(wait)
 
     def _generate(self, messages: list, stop: Any = None, run_manager: Any = None,
                   **kwargs: Any) -> Any:
@@ -628,16 +673,19 @@ class _GuardMixin:
                                      run_manager=run_manager, **kwargs)
         attempts = _Attempts()
         while True:
+            _check_cancel()
             try:
                 return super()._generate(messages, stop=stop,  # type: ignore[misc]
                                          run_manager=run_manager, **kwargs)
             except Exception as exc:
+                if isinstance(exc, CircleCancelled):
+                    raise
                 if self._drop_rejected_param(exc, kwargs, attempts):
                     continue
                 wait = attempts.wait_for(exc)
                 if wait is None:
                     raise
-                _sleep(wait)
+                _retry_wait(wait)
 
     async def _agenerate(self, messages: list, stop: Any = None, run_manager: Any = None,
                          **kwargs: Any) -> Any:
@@ -646,16 +694,19 @@ class _GuardMixin:
                                             run_manager=run_manager, **kwargs)
         attempts = _Attempts()
         while True:
+            _check_cancel()
             try:
                 return await super()._agenerate(messages, stop=stop,  # type: ignore[misc]
                                                 run_manager=run_manager, **kwargs)
             except Exception as exc:
+                if isinstance(exc, CircleCancelled):
+                    raise
                 if self._drop_rejected_param(exc, kwargs, attempts):
                     continue
                 wait = attempts.wait_for(exc)
                 if wait is None:
                     raise
-                await _asleep(wait)
+                await _aretry_wait(wait)
 
 
 _CLASSES: dict[type, type] = {}
