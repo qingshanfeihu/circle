@@ -23,7 +23,7 @@ from circle.middleware.cancellation import CancellationToken, CircleCancelled
 from circle.pricing import price_call
 from circle.tui.harness_bridge import HarnessBridge
 from circle.tui.message_model import BLOCK_AGENT_CARD
-from circle.tui.progress_handler import ProgressHandler
+from circle.tui.progress_handler import CancellationHandler, ProgressHandler
 from circle.tui.reducer import MessageReducer
 from circle.tui.sink import TuiSink
 
@@ -213,7 +213,7 @@ def test_cancel_closes_stream_on_next_chunk() -> None:
     def consume() -> None:
         try:
             list(StreamingModel().stream("hello", config={
-                "callbacks": [ProgressHandler(bus, cancel_token=token)],
+                "callbacks": [CancellationHandler(token), ProgressHandler(bus)],
             }))
         except CircleCancelled as exc:
             errors.append(exc)

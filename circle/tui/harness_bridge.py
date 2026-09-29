@@ -28,7 +28,11 @@ from circle.tui.content_blocks import (
     thinking_preview,
 )
 from circle.tui.message_model import MessageSnapshot
-from circle.tui.progress_handler import ProgressHandler, extract_message_usage
+from circle.tui.progress_handler import (
+    CancellationHandler,
+    ProgressHandler,
+    extract_message_usage,
+)
 from circle.tui.sink import TuiSink
 
 logger = logging.getLogger(__name__)
@@ -396,9 +400,8 @@ class HarnessBridge:
                         "circle_cancel_token": self._cancel_token,
                         "circle_visible_turn": True}
         config = {**self._config, "configurable": configurable,
-                  "callbacks": [ProgressHandler(
-                      bus, path_resolver=resolver if callable(resolver) else None,
-                      cancel_token=self._cancel_token)]}
+                  "callbacks": [CancellationHandler(self._cancel_token), ProgressHandler(
+                      bus, path_resolver=resolver if callable(resolver) else None)]}
         # 中间件拒掉的调用经这条总线补发工具行（circle.tool_events）
         token = bind_bus(bus)
         bus.emit("run_start")

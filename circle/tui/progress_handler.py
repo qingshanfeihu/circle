@@ -217,16 +217,33 @@ def sanitize_tool_inputs(inputs: Any, *, cap: int = _INPUT_CAP) -> dict[str, Any
 # ── the handler ────────────────────────────────────────────────────────────
 
 
+class CancellationHandler(BaseCallbackHandler):
+    """Propagate user cancellation at callback boundaries without display work."""
+
+    raise_error = True
+
+    def __init__(self, token: CancellationToken) -> None:
+        self._token = token
+
+    def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        self._token.check()
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        self._token.check()
+
+    def on_tool_start(self, serialized: Any, input_str: str, **kwargs: Any) -> None:
+        self._token.check()
+
+
 class ProgressHandler(BaseCallbackHandler):
     """One per run; emits to ``bus``."""
 
-    def __init__(self, bus: EventBus, *, path_resolver: Callable[[str], Path] | None = None,
-                 cancel_token: CancellationToken | None = None) -> None:
+    def __init__(self, bus: EventBus, *, path_resolver: Callable[[str], Path] | None = None
+                 ) -> None:
         self._bus = bus
-        self._cancel_token = cancel_token
-        # A cancelled streaming request must propagate out of the provider's
-        # callback loop so its connection can close instead of draining tokens.
-        self.raise_error = cancel_token is not None
+        # Display projection is observational. LangChain must never turn a
+        # callback failure into a model or tool failure after the work ran.
+        self.raise_error = False
         self._path_resolver = path_resolver
         self._chat_idx = 0
         self._tool_name_stack: list[str] = []
@@ -298,8 +315,6 @@ class ProgressHandler(BaseCallbackHandler):
     # model rounds
 
     def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
-        if self._cancel_token is not None:
-            self._cancel_token.check()
         try:
             self._note_parent(kwargs)
             key = self._key(kwargs)
@@ -328,8 +343,6 @@ class ProgressHandler(BaseCallbackHandler):
             logger.debug("llm_start projection failed", exc_info=True)
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
-        if self._cancel_token is not None:
-            self._cancel_token.check()
         try:
             key = self._key(kwargs)
             with self._lock:
