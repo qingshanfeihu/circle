@@ -829,11 +829,12 @@ class CircleSessionApp:
         if kp.key == "ctrl+c":
             now = time.time()
             if self._is_loading:
-                self._bridge.cancel()
-                self._dismiss_user_panels()
-                self._notice([" " + _faint("(cancelled)")])
-                self._leave_busy()
-                self._app.render()
+                with self._app.lock:
+                    self._bridge.cancel()
+                    self._dismiss_user_panels()
+                    self._notice([" " + _faint("(cancelled)")])
+                    self._leave_busy()
+                    self._app.render()
                 self._last_ctrl_c = now
                 return
             if now - self._last_ctrl_c < 1.5:
@@ -850,10 +851,11 @@ class CircleSessionApp:
 
         if kp.key == "escape":
             if self._is_loading:
-                self._bridge.cancel()
-                self._dismiss_user_panels()
-                self._notice([" " + _faint("(cancelled)")])
-                self._leave_busy()
+                with self._app.lock:
+                    self._bridge.cancel()
+                    self._dismiss_user_panels()
+                    self._notice([" " + _faint("(cancelled)")])
+                    self._leave_busy()
             else:
                 self._prompt.clear()
             self._app.render()
@@ -2400,6 +2402,8 @@ class CircleSessionApp:
 
     def _on_status(self, status: str) -> None:
         with self._app.lock:
+            if self._bridge._cancelled and status not in {"ready", "cancelled"}:
+                return
             if status == "thinking":
                 self._footer.update(
                     status="running",
@@ -2640,6 +2644,12 @@ class CircleSessionApp:
         return lines
 
     def _on_interrupt(self, interrupts: Any) -> None:
+        with self._app.lock:
+            if self._bridge._cancelled:
+                return
+            self._handle_interrupt(interrupts)
+
+    def _handle_interrupt(self, interrupts: Any) -> None:
         # 停下等用户：这段时间不计入本回合耗时
         if self._turn_started_at:
             self._turn_elapsed += time.time() - self._turn_started_at

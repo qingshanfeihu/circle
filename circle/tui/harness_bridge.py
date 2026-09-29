@@ -161,6 +161,8 @@ class HarnessBridge:
 
     def resume(self, decision: Any) -> None:
         """``{"decision": …}`` 扇出到本次中断的全部挂起调用；其他值原样作为 resume 值。"""
+        if getattr(self, "_cancelled", False):
+            return
         if self.is_running:
             if threading.current_thread() is self._worker:
                 # 中断回调就在本回合的工作线程上（/yolo 自动放行走这条路）：线程还活着，
@@ -170,7 +172,10 @@ class HarnessBridge:
         self._start_resume(decision)
 
     def _start_resume(self, decision: Any) -> None:
-        self._cancelled = False
+        if getattr(self, "_cancelled", False):
+            return
+        if getattr(self, "_cancel_token", None) is None:
+            self._cancel_token = CancellationToken()
         groups = getattr(self, "_pending_action_groups", [])
         if not (isinstance(decision, dict) and set(decision) == {"decision"}):
             if isinstance(decision, dict) and set(decision) == {"decisions"} and len(groups) > 1:
@@ -529,8 +534,11 @@ class HarnessBridge:
             if interrupts:
                 self._remember_interrupts(interrupts)
                 bus.emit("run_end", payload={"awaiting_user": True})
+                if self._cancelled:
+                    self._on_status("cancelled")
+                    return
                 self._on_interrupt(interrupts)
-                self._on_status("approval")
+                self._on_status("cancelled" if self._cancelled else "approval")
                 return
             bus.emit("run_end")
             values = getattr(state, "values", None) or {}
