@@ -463,6 +463,8 @@ class CircleSessionApp:
         )
 
     def _make_bridge(self) -> HarnessBridge:
+        # A different graph/thread has no known latest model request yet.
+        self._footer.update(context_input_tokens=None)
         bridge = HarnessBridge(
             agent=self._agent,
             thread_id=self._thread_id,
@@ -1858,6 +1860,7 @@ class CircleSessionApp:
             except BaseException as exc:  # noqa: BLE001
                 err = exc
             with self._app.lock:
+                self._footer.update(context_input_tokens=None)
                 if err is not None:
                     self._leave_busy()
                     self._transcript.append_message(

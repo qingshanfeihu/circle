@@ -108,7 +108,7 @@ class FooterPane:
         self._fork_costs: dict = {}
         self._costs_supplied = False
         self.input_tokens: int = 0
-        self.context_input_tokens: int = 0
+        self.context_input_tokens: int | None = None
         self.output_tokens: int = 0
         self.fork_input: int = 0
         self.fork_output: int = 0
@@ -192,7 +192,7 @@ class FooterPane:
         tokens_budget: int | None = None,
         model: str | None = None,
         input_tokens: int | None = None,
-        context_input_tokens: int | None = None,
+        context_input_tokens: int | None | _Unset = _UNSET,
         output_tokens: int | None = None,
         fork_input: int | None = None,
         fork_output: int | None = None,
@@ -241,8 +241,11 @@ class FooterPane:
                 self.tokens_budget = context_window_for(model)
         if input_tokens is not None:
             self.input_tokens = input_tokens
-        if context_input_tokens is not None:
-            self.context_input_tokens = _nonnegative_int(context_input_tokens)
+        if not isinstance(context_input_tokens, _Unset):
+            self.context_input_tokens = (
+                _nonnegative_int(context_input_tokens)
+                if context_input_tokens is not None else None
+            )
         if output_tokens is not None:
             self.output_tokens = output_tokens
         if input_tokens == 0 and output_tokens == 0:
@@ -481,7 +484,7 @@ class FooterPane:
         rate = (hit / total_in * 100.0) if total_in else 0.0
         budget = self.tokens_budget or 0
         meter = f"CH{rate:.1f}%"
-        if budget > 0:
+        if budget > 0 and self.context_input_tokens is not None:
             pct = min(999.0, self.context_input_tokens / budget * 100.0)
             meter += (
                 f" CTX {_format_token_count(self.context_input_tokens)}/"
