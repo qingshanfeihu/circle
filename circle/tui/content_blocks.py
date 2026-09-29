@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
-from circle.ink.theme import GLYPH_AGENT, palette, sgr_join
+from circle.ink.theme import GLYPH_AGENT, Palette, palette, sgr_join
 
 _SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
 
@@ -139,11 +140,17 @@ def _faint_markdown(rendered: str, faint: str) -> str:
     return _SGR_RE.sub(tint, rendered)
 
 
-def render_thinking_markdown(body: str, width: int) -> str:
+@lru_cache(maxsize=64)
+def _cached_thinking_markdown(width: int, body: str, pal: Palette) -> str:
     from circle.ink.components.markdown_renderer import MarkdownRenderer
 
-    rendered = MarkdownRenderer(width=max(20, width)).render_streaming(body)
-    return _faint_markdown(rendered, palette().faint)
+    rendered = MarkdownRenderer(width=width).render_streaming(body)
+    return _faint_markdown(rendered, pal.faint)
+
+
+def render_thinking_markdown(body: str, width: int) -> str:
+    # Palette is part of the key because the rendered ANSI colors depend on it.
+    return _cached_thinking_markdown(max(20, width), body, palette())
 
 
 def render_thinking_line(*, body: str, done: bool, expanded: bool = False,

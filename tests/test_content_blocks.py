@@ -2,6 +2,8 @@
 
 import re
 
+from circle.ink import theme
+from circle.ink.components.markdown_renderer import MarkdownRenderer
 from circle.ink.theme import palette
 from circle.tui.content_blocks import (
     assistant_block,
@@ -41,3 +43,29 @@ def test_expanded_main_thinking_stays_faint_after_markdown_styles():
         before = rendered[:rendered.index(word)]
         active = re.findall(r"\x1b\[[0-9;]*m", before)[-1]
         assert active.endswith(f"{faint_params}m"), (word, active)
+
+
+def test_main_thinking_redraw_reuses_render_for_same_width_and_body(monkeypatch):
+    calls: list[str] = []
+    original = MarkdownRenderer.render_streaming
+
+    def counted(self, body):
+        calls.append(body)
+        return original(self, body)
+
+    monkeypatch.setattr(MarkdownRenderer, "render_streaming", counted)
+    body = "cache main reasoning **config** 42"
+    for _ in range(3):
+        render_thinking_line(body=body, done=True, expanded=True, width=70)
+    assert calls == [body]
+    render_thinking_line(body=body, done=True, expanded=True, width=71)
+    render_thinking_line(body=body + " changed", done=True, expanded=True, width=70)
+    assert calls == [body, body, body + " changed"]
+
+    previous = palette()
+    try:
+        theme.set_palette(theme.build_palette("#f7f8fa", "#202428"))
+        render_thinking_line(body=body, done=True, expanded=True, width=70)
+        assert calls[-1] == body and len(calls) == 4
+    finally:
+        theme.set_palette(previous)

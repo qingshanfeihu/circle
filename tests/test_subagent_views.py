@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from circle.ink import theme
+from circle.ink.components.markdown_renderer import MarkdownRenderer
 from circle.ink.components.transcript import Transcript
 from circle.ink.parse_keypress import KeyPress
 from circle.ink.string_width import string_width
@@ -243,6 +244,26 @@ def test_truncated_subagent_thinking_starting_inside_fence_preserves_code_and_pr
     assert "Then I edit config." in plain(rendered)
     assert "Then I edit" not in next((line for line in rendered.splitlines()
                                       if theme.palette().blue in line), "")
+
+
+def test_subagent_detail_redraw_reuses_reasoning_render(monkeypatch):
+    calls: list[str] = []
+    original = MarkdownRenderer.render_streaming
+
+    def counted(self, body):
+        calls.append(body)
+        return original(self, body)
+
+    monkeypatch.setattr(MarkdownRenderer, "render_streaming", counted)
+    body = "cache subagent reasoning **config** 42"
+    card = {"status": "running", "start_ts": 1.0, "transcript": [
+        {"kind": "thinking_body", "text": body, "chars": len(body), "done": True},
+    ]}
+    for _ in range(3):
+        render_detail_lines(card, expanded=True, width=70)
+    assert calls == [body]
+    render_detail_lines(card, expanded=True, width=71)
+    assert calls == [body, body]
 
 
 def test_detail_marks_the_recoverable_failure_muted_and_the_end_result():
