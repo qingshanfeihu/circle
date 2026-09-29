@@ -21,7 +21,7 @@ from circle.middleware import (
     ToolCallCompatibilityMiddleware,
     ToolErrorBoundaryMiddleware,
 )
-from circle.middleware.loop_guard import analyze, build_reminder
+from circle.middleware.loop_guard import analyze, build_reminder, is_loop_reminder
 from circle.middleware.redact import redact
 from circle.middleware.tool_call_compat import (
     parse_tool_input,
@@ -262,7 +262,7 @@ def test_a_new_user_message_starts_a_fresh_window():
     assert _reminder(msgs) is None
 
 
-def test_loop_guard_reaches_the_model_but_not_the_stored_thread(tmp_path, monkeypatch):
+def test_loop_guard_is_stored_once_and_reused(tmp_path, monkeypatch):
     monkeypatch.delenv("CIRCLE_LOOP_GUARD", raising=False)
     same = {"pattern": "needle"}
     agent, model, _ = _agent(
@@ -272,16 +272,17 @@ def test_loop_guard_reaches_the_model_but_not_the_stored_thread(tmp_path, monkey
         model_cls=RecordingModel)
     result, _ = _run(agent)
     last_seen = model.seen[-1][-1]
-    assert isinstance(last_seen, HumanMessage) and "loop-guard" in last_seen.content
-    assert not any("loop-guard" in str(m.content) for m in result["messages"])
+    assert is_loop_reminder(last_seen) and "loop-guard" in last_seen.content
+    assert sum(is_loop_reminder(m) for m in result["messages"]) == 1
+    assert [m.model_dump(exclude_none=True) for m in model.seen[-2]] == [
+        m.model_dump(exclude_none=True) for m in model.seen[-1][:len(model.seen[-2])]
+    ]
 
 
 def test_loop_guard_can_be_turned_off(monkeypatch):
     monkeypatch.setenv("CIRCLE_LOOP_GUARD", "0")
     msgs = _turn(*[("grep", {"pattern": "foo"}, "hit")] * 3)
-    request = type("Req", (), {"messages": msgs,
-                               "override": lambda self, **kw: pytest.fail("changed")})()
-    assert LoopGuardMiddleware()._with_reminder(request) is request
+    assert LoopGuardMiddleware().before_model({"messages": msgs}, None) is None
 
 
 # ── pruning ─────────────────────────────────────────────────────────────────

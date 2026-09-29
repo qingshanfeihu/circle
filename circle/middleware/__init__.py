@@ -5,8 +5,8 @@
 - ``ToolCallCompatibilityMiddleware``: repairs common tool-call shape mistakes
   (tool-name case, JSON-in-a-string arguments, key spelling, unicode escapes) and
   tells the model which fields are wrong when arguments do not match the schema.
-- ``LoopGuardMiddleware``: when the model repeats the same call, keeps getting empty
-  results or rereads the same target, it gets a reminder to change strategy.
+- ``LoopGuardMiddleware``: persist a reminder when the model repeats a call,
+  keeps getting empty results or rereads the same target.
 - ``ToolResultPruneMiddleware``: old tool outputs beyond a protected window are cut
   to a short head so long sessions keep room for new work.
 - ``PlanTailMiddleware``: persist a throttled reminder for this turn's plan

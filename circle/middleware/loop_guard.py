@@ -9,8 +9,8 @@ Before each model call the tool calls since the last real user message are check
 - more than 25 calls in the turn with none of the above: a note that this is fine
   while each call brings something new.
 
-The reminder is appended to the request only; the stored conversation is untouched,
-so it disappears once the model moves on. Thresholds come from ``CIRCLE_LOOP_*``;
+The reminder is appended to the stored conversation after a tool result, at most
+once per user turn. Thresholds come from ``CIRCLE_LOOP_*``;
 ``CIRCLE_LOOP_GUARD=0`` turns it off.
 """
 
@@ -20,14 +20,19 @@ import hashlib
 import json
 import logging
 import os
-from typing import Any, Awaitable, Callable
+from collections.abc import Mapping
+from itertools import pairwise
+from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import HumanMessage
+from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import HumanMessage, ToolMessage
+
+from circle.middleware.plan_tail import is_plan_reminder
 
 logger = logging.getLogger(__name__)
 
 REMINDER_TAG = "loop-guard"
+REMINDER_MARKER = "circle_loop_guard"
 _EMPTY_MARKERS = ("(no matches)", "no matches", "not found", "file empty", "(empty)",
                   "no files found", "no results")
 _LOOSE_WINDOW = 16
@@ -77,10 +82,18 @@ def _last_user_index(messages: list) -> int:
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if isinstance(msg, HumanMessage):
+            if is_plan_reminder(msg) or msg.additional_kwargs.get("circle_internal"):
+                continue
             if _text(msg.content).lstrip().startswith("<system-reminder"):
                 continue
             return i
     return 0
+
+
+def is_loop_reminder(message: Any) -> bool:
+    return isinstance(message, HumanMessage) and (
+        message.additional_kwargs.get(REMINDER_MARKER) is True
+    )
 
 
 def _label(name: str, args: Any) -> str:
@@ -132,7 +145,7 @@ def analyze(messages: list, *, window: int) -> dict[str, Any]:
         if lfp is not None:
             groups.setdefault(lfp, []).append(offset)
     for lfp, offsets in groups.items():
-        if len(offsets) < 2 or all(b > a for a, b in zip(offsets, offsets[1:])):
+        if len(offsets) < 2 or all(b > a for a, b in pairwise(offsets)):
             continue  # reading page after page in order is progress
         if len(offsets) > loose_count:
             loose_count, loose_label = len(offsets), labels.get(lfp, "")
@@ -188,29 +201,33 @@ class LoopGuardMiddleware(AgentMiddleware):
                             else _env_int("CIRCLE_LOOP_SOFT_BUDGET", 25))
         self.window = window if window is not None else _env_int("CIRCLE_LOOP_WINDOW", 8)
 
-    def _with_reminder(self, request: ModelRequest) -> ModelRequest:
+    def before_model(self, state: Mapping[str, Any], runtime: Any) -> dict[str, Any] | None:
         if not _enabled():
-            return request
+            return None
         try:
-            messages = list(request.messages)
+            messages = list(state.get("messages") or [])
+            if not messages or not isinstance(messages[-1], ToolMessage):
+                return None
+            last_user = _last_user_index(messages)
+            if any(is_loop_reminder(msg) for msg in messages[last_user:]):
+                return None
             stats = analyze(messages, window=self.window)
             text = build_reminder(stats, dup_threshold=self.dup_threshold,
                                   empty_threshold=self.empty_threshold,
                                   soft_budget=self.soft_budget)
-        except Exception:  # noqa: BLE001 — the guard must never break the turn
-            logger.debug("loop_guard analysis failed; request sent unchanged", exc_info=True)
-            return request
+        except Exception:
+            logger.debug("loop_guard analysis failed; no reminder appended", exc_info=True)
+            return None
         if not text:
-            return request
+            return None
         logger.info("loop_guard: dup=%s empty=%s loose=%s calls=%s", stats["dup_count"],
                     stats["empty_count"], stats["loose_count"], stats["tool_calls"])
-        return request.override(messages=[*messages, HumanMessage(content=text)])
+        reminder = HumanMessage(
+            content=text,
+            additional_kwargs={"circle_internal": REMINDER_TAG, REMINDER_MARKER: True},
+        )
+        return {"messages": [reminder]}
 
-    def wrap_model_call(self, request: ModelRequest,
-                        handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
-        return handler(self._with_reminder(request))
-
-    async def awrap_model_call(self, request: ModelRequest,
-                               handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
-                               ) -> ModelResponse:
-        return await handler(self._with_reminder(request))
+    async def abefore_model(self, state: Mapping[str, Any], runtime: Any
+                            ) -> dict[str, Any] | None:
+        return self.before_model(state, runtime)

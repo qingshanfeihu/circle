@@ -18,6 +18,7 @@ from langgraph.types import Command
 
 from circle.events import EventBus, bind_bus, unbind_bus
 from circle.middleware.cancellation import CancellationToken
+from circle.middleware.loop_guard import is_loop_reminder
 from circle.middleware.plan_tail import is_plan_reminder
 from circle.tool_events import announce_blocked_tool_call
 from circle.tui.content_blocks import (
@@ -433,7 +434,7 @@ class HarnessBridge:
                         return
                     used_stream = True
                     msg = item[0] if isinstance(item, tuple) else item
-                    if is_plan_reminder(msg):
+                    if is_plan_reminder(msg) or is_loop_reminder(msg):
                         continue
                     name = getattr(msg, "__class__", type("x", (), {})).__name__
                     content = getattr(msg, "content", None)

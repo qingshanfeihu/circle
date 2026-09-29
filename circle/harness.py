@@ -227,7 +227,6 @@ def create_harness(
         ToolErrorBoundaryMiddleware(),
         CancellationMiddleware(),
         compat,
-        LoopGuardMiddleware(),
         ToolResultPruneMiddleware(),
         # deepagents 0.7 起不再默认挂 write_todos；提示词与计划面板都依赖它。
         # 同名中间件按名替换，模型档自带的那份（如 Codex）不会重复
@@ -244,6 +243,7 @@ def create_harness(
     # Persist an occasional plan reminder after tool results. Its before_model
     # hook leaves a durable message instead of changing only the model request.
     extra_mw.append(PlanTailMiddleware())
+    extra_mw.append(LoopGuardMiddleware())
 
     kwargs: dict[str, Any] = {
         "model": model,
