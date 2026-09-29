@@ -167,6 +167,7 @@ def test_each_round_keeps_one_bounded_reasoning_item():
     items = [i for i in feed.card()["transcript"] if i["kind"] == "thinking_body"]
     assert len(items) == 1 and items[0]["done"] is False
     assert len(items[0]["text"]) == CARD_THINKING_TAIL_CHARS and items[0]["truncated"] is True
+    assert items[0]["tail_partial_line"] is True
     feed.emit("llm_end", task="T", payload={"name": "subagent_done"})
     items = [i for i in feed.card()["transcript"] if i["kind"] == "thinking_body"]
     assert len(items) == 1 and items[0]["done"] is True and "duration_s" in items[0]
@@ -236,7 +237,8 @@ def test_truncated_subagent_thinking_starting_inside_fence_preserves_code_and_pr
     tail = "def __init__(self):\n    x = a * b * c\n```\nThen I edit **config**."
     card = {"status": "running", "start_ts": 1.0, "transcript": [
         {"kind": "thinking_body", "text": tail, "chars": len(tail) + 6000,
-         "truncated": True, "done": True},
+         "truncated": True, "tail_fence": {"marker": "`", "count": 3,
+                                           "lang": "", "indent": 0}, "done": True},
     ]}
     rendered = "\n".join(render_detail_lines(card, expanded=True))
     assert "def __init__(self):" in plain(rendered)
@@ -244,6 +246,80 @@ def test_truncated_subagent_thinking_starting_inside_fence_preserves_code_and_pr
     assert "Then I edit config." in plain(rendered)
     assert "Then I edit" not in next((line for line in rendered.splitlines()
                                       if theme.palette().blue in line), "")
+
+
+def _truncated_thinking(source: str, *, done: bool) -> tuple[dict, str]:
+    feed = Feed()
+    feed.task("T", "inspect reasoning")
+    feed.emit("llm_start", task="T", payload={"name": "M"})
+    feed.emit("llm_token", task="T", payload={"reasoning": source})
+    if done:
+        feed.emit("llm_end", task="T", payload={"name": "subagent_done"})
+    card = feed.card()
+    item = next(entry for entry in card["transcript"] if entry["kind"] == "thinking_body")
+    return item, plain("\n".join(render_detail_lines(card, expanded=True)))
+
+
+@pytest.mark.parametrize("opener,closer,marker,count,indent", [
+    ("```c++", "```", "`", 3, 0),
+    ("  ~~~~c++", "  ~~~~", "~", 4, 2),
+])
+def test_truncated_tail_carries_open_fence_from_discarded_lines(
+        opener, closer, marker, count, indent):
+    source = (f"before\n{opener}\n" + "  int old_value = 1;\n" * 320
+              + f"  def __init__(self): pass\n{closer}\nAfter **config**.")
+    item, rendered = _truncated_thinking(source, done=True)
+    assert item["truncated"] is True
+    assert item["tail_fence"] == {"marker": marker, "count": count,
+                                  "lang": "c++", "indent": indent}
+    assert item["text"].startswith("  int old_value = 1;")
+    assert "def __init__(self): pass" in rendered
+    assert "After config." in rendered
+    assert "┌─ c++" in rendered and "└─" in rendered
+
+
+def test_truncated_tail_starting_in_prose_keeps_later_bare_fence_direction():
+    source = "discarded prose\n" * 300 + "prose\n```\ncode **x**\n```\nmore"
+    item, rendered = _truncated_thinking(source, done=True)
+    assert item["truncated"] is True and item["tail_fence"] is None
+    assert "code **x**" in rendered
+    assert "more" in rendered
+    assert rendered.index("└─") < rendered.index("more")
+
+
+def test_streaming_truncated_tail_keeps_unclosed_fence_as_code():
+    source = "discarded prose\n" * 300 + "prose\n```\ncode **x**"
+    item, rendered = _truncated_thinking(source, done=False)
+    assert item["done"] is False and item["truncated"] is True
+    assert item["tail_fence"] is None
+    assert "code **x**" in rendered
+
+
+def test_tail_cut_exactly_after_fence_line_is_not_a_partial_line():
+    source = "before\n```python\n" + "x" * CARD_THINKING_TAIL_CHARS
+    item, rendered = _truncated_thinking(source, done=False)
+    assert item["tail_fence"] == {"marker": "`", "count": 3,
+                                  "lang": "python", "indent": 0}
+    assert item["tail_partial_line"] is False
+    assert item["text"] == "x" * CARD_THINKING_TAIL_CHARS
+    assert "```python" in rendered and "x" * 100 in rendered
+
+
+def test_fence_state_advances_across_multiple_tail_cuts():
+    feed = Feed()
+    feed.task("T", "inspect reasoning")
+    feed.emit("llm_start", task="T", payload={"name": "M"})
+    feed.emit("llm_token", task="T", payload={"reasoning": "before\n~~~python\n" + "code\n" * 700})
+    feed.emit("llm_token", task="T", payload={"reasoning": "code\n" * 400
+                                                  + "~~~\nafter\n" + "prose\n" * 300})
+    first = next(i for i in feed.card()["transcript"] if i["kind"] == "thinking_body")
+    assert first["tail_fence"] == {"marker": "~", "count": 3,
+                                    "lang": "python", "indent": 0}
+    assert first["text"].startswith("code\n")
+    feed.emit("llm_token", task="T", payload={"reasoning": "later\n" * 700})
+    second = next(i for i in feed.card()["transcript"] if i["kind"] == "thinking_body")
+    assert second["tail_fence"] is None
+    assert second["text"].startswith("later\n")
 
 
 def test_subagent_detail_redraw_reuses_reasoning_render(monkeypatch):

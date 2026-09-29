@@ -12,7 +12,6 @@ thinking tint, the same mapping as the main transcript.
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -35,7 +34,6 @@ from circle.tui.transcript_view import subagent_call_row, tool_type_bg_hex
 # 顶栏纯文字按钮（InfoTest 07 §11.25(6)，图标退役）：(动作, 文字)；键盘 esc/⌫、←→ 不变
 BUTTONS = (("back", "主视图"), ("prev", "上一个"), ("next", "下一个"))
 NO_STEPS = "暂时还没有工具调用"
-_FENCE_BOUNDARY_RE = re.compile(r"(?m)^[ \t]*(?:`{3,}|~{3,})[ \t]*$")
 
 
 def _status_cn(card: Mapping[str, Any]) -> str:
@@ -137,7 +135,7 @@ def _call_line(item: Mapping[str, Any], pal: Any, now: float) -> str:
 def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool,
                     width: int) -> list[str]:
     title = " ".join(str(item.get("title") or "").split())
-    body = str(item.get("text") or "").strip()
+    body = str(item.get("text") or "").strip("\n")
     done = bool(item.get("done"))
     header = "∴ Thought" if done else "∴ Thinking"
     if title:
@@ -157,17 +155,20 @@ def _thinking_lines(item: Mapping[str, Any], pal: Any, *, expanded: bool,
     if not expanded:
         lines[0] += f" {pal.faint}(ctrl+t 展开){pal.reset}"
         return lines
-    if truncated:
-        # The reducer keeps only the tail, so the opening-fence parity is gone.
-        # Keep the uncertain prefix literal and resume Markdown after its first
-        # complete fence line (the closing fence when the tail begins in code).
-        boundary = _FENCE_BOUNDARY_RE.search(body)
-        prefix = body[:boundary.start()] if boundary else body
-        body_lines = prefix.rstrip("\n").splitlines()
-        if boundary:
-            rest = body[boundary.end():].lstrip("\n")
-            if rest:
-                body_lines.extend(render_thinking_markdown(rest, width - 3).splitlines())
+    fence = item.get("tail_fence")
+    if truncated and "tail_fence" not in item:
+        # Old snapshots lack the discarded-prefix state; preserve their text literally.
+        body_lines = body.splitlines()
+    elif truncated and isinstance(fence, Mapping):
+        opener = (" " * int(fence["indent"]) + str(fence["marker"]) * int(fence["count"])
+                  + str(fence["lang"]))
+        body_lines = render_thinking_markdown(f"{opener}\n{body}", width - 3).splitlines()
+    elif truncated and item.get("tail_partial_line"):
+        # A single line longer than the tail cap may begin with a fragment.
+        first, _, rest = body.partition("\n")
+        body_lines = [first]
+        if rest:
+            body_lines.extend(render_thinking_markdown(rest, width - 3).splitlines())
     else:
         body_lines = render_thinking_markdown(body, width - 3).splitlines()
     if truncated and body_lines:

@@ -29,6 +29,7 @@ from circle.display_lexicon import (
 )
 from circle.display_stream import reasoning_summary
 from circle.events import CircleEvent
+from circle.ink.components.markdown_renderer import _fence_close, _fence_open
 from circle.pricing import UsageCostTotals
 from circle.tui.message_model import (
     BLOCK_AGENT_CARD,
@@ -96,7 +97,7 @@ class MessageReducer:
         self._subagent_parent_stack: list[str] = []
         self._rev = 0
         self._agent_card_idx: dict[str, int] = {}
-        # 每张卡本轮思考的累计（尾部、总字数、已推进卡片的字数、起点）
+        # 每张卡本轮思考的累计（尾部、总字数、围栏状态、已推进卡片的字数、起点）
         self._card_thinking: dict[str, dict[str, Any]] = {}
         self._agent_board_rev = 0
         self._listeners: list[Callable[[MessageSnapshot], None]] = []
@@ -387,6 +388,7 @@ class MessageReducer:
                 round_n = int(card.get("round") or 0) + 1
                 updates["round"] = round_n
                 self._card_thinking[uuid] = {"round": round_n, "text": "", "chars": 0,
+                                             "tail_fence": None, "tail_partial_line": False,
                                              "pushed": 0, "start": now, "title": ""}
             else:
                 item = self._thinking_step(uuid, str(payload.get("reasoning") or ""),
@@ -408,18 +410,54 @@ class MessageReducer:
 
     def _thinking_item(self, state: dict[str, Any], *, done: bool, now: float) -> dict[str, Any]:
         state["pushed"] = state["chars"]
+        fence = state["tail_fence"]
         item = {"kind": "thinking_body", "key": f"think:{state['round']}", "text": state["text"],
                 "chars": state["chars"], "truncated": state["chars"] > len(state["text"]),
+                "tail_fence": ({"marker": fence[0], "count": fence[1], "lang": fence[2],
+                                "indent": fence[3]} if fence else None),
+                "tail_partial_line": state["tail_partial_line"],
                 "title": state["title"], "done": done}
         if done:
             item["duration_s"] = max(0.0, now - float(state["start"]))
         return item
 
+    @staticmethod
+    def _advance_thinking_fence(fence: tuple[str, int, str, int] | None,
+                                discarded: str, partial_line: bool) -> tuple[str, int, str, int] | None:
+        lines = discarded.splitlines()
+        if partial_line:
+            lines = lines[1:]  # the previous hard cutoff left a line fragment
+        for line in lines:
+            if fence is not None:
+                if _fence_close(line, fence[0], fence[1]):
+                    fence = None
+            else:
+                fence = _fence_open(line)
+        return fence
+
     def _thinking_step(self, uuid: str, delta: str, title: Any) -> dict[str, Any] | None:
         state = self._card_thinking.get(uuid)
         if state is None or not delta:
             return None
-        state["text"] = (state["text"] + delta)[-CARD_THINKING_TAIL_CHARS:]
+        pending = state["text"] + delta
+        excess = len(pending) - CARD_THINKING_TAIL_CHARS
+        if excess > 0:
+            next_newline = pending.find("\n", excess)
+            if 0 <= next_newline < len(pending) - 1:
+                cut = next_newline + 1
+                complete = pending[:cut]
+                partial_line = False
+            else:
+                # An overlong final line has no whole-line cutoff inside the cap.
+                cut = excess
+                complete_end = pending.rfind("\n", 0, cut) + 1
+                complete = pending[:complete_end]
+                partial_line = complete_end != cut
+            state["tail_fence"] = self._advance_thinking_fence(
+                state["tail_fence"], complete, state["tail_partial_line"])
+            state["tail_partial_line"] = partial_line
+            pending = pending[cut:]
+        state["text"] = pending
         state["chars"] += len(delta)
         if isinstance(title, str) and title:
             state["title"] = title
