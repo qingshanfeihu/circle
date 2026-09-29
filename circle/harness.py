@@ -30,6 +30,7 @@ from circle.mcp_loader import load_mcp_tools_sync
 from circle.memory_sources import memory_source_paths
 from circle.middleware import (
     LoopGuardMiddleware,
+    PlanTailMiddleware,
     ToolCallCompatibilityMiddleware,
     ToolErrorBoundaryMiddleware,
     ToolResultPruneMiddleware,
@@ -240,6 +241,9 @@ def create_harness(
         except Exception:
             logger.debug("context middleware unavailable", exc_info=True)
     extra_mw.extend(extension_middleware)
+    # Last model wrapper: append the current plan after pruning/summarization,
+    # without changing the system prompt or checkpointed conversation.
+    extra_mw.append(PlanTailMiddleware())
 
     kwargs: dict[str, Any] = {
         "model": model,

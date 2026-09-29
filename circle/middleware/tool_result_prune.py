@@ -4,7 +4,7 @@ Walking from the newest message backwards, tool outputs are counted against
 ``CIRCLE_PRUNE_PROTECT_TOKENS`` (default 40k); everything older than the window is
 replaced by its first 160 characters plus a note — but only when that frees at least
 20k tokens, so short sessions are never touched. Complete JSON documents and the
-``question``/``skill`` results are kept verbatim (they are small and load-bearing).
+``question``/``skill``/``write_todos`` results are kept verbatim (they are load-bearing).
 Only the request sent to the model changes; the stored conversation is untouched.
 ``CIRCLE_PRUNE_TOOL_OUTPUTS=0`` turns it off.
 """
@@ -14,16 +14,21 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PROTECT_TOKENS = 40_000
 _HEAD_KEEP_CHARS = 160
 _PRUNE_MINIMUM_TOKENS = 20_000
-_PROTECTED_TOOLS = frozenset({"question", "skill"})
+_PROTECTED_TOOLS = frozenset({"question", "skill", "write_todos"})
 _CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x20000, 0x2A6DF))
 
 
@@ -101,7 +106,8 @@ def prune_messages(messages: list) -> list:
                 "text.]")
         try:
             out[i] = out[i].model_copy(update={"content": stub})
-        except Exception:  # noqa: BLE001 — not a pydantic message; leave it as is
+        except Exception:  # not a pydantic message; leave it as is
+            logger.debug("tool_result_prune: could not copy message %d", i, exc_info=True)
             continue
     logger.info("tool_result_prune: pruned %d old tool results (~%d tokens)", len(prune_idx), prunable)
     return out
@@ -115,7 +121,7 @@ class ToolResultPruneMiddleware(AgentMiddleware):
             messages = list(getattr(request, "messages", None) or [])
             out = prune_messages(messages)
             return request if out is messages else request.override(messages=out)
-        except Exception:  # noqa: BLE001 — pruning must never break the turn
+        except Exception:
             logger.debug("tool_result_prune failed; sending the original messages", exc_info=True)
             return request
 

@@ -9,17 +9,21 @@
   results or rereads the same target, it gets a reminder to change strategy.
 - ``ToolResultPruneMiddleware``: old tool outputs beyond a protected window are cut
   to a short head so long sessions keep room for new work.
+- ``PlanTailMiddleware``: attach the current unfinished plan to each main model
+  request without changing the checkpointed conversation.
 
 Ported from InfoTest's IST-Core middleware; the compile-engine branches were left out.
 """
 
 from circle.middleware.loop_guard import LoopGuardMiddleware
+from circle.middleware.plan_tail import PlanTailMiddleware
 from circle.middleware.tool_call_compat import ToolCallCompatibilityMiddleware
 from circle.middleware.tool_error_boundary import ToolErrorBoundaryMiddleware
 from circle.middleware.tool_result_prune import ToolResultPruneMiddleware
 
 __all__ = [
     "LoopGuardMiddleware",
+    "PlanTailMiddleware",
     "ToolCallCompatibilityMiddleware",
     "ToolErrorBoundaryMiddleware",
     "ToolResultPruneMiddleware",
