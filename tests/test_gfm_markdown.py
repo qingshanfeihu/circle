@@ -76,6 +76,40 @@ def test_alignment_markers_pad_left_center_and_right() -> None:
     assert padding[2][0] > 0 and padding[2][1] == 0
 
 
+@pytest.mark.parametrize("separator", ["|:-:|", "|--|", "|-|"])
+def test_short_gfm_table_delimiters_are_accepted(separator: str) -> None:
+    rendered = _plain(MarkdownRenderer(width=25).render_streaming(
+        f"| Name |\n{separator}\n| value |"
+    ))
+    assert "┌" in rendered and "value" in rendered
+    assert separator not in rendered
+
+
+def test_table_continues_across_an_empty_row() -> None:
+    rendered = _plain(MarkdownRenderer(width=25).render_streaming(
+        "| A | B |\n| - | - |\n| first | row |\n|   |   |\n| last | row |"
+    ))
+    rows = [line for line in rendered.splitlines() if line.startswith("│")]
+    assert len(rows) == 4
+    assert "first" in rows[1] and "last" in rows[3]
+    assert rows[2].count("│") == 3
+    assert "|   |   |" not in rendered
+
+
+@pytest.mark.parametrize("header,body", [
+    ("| don`t | Right |", "| first | second |"),
+    ("| Left | Right |", "| don`t | second |"),
+])
+def test_unpaired_backtick_does_not_swallow_table_pipes(header: str, body: str) -> None:
+    rendered = _plain(MarkdownRenderer(width=35).render_streaming(
+        f"{header}\n| - | - |\n{body}\n| later | row |"
+    ))
+    rows = [line for line in rendered.splitlines() if line.startswith("│")]
+    assert len(rows) == 3
+    assert "don`t" in rendered and "later" in rows[-1]
+    assert all(row.count("│") == 3 for row in rows)
+
+
 def test_tasks_and_strikethrough_keep_inline_code_literal() -> None:
     source = "- [ ] pending\n- [x] done\n1. [X] review\n\n~~removed~~ and `~~literal~~`"
     renderer = MarkdownRenderer(width=40)

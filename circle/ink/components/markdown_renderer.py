@@ -36,7 +36,8 @@ _URL_RE = re.compile(r"(?<!\w)(?:https?://|www\.)[^\s<>]+")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 _TASK_RE = re.compile(r"^\[([ xX])\]\s+(.+)$")
-_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
+_TABLE_SEPARATOR_RE = re.compile(r":?-+:?")
+_BACKTICK_RUN_RE = re.compile(r"`+")
 _SGR_SPLIT_RE = re.compile(r"(\x1b\[[0-9;]*m)")
 
 _MODEL_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -179,7 +180,7 @@ class MarkdownRenderer:
                     rows: list[list[str]] = []
                     while index < len(lines):
                         cells = self._table_cells(lines[index])
-                        if cells is None or not any(cells):
+                        if cells is None:
                             break
                         rows.append((cells + [""] * len(headers))[:len(headers)])
                         index += 1
@@ -323,13 +324,26 @@ class MarkdownRenderer:
         return f"{mark} {self._inline(task.group(2), pal)}"
 
     @staticmethod
+    def _code_span_end(raw: str, start: int) -> int:
+        """Only a matching backtick run makes pipes inside a code span literal."""
+        opener = _BACKTICK_RUN_RE.match(raw, start)
+        if opener is None:
+            return 0
+        for closer in _BACKTICK_RUN_RE.finditer(raw, opener.end()):
+            if len(closer.group()) == len(opener.group()) and (
+                closer.start() == 0 or raw[closer.start() - 1] != "\\"
+            ):
+                return closer.end()
+        return 0
+
+    @staticmethod
     def _table_cells(line: str) -> list[str] | None:
         raw = line.strip()
         if "|" not in raw:
             return None
         cells: list[str] = []
         current: list[str] = []
-        in_code = False
+        code_end = 0
         separators = 0
         trailing_separator = False
         index = 0
@@ -339,9 +353,11 @@ class MarkdownRenderer:
                 current.append("|")
                 index += 2
                 continue
-            if char == "`":
-                in_code = not in_code
-            if char == "|" and not in_code:
+            if char == "`" and index >= code_end and (
+                index == 0 or raw[index - 1] != "\\"
+            ):
+                code_end = MarkdownRenderer._code_span_end(raw, index)
+            if char == "|" and index >= code_end:
                 cells.append("".join(current).strip())
                 current = []
                 separators += 1
