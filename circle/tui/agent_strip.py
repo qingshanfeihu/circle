@@ -1,14 +1,17 @@
 """Bottom strip for in-flight subagents, in the InfoTest layout
 (``ist_app._render_agent_strip_lines``).
 
-The strip only answers "who is running now": one row per running subagent card —
-badge, name, what it is doing, elapsed, tokens. The doing column shows the
-subagent's reasoning title (``思考·…``) and otherwise the task description the main
-agent gave it; never raw reasoning prose, and never the current tool call, which the
+The strip only answers "who is running now": one row per running subagent card — its
+lamp, name, what it is doing, and an ``elapsed · tokens`` meter right-aligned to the
+edge. The doing column shows the subagent's reasoning title and otherwise the task
+description the main agent gave it (``waiting for you`` when it is stopped on a question
+or an approval); never raw reasoning prose, and never the current tool call, which the
 folded block under the task row already shows.
 
-At most ``MAX_ROWS`` rows. The window follows the selection; the header always counts
-every running subagent and a tail line says how many are folded away.
+At most ``MAX_ROWS`` rows. The window follows the selection; the header (``Agents · N``)
+always counts every running subagent and a tail line (``… +N more``) says how many are
+folded away. On a narrow screen the doing column gives way first, then the meter's unit
+word, then the name (cut from the middle so its id tail survives).
 """
 
 from __future__ import annotations
@@ -19,16 +22,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from circle.ink.string_width import string_width
-from circle.ink.theme import palette, sgr_join
+from circle.ink.theme import palette, sgr_join, status_light
 
 MAX_ROWS = 6
-BADGE = "agent"
-HINT = "↓↑ 选择 · ⏎ 详情 · esc 返回"
-_SELECTED_NOTE = " ← 选中"
-_PFX_W = 7
 _NAME_W = 24
-_ELAPSED_W = 8
-_TOKENS_W = 10
 
 Card = tuple[str, Mapping[str, Any]]
 
@@ -87,15 +84,24 @@ def card_calls(card: Mapping[str, Any]) -> int:
 
 
 def card_activity(card: Mapping[str, Any]) -> str:
-    if card.get("awaiting_approval"):
-        return "等待审批"
-    if card.get("awaiting_question"):
-        return "等待回答"
+    if card.get("awaiting_approval") or card.get("awaiting_question"):
+        return "waiting for you"
     title = " ".join(str(card.get("reasoning_title") or "").split())
     if title:
-        return f"思考·{title}"
+        return title
     description = " ".join(str(card.get("description") or "").split())
     return description or "—"
+
+
+def card_light(card: Mapping[str, Any], now: float | None = None) -> tuple[str, str]:
+    """The lamp for a subagent row as ``(sgr, glyph)``: waiting on you (cyan) or running
+    (yellow, blinking). Split so the caller can put the row's background in the same SGR —
+    ink rebuilds each inline colour from the base style, so a foreground-only lamp would
+    punch a hole in a tinted row."""
+    state = "wait" if (card.get("awaiting_approval") or card.get("awaiting_question")) else "running"
+    raw = status_light(state, now=now, reset=False)
+    code, glyph = raw.rsplit("m", 1)
+    return code + "m", glyph
 
 
 def snapshot_cards(snap: Any) -> list[Card]:
@@ -129,6 +135,18 @@ def _fit(text: str, width: int) -> str:
     while text and string_width(text) > width - 1:
         text = text[:-1]
     return text + "…"
+
+
+def _fit_mid(text: str, width: int) -> str:
+    """Cut from the middle so the id tail that tells parallel agents apart survives."""
+    text = str(text or "")
+    if width <= 0 or string_width(text) <= width:
+        return text
+    if width <= 3:
+        return _fit(text, width)
+    tail = text[-(width // 2):]
+    head = text[: max(1, width - len(tail) - 1)]
+    return f"{head}…{tail}"
 
 
 def _pad(text: str, width: int) -> str:
@@ -168,56 +186,54 @@ def render_agent_strip(
 ) -> list[str]:
     """``rows`` is the visible window; ``total`` counts every running subagent.
 
-    The selected row and the row under the mouse sit on ``sel_bg`` (the selected one
-    also says ``← 选中``); other rows carry the agent tint."""
+    A header row on the panel background, then one row per subagent: its lamp (marker
+    column 1), the name column sized to the longest name on screen, what it is doing (the
+    column that gives way first), and the elapsed · tokens meter right-aligned to end one
+    column short of the edge. The selected row and the row under the mouse sit on
+    ``sel_bg``; the others carry the agent tint. No hint line: the keys are not taught here."""
     if not rows:
         return []
     now = time.time() if now is None else now
     pal = palette()
-    w = max(40, int(width or 0) or 80)
+    w = max(20, int(width or 0) or 80)
     names = [card_name(card) for _u, card in rows]
     actions = [card_activity(card) for _u, card in rows]
-    elapses = [format_elapsed(card_elapsed(card, now)) for _u, card in rows]
-    tokens = [format_tokens(card_tokens(card)) for _u, card in rows]
-    name_w = min(_NAME_W, max(12, max(string_width(s) for s in names)))
-    elapsed_w = min(_ELAPSED_W, max(6, max(string_width(s) for s in elapses)))
-    token_w = min(_TOKENS_W, max(6, max(string_width(s) for s in tokens)))
-    fixed = (2 + _PFX_W) + (2 + name_w + 1) + (elapsed_w + 1 + token_w) + 1
-    if selected in {uuid for uuid, _card in rows}:
-        fixed += string_width(_SELECTED_NOTE)  # 注记不挤掉令牌列
-    action_w = max(0, min(max(string_width(s) for s in actions), w - fixed))
+    metas = [f"{format_elapsed(card_elapsed(card, now))} · {format_tokens(card_tokens(card))} tokens"
+             for _u, card in rows]
+    name_w = min(_NAME_W, max(string_width(s) for s in names))
+    meta_w = max(string_width(s) for s in metas)
+    # 一行 = 灯(列1) 名字 在做什么 计量，止于倒数第 2 列。窄屏：先让「在做什么」缩到 8 列，
+    # 再缩名字，最后丢计量里的 "tokens" 单位——行宽永远不超过屏宽。
+    def _doing(nw: int, mw: int) -> int:
+        return w - 3 - nw - 2 - mw - 2 - 1
 
-    out = [f"{pal.line}{'─' * w}{pal.reset}"]
-    header = _pad(f"  在途 AGENT ─ {len(rows) if total is None else int(total)}", w)
-    out.append(f"{sgr_join(pal.panel_bg, pal.faint)}{header}{pal.reset}")
-    for (uuid, _card), name, action, elapsed, token in zip(rows, names, actions, elapses, tokens):
-        is_selected = uuid == selected
-        hovered = not is_selected and uuid == hover
-        badge = f"  {_pad(BADGE, _PFX_W)}"
-        left = f"  {_pad(name, name_w)} {_pad(action, action_w)}"
-        right = f"{_rjust(elapsed, elapsed_w)} {_rjust(token, token_w)}"
-        if is_selected:
-            right += _SELECTED_NOTE
-        gap = max(1, w - string_width(badge) - string_width(left) - string_width(right))
-        rest = f"{left}{' ' * gap}{right}"
-        if is_selected or hovered:
-            out.append(f"{sgr_join(pal.sel_bg, pal.text)}{_pad(badge + rest, w)}{pal.reset}")
-            continue
-        out.append(f"{sgr_join(pal.agent_bg, pal.dim)}{badge}"
-                   f"{sgr_join(pal.agent_bg, pal.text)}"
-                   f"{_pad(rest, w - string_width(badge))}{pal.reset}")
+    if _doing(name_w, meta_w) < 8:
+        # what gives way first: the unit word in the meter, then the name (never before the unit)
+        metas = [m.replace(" tokens", "") for m in metas]
+        meta_w = max(string_width(s) for s in metas)
+    if _doing(name_w, meta_w) < 8:
+        name_w = max(8, min(name_w, w - 3 - 2 - meta_w - 2 - 1 - 8))
+    doing_w = max(0, _doing(name_w, meta_w))
+
+    count = len(rows) if total is None else int(total)
+    out = [f"{sgr_join(pal.panel_bg, pal.faint)}{_pad(f' Agents · {count}', w)}{pal.reset}"]
+    for (uuid, card), name, action, meta in zip(rows, names, actions, metas):
+        on_sel = uuid == selected or uuid == hover
+        bg = pal.sel_bg if on_sel else pal.agent_bg
+        fg = pal.em if on_sel else pal.text
+        lamp_sgr, lamp_glyph = card_light(card, now)
+        body = f"{_pad(_fit_mid(name, name_w), name_w)}  {_pad(action, doing_w)}  "
+        out.append(f"{sgr_join(bg, '')} {sgr_join(bg, lamp_sgr)}{lamp_glyph}{sgr_join(bg, fg)} {body}"
+                   f"{sgr_join(bg, pal.dim)}{_rjust(meta, meta_w)} {pal.reset}")
     if hidden > 0:
-        fold = _pad(f"  … 另有 {int(hidden)} 个在途（↑↓ 翻看）", w)
-        out.append(f"{sgr_join(pal.panel_bg, pal.faint)}{fold}{pal.reset}")
-    out.append(f"{sgr_join(pal.panel_bg, pal.faint)}{_pad('  ' + HINT, w)}{pal.reset}")
+        out.append(f"{sgr_join(pal.panel_bg, pal.faint)}{_pad(f'  … +{int(hidden)} more', w)}{pal.reset}")
     return out
 
 
 __all__ = [
-    "BADGE",
-    "HINT",
     "MAX_ROWS",
     "card_activity",
+    "card_light",
     "card_calls",
     "card_elapsed",
     "card_name",

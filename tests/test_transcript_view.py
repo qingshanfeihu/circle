@@ -65,7 +65,7 @@ def test_tool_row_and_result_share_one_form():
     entries = render_turn(s, ViewOptions())
     text = plain(entries)
     assert text[0].splitlines()[0].endswith("Read(…/pkg/mod.py)")
-    assert text[0].splitlines()[1] == "   ⎿ Read 3 lines (ctrl+o expand +3 lines)"
+    assert text[0].splitlines()[1:] == ["   ⎿ Read 3 lines · ctrl+o"], "the body stays folded, and says how to open it"
     assert text[1].splitlines()[0].endswith("Bash(rm -rf build)")
     assert "The user rejected this tool call." in text[1]
     pal = theme.palette()
@@ -105,10 +105,13 @@ def test_collapsed_long_result_line_has_a_physical_row_limit():
              result("a", output, name="execute"))
     collapsed = plain(render_turn(s, ViewOptions(width=40)))[0].splitlines()
     assert len(collapsed) <= 6
-    assert any("chars (ctrl+o to expand)" in line for line in collapsed)
+    fold = re.fullmatch(r"     … \+(\d+) chars · ctrl\+o", collapsed[-1])
+    assert fold, collapsed[-1]
+    shown = "".join(line[5:] for line in collapsed[1:-1])
+    assert set(shown) == {"x"} and len(shown) + int(fold.group(1)) == len(output)
 
     expanded = plain(render_turn(s, ViewOptions(width=40, tools_expanded=True)))[0].splitlines()
-    assert "chars (ctrl+o to expand)" not in "\n".join(expanded)
+    assert " chars" not in "\n".join(expanded) and "…" not in "\n".join(expanded)
     assert "".join(line[5:] for line in expanded[1:]) == output
 
 
@@ -119,7 +122,7 @@ def test_bounded_read_keeps_actual_range_but_hides_body_until_expanded():
              result("r", f"@@ lines 301-345 of 345 @@\n{body}"))
     collapsed = plain(render_turn(s, ViewOptions()))[0]
     assert "Read(…/references/authoring.md:301-345)" in collapsed
-    assert "@@ lines 301-345 of 345 @@ (ctrl+o expand +45 lines)" in collapsed
+    assert collapsed.splitlines()[1:] == ["   ⎿ @@ lines 301-345 of 345 @@ · ctrl+o"]
     assert "301  source" not in collapsed
     narrow = plain(render_turn(s, ViewOptions(width=40)))[0]
     assert "Read(…/authoring.md:301-345)" in narrow.splitlines()[0]
@@ -169,7 +172,7 @@ def test_running_and_pending_calls_have_rows():
                                                         "args": {"file_path": "/a.txt"}}]))
     text = plain(entries)
     assert text[0].endswith("Ls(/)")
-    assert text[1].endswith("Write(/a.txt) 等待审批")
+    assert text[1].endswith("Write(/a.txt)  waiting for you")
 
 
 def test_thinking_and_its_answer_are_one_block_two_answers_are_two():
@@ -178,7 +181,7 @@ def test_thinking_and_its_answer_are_one_block_two_answers_are_two():
         make_assistant_message(uuid="x", content=make_text_block("Done **now**.")),
         streaming="still typing")
     text = plain(render_turn(s, ViewOptions()))
-    assert text[0].startswith(" ∴ Thought: Planning · 2")
+    assert text[0] == " ∴ Thought 2.0s · Planning  ctrl+t", "duration after Thought, title after ·, then the one hint"
     assert text[1].startswith(f" {theme.GLYPH_AGENT} Done now."), "∴ then ⏺ is one answer block"
     assert text[2] == "" and text[3].endswith("still typing"), "two ⏺ entries are two blocks"
     expanded = plain(render_turn(s, ViewOptions(thinking_expanded=True)))
@@ -193,7 +196,7 @@ def test_errors_warnings_and_hidden_rows():
              make_assistant_message(uuid="sub", content=make_text_block("inner"),
                                     parent_tool_use_id="task-1"))
     text = plain(render_turn(s, ViewOptions()))
-    assert text == [f" {theme.GLYPH_ERROR} boom", "", " △ slow"]
+    assert text == [f" {theme.GLYPH_ERROR} boom", "", f" {theme.GLYPH_ERROR} slow"]
 
 
 def test_extension_renderers_replace_result_lines_and_fall_back_on_failure():

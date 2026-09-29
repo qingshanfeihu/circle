@@ -442,4 +442,8 @@ def test_session_shows_waits_and_dropped_parameters(tmp_path, monkeypatch):
                          "wait_s": 7.0})
     app._on_model_retry({"event": "param_dropped", "param": "thinking", "status": 400})  # noqa: SLF001
     snap = "\n".join(app._transcript.snapshot())  # noqa: SLF001
-    assert "端点限流，7.0s 后重试（1/5）" in snap and "端点不接受参数 thinking" in snap
+    # 重试是一闪（页脚），不进转录；「本会话不再发送这个参数」改变了之后的行为，进转录
+    assert "Endpoint rate-limited · retrying in 7.0s · 1/5" not in snap
+    # ...the retry is a flash: it was in the footer when it arrived
+    assert app._footer._toast_text is not None  # noqa: SLF001
+    assert "The endpoint rejects thinking · not sent for the rest of this session" in snap

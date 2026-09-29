@@ -244,7 +244,7 @@ def test_export_import_share_unshare_copy(tmp_path: Path, monkeypatch):
     assert not share.is_file()
 
     app._on_submit(f"/import {out}")  # noqa: SLF001
-    assert "已导入" in _snap(app)
+    assert "Imported" in _snap(app)
     st = app._agent.get_state(thread_config(app._thread_id))  # noqa: SLF001
     texts = [str(getattr(m, "content", "")) for m in (st.values.get("messages") or [])]
     assert any("Imported prior transcript" in t for t in texts)
@@ -280,7 +280,7 @@ def test_trust_and_reload(tmp_path: Path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     app._on_submit("/trust")  # noqa: SLF001
     assert is_folder_trusted(app.settings, app.workspace)
-    assert "信任" in _snap(app)
+    assert "Trusted" in _snap(app)
 
     monkeypatch.setenv("CIRCLE_OAUTH_MOCK", "1")
     app._on_submit("/login anthropic")  # noqa: SLF001

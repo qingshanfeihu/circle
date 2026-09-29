@@ -67,6 +67,15 @@ __all__ = [
     "mix",
     "relative_luminance",
     "is_dark_hex",
+    "contrast_ratio",
+    "mix_with_floor",
+    "THEME_CHOICES",
+    "apply_theme",
+    "COLOR_QUERY",
+    "parse_color_spec",
+    "normalize_theme",
+    "set_detected",
+    "detected_palette",
     "hex_to_rgb",
     "rgb_to_hex",
     "fg_sgr",
@@ -118,7 +127,9 @@ RETIRED_GLYPHS: tuple[str, ...] = ("❌", "◌", "✓", "✗", "✉", "⚙", "�
 LIGHT_GUTTER = 2
 BLINK_PERIOD_SEC = 1.15
 _BLINK_HALF_SEC = 0.575
-LIGHT_STATES = ("running", "ok", "error", "none")
+# 第五态 wait（2026-09-29 契约 D0）：轮到用户——青色常亮，与「跑着」的黄闪分开。
+SGR_WAIT = SGR_BLUE
+LIGHT_STATES = ("running", "ok", "error", "wait", "none")
 
 
 def marker_line(marker: str, text: str) -> str:
@@ -275,6 +286,26 @@ class Palette:
     agent_bg_hex: str = ""
 
 
+def contrast_ratio(a: str, b: str) -> float:
+    """WCAG contrast ratio of two colours, 1.0 (same) to 21.0 (black on white)."""
+    hi, lo = sorted((relative_luminance(a), relative_luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def mix_with_floor(fg: str, bg: str, t: float, floor: float) -> str:
+    """``mix(fg, bg, t)``, pulled back toward ``fg`` until it reads at ``floor`` contrast on ``bg``.
+
+    A fixed blend ratio is right on a dark terminal and too pale on a light one: text at 55%
+    toward a near-white background is barely there. The floor keeps secondary text legible on
+    whatever background the terminal reports."""
+    while t > 0.0:
+        colour = mix(fg, bg, t)
+        if contrast_ratio(colour, bg) >= floor:
+            return colour
+        t = round(t - 0.05, 4)
+    return normalize_hex(fg)
+
+
 def build_palette(
     fg_hex: str,
     bg_hex: str,
@@ -294,8 +325,8 @@ def build_palette(
         tints[name] = bg_sgr(tint_hex)
     return Palette(
         text=fg_sgr(fg),
-        dim=fg_sgr(mix(fg, bg, 0.35)),
-        faint=fg_sgr(mix(fg, bg, 0.55)),
+        dim=fg_sgr(mix_with_floor(fg, bg, 0.35, 4.5)),
+        faint=fg_sgr(mix_with_floor(fg, bg, 0.55, 3.0)),
         em=fg_sgr(mix(fg, em_target, 0.45)),
         panel_bg=bg_sgr(mix(bg, fg, 0.06)),
         sel_bg=bg_sgr(mix(bg, fg, 0.16)),
@@ -342,23 +373,69 @@ def reset_palette() -> None:
         _palette = None
 
 
-def init_palette_from_terminal(timeout: float = 0.25) -> Palette:
-    got = None
-    try:
-        got = query_terminal_palette(timeout)
-    except Exception:
-        got = None
+THEME_CHOICES: tuple[str, ...] = ("auto", "dark", "light")
+
+#: What the terminal reported the last time it was asked. ``apply_theme`` reuses it, and the
+#: watcher in ``theme_watch`` replaces it whenever the terminal reports something different.
+_detected: tuple[str, str, dict[int, tuple[int, int, int]]] | None = None
+
+
+def normalize_theme(mode: str | None) -> str:
+    """``auto``, ``dark`` or ``light``. ``terminal`` was the old name for ``auto``."""
+    name = (mode or "").strip().lower()
+    return name if name in ("dark", "light") else "auto"
+
+
+def set_detected(fg: str, bg: str, slots: dict[int, tuple[int, int, int]]) -> bool:
+    """Remember a fresh reading of the terminal. True when it differs from the last one."""
+    global _detected
+    new = (normalize_hex(fg), normalize_hex(bg), dict(slots))
+    changed = new != _detected
+    _detected = new
+    return changed
+
+
+def detected_palette() -> tuple[str, str, dict[int, tuple[int, int, int]]] | None:
+    return _detected
+
+
+def apply_theme(mode: str = "auto") -> Palette:
+    """Set the palette from the last reading of the terminal and the ``theme`` setting.
+
+    ``auto`` trusts the terminal (falling back to ``COLORFGBG``, then dark). ``dark`` and
+    ``light`` are for a terminal that cannot be asked or that reports the wrong thing: the
+    reported colours are kept when they already agree with the choice, and replaced by the
+    built-in dark or light pair when they do not."""
+    want = normalize_theme(mode)
+    got = _detected
     if got:
         try:
             fg, bg, slots = got
-            p = build_palette(fg, bg, slots)
-            set_palette(p)
-            return p
+            if want == "auto" or is_dark_hex(bg) == (want == "dark"):
+                p = build_palette(fg, bg, slots)
+                set_palette(p)
+                return p
         except Exception:
             pass
-    p = build_palette(*_fallback_colors())
+    if want == "dark":
+        colours = DEFAULT_DARK
+    elif want == "light":
+        colours = DEFAULT_LIGHT
+    else:
+        colours = _fallback_colors()
+    p = build_palette(*colours)
     set_palette(p)
     return p
+
+
+def init_palette_from_terminal(mode: str = "auto", timeout: float = 0.25) -> Palette:
+    """Ask the terminal for its colours, then apply the ``theme`` setting (see ``apply_theme``)."""
+    global _detected
+    try:
+        _detected = query_terminal_palette(timeout)
+    except Exception:
+        _detected = None
+    return apply_theme(mode)
 
 
 def _fallback_colors() -> tuple[str, str]:
@@ -386,6 +463,9 @@ _OSC4_REPLY_RE = re.compile(r"\x1b\]4;(\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)")
 
 #: OSC 4 查询的槽号(动作类型底色用,与 OSC 10/11 同一次 raw 会话发出)。
 _QUERY_SLOTS: tuple[int, ...] = (2, 4, 5, 14)
+
+#: One write that asks for the foreground, the background and the four palette slots.
+COLOR_QUERY = "\x1b]10;?\x07\x1b]11;?\x07" + "".join(f"\x1b]4;{s};?\x07" for s in _QUERY_SLOTS)
 
 
 def query_terminal_colors(timeout: float = 0.25) -> tuple[str, str] | None:
@@ -419,9 +499,7 @@ def query_terminal_palette(
         old = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            query = "\x1b]10;?\x07\x1b]11;?\x07" + "".join(
-                f"\x1b]4;{s};?\x07" for s in _QUERY_SLOTS)
-            sys.stdout.write(query)
+            sys.stdout.write(COLOR_QUERY)
             sys.stdout.flush()
             # 期望回复数:10/11 各一 + 每个查询槽一。
             want = 2 + len(_QUERY_SLOTS)
@@ -518,6 +596,9 @@ def _parse_color_spec(spec: str) -> str | None:
         return None
 
 
+parse_color_spec = _parse_color_spec
+
+
 def status_light(state: str, *, now: float | None = None, reset: bool = True) -> str:
     if state == "running":
         t = time.monotonic() if now is None else float(now)
@@ -527,6 +608,8 @@ def status_light(state: str, *, now: float | None = None, reset: bool = True) ->
         body = SGR_GREEN + LIGHT_GLYPH
     elif state == "error":
         body = SGR_RED + LIGHT_GLYPH
+    elif state == "wait":
+        body = SGR_WAIT + LIGHT_GLYPH
     else:
         return " "
     return body + SGR_RESET if reset else body

@@ -99,7 +99,7 @@ def footer_worker_slot(worker_id: object, tail: str) -> str:
 
 from collections.abc import Mapping as _Mapping  # noqa: E402
 
-ERROR_WITHOUT_TEXT = "出错了，但没有给出可读的说明"
+ERROR_WITHOUT_TEXT = "The tool failed without saying why"
 
 _ERROR_LEAD_TEXTS = ("error:", "错误")
 _ERROR_LEAD_GLYPHS = ("✗", "❌", "✖")
@@ -172,7 +172,7 @@ TOOL_SHORT_NAMES: dict[str, str] = {
     "write_todos": "TodoWrite",
     "webfetch": "Fetch",
     "websearch": "Search",
-    "question": "Ask",
+    "question": "Question",
     "skill": "Skill",
     "lsp": "Lsp",
     "compact_conversation": "Compact",
@@ -244,6 +244,13 @@ def tool_arg_summary(name: str, args) -> str:
                             if line.strip().startswith("#")), "")
             return _clip(f"{head} · {comment or 'multiline script'}")
         return _clip(first)
+    if name == "question":
+        # 入参是问题列表：行上写第一个问题本身（契约：Question(测试放哪)）
+        asked = values.get("questions")
+        if isinstance(asked, (list, tuple)) and asked and isinstance(asked[0], _Mapping):
+            return _summarize("first_line", asked[0].get("question"))
+        # 事件里的结构化入参只留标量，问题列表被滤掉了；退到原文里取第一个 question
+        return _summarize("first_line", extract_from_raw(args, "question"))
     for key, style in TOOL_ARG_SUMMARY.get(str(name or ""), ()):
         value = values.get(key)
         if value in (None, "") and isinstance(args, _Mapping):

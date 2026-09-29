@@ -234,7 +234,7 @@ def test_session_wires_commands_renderers_and_events(tmp_path, monkeypatch):
     (home / "extensions" / "sample" / "extension.py").write_text(
         "def register(api):\n    pass\n", encoding="utf-8")
     app._on_submit("/extensions reload")  # noqa: SLF001
-    assert "扩展已重载，工具 0 个" in snapshot()
+    assert "Extensions reloaded · 0 tools" in snapshot()
 
 
 def test_loading_a_skill_no_longer_runs_its_scripts(tmp_path, monkeypatch):
@@ -248,7 +248,7 @@ def test_loading_a_skill_no_longer_runs_its_scripts(tmp_path, monkeypatch):
         f"open({str(marker)!r}, 'w').write('x')\n", encoding="utf-8")
     app._on_submit("/skill linky")  # noqa: SLF001
     time.sleep(1.0)
-    assert "已加载 skill `linky`" in "\n".join(app._transcript.snapshot())  # noqa: SLF001
+    assert "Loaded skill `linky`" in "\n".join(app._transcript.snapshot())  # noqa: SLF001
     assert not marker.exists(), "skills must not execute bundled scripts on load"
 
 

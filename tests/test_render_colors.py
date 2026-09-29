@@ -21,8 +21,8 @@ from circle.ink.components.markdown_renderer import MarkdownRenderer
 ROOT = Path(__file__).resolve().parents[1] / "circle"
 RENDER_FILES: tuple[Path, ...] = tuple(sorted((ROOT / "ink" / "components").glob("*.py"))) + tuple(
     ROOT / "tui" / name for name in (
-        "session_app.py", "agent_strip.py", "content_blocks.py", "slash_commands.py",
-        "harness_bridge.py"))
+        "session_app.py", "agent_strip.py", "agent_detail.py", "transcript_view.py", "content_blocks.py",
+        "slash_commands.py", "harness_bridge.py"))
 # theme.py 是取色唯一真源；dialog_frame.py 的彩虹渐变是唯一登记的例外
 WHITELIST = frozenset({ROOT / "ink" / "theme.py", ROOT / "ink" / "components" / "dialog_frame.py"})
 COLOR_FILES = tuple(p for p in RENDER_FILES if p not in WHITELIST)
@@ -94,7 +94,7 @@ def test_error_and_warning_lines_use_the_palette(light_palette):
 
     line = session_app._error_line("boom")  # noqa: SLF001
     assert line == f" {light_palette.red}{theme.GLYPH_ERROR}{light_palette.reset} boom"
-    assert session_app._warn_line("careful").startswith(f" {light_palette.yellow}△")  # noqa: SLF001
+    assert session_app._warn_line("careful").startswith(f" {light_palette.yellow}{theme.GLYPH_ERROR}")  # noqa: SLF001
     assert session_app._faint("x") == f"{light_palette.faint}x{light_palette.reset}"  # noqa: SLF001
 
 
@@ -104,13 +104,26 @@ def test_strip_rows_carry_background_and_foreground_in_one_sgr(light_palette):
     cards = [("agent:a", {"name": "explore", "description": "reading", "start_ts": 0}),
              ("agent:b", {"name": "explore", "description": "writing", "start_ts": 0})]
     rows = render_agent_strip(cards, width=60, now=5, selected="agent:b")
-    joined = theme.sgr_join(light_palette.panel_bg, light_palette.faint)
-    assert rows[1].startswith(joined)
-    assert f"{light_palette.panel_bg}{light_palette.faint}" not in "".join(rows)
-    assert rows[2].startswith(theme.sgr_join(light_palette.agent_bg, light_palette.dim))
-    assert theme.sgr_join(light_palette.agent_bg, light_palette.text) in rows[2]
-    assert rows[3].startswith(theme.sgr_join(light_palette.sel_bg, light_palette.text))
-    assert f"{light_palette.agent_bg}{light_palette.text}" not in "".join(rows)
+    pal = light_palette
+    assert len(rows) == 3, "header, then one row per subagent"
+    assert rows[0].startswith(theme.sgr_join(pal.panel_bg, pal.faint))
+    assert f"{pal.panel_bg}{pal.faint}" not in "".join(rows)
+    assert rows[1].startswith(theme.sgr_join(pal.agent_bg, ""))
+    assert theme.sgr_join(pal.agent_bg, pal.text) in rows[1]
+    assert theme.sgr_join(pal.agent_bg, pal.dim) in rows[1]
+    assert rows[2].startswith(theme.sgr_join(pal.sel_bg, ""))
+    assert theme.sgr_join(pal.sel_bg, pal.em) in rows[2]
+    assert f"{pal.agent_bg}{pal.text}" not in "".join(rows)
+    # ink rebuilds every inline SGR from the base style (output.py ``_apply_write``), so a
+    # code that sets only a foreground drops the row's background for the cells it
+    # colors. Every run of text on a row — the lamp included — must carry the row's bg.
+    for row, bg in ((rows[0], pal.panel_bg), (rows[1], pal.agent_bg), (rows[2], pal.sel_bg)):
+        active = ""
+        for part in re.split(r"(\x1b\[[0-9;]*m)", row):
+            if part.startswith("\x1b["):
+                active = "" if part == pal.reset else part
+            elif part:
+                assert bg[2:-1] in active, f"{part!r} is drawn off the row background ({active!r})"
 
 
 def test_thinking_header_merges_color_and_italic(light_palette):

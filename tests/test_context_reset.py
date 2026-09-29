@@ -16,7 +16,7 @@ def _show_old_context(app):
     app._footer.update(tokens_budget=200_000)
     app._apply_usage({"input_tokens": 180_000, "context_input_tokens": 180_000,
                       "output_tokens": 10})
-    assert "CTX 180.0k/200.0k (90%)" in app._footer._session_summary()
+    assert "ctx 180.0k/200.0k (90%)" in app._footer._session_summary()
 
 
 @pytest.mark.parametrize("operation", ["new", "resume", "undo", "import"])
@@ -41,11 +41,11 @@ def test_session_changes_clear_stale_context(tmp_path, monkeypatch, operation):
     else:
         app._cmd_import("history.md")
 
-    assert "CTX 180.0k" not in app._footer._session_summary()
+    assert "ctx 180.0k" not in app._footer._session_summary()
     assert app._footer.context_input_tokens is None
     app._apply_usage({"input_tokens": 4_000, "context_input_tokens": 3_000,
                       "output_tokens": 10})
-    assert "CTX 3.0k/200.0k" in app._footer._session_summary()
+    assert "ctx 3.0k/200.0k" in app._footer._session_summary()
 
 
 def test_compact_clears_old_context_until_next_model_usage(tmp_path, monkeypatch):
@@ -63,4 +63,4 @@ def test_compact_clears_old_context_until_next_model_usage(tmp_path, monkeypatch
     assert not app._is_loading
     assert "— compacted" in "\n".join(app._transcript.snapshot())
     assert app._footer.context_input_tokens is None
-    assert "CTX 180.0k" not in app._footer._session_summary()
+    assert "ctx 180.0k" not in app._footer._session_summary()

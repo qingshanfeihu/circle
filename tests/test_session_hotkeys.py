@@ -42,15 +42,37 @@ def test_input_history_up_down_and_search(tmp_path: Path):
     assert hist.search_next() == "alpha one"
 
 
+def plain_(text: str) -> str:
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 def test_render_thinking_expand_shows_body():
     collapsed = render_thinking_line(body="line-a\nline-b", done=True, expanded=False)
-    assert "ctrl+t to expand" in collapsed
+    assert "∴ Thought" in collapsed and "\n" not in collapsed
     assert "line-a" not in collapsed
+    assert plain_(collapsed).endswith("ctrl+t"), "folded content says how to open it — and only then"
+    assert "ctrl+t" not in render_thinking_line(body="", done=True, expanded=False), "nothing hidden, no hint"
 
     expanded = render_thinking_line(body="line-a\nline-b", done=True, expanded=True)
     assert "line-a" in expanded
     assert "line-b" in expanded
-    assert "ctrl+t to expand" not in expanded
+    assert "ctrl+t" not in expanded
+
+
+def test_thinking_header_puts_duration_after_thought_and_title_after_a_dot():
+    import re
+
+    def plain(text: str) -> str:
+        return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+    settled = render_thinking_line(body="x", done=True, title="Plan the search", duration_s=6.3)
+    assert plain(settled) == " ∴ Thought 6.3s · Plan the search  ctrl+t"
+    running = render_thinking_line(body="x", done=False, title="Plan the search", duration_s=6.3)
+    assert plain(running) == " ∴ Thinking · Plan the search  ctrl+t"
+    assert plain(render_thinking_line(body="x", done=False)) == " ∴ Thinking  ctrl+t"
+    assert plain(render_thinking_line(body="", done=False)) == " ∴ Thinking", "no body, nothing to open"
 
 
 def test_ctrl_t_toggles_thinking_row(tmp_path: Path, monkeypatch):
@@ -114,7 +136,7 @@ def test_ctrl_t_toggles_thinking_row(tmp_path: Path, monkeypatch):
                               "reasoning_duration_s": 1.5})
     app._on_snapshot(posted[-1])
     row = "\n".join(app._transcript.snapshot())
-    assert "ctrl+t to expand" in row and "∴ Thought" in row
+    assert "∴ Thought 1.5s" in row and "ctrl+t" in row, "the thought has a body, so the hint is there"
     assert "secret thought" not in row
 
     app._handle_key(KeyPress(key="ctrl+t", ctrl=True, char="t"))

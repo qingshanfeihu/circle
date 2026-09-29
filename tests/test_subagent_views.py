@@ -108,7 +108,7 @@ def test_running_subagent_shows_meta_and_its_last_three_calls():
     lines = _entry(feed)
     assert lines[0].endswith("Agent(find the config)")
     assert lines[1] == "   ⎿ general-purpose · 5 calls · 12s · 1.2k tokens"
-    assert lines[2] == "     … +2 更早"
+    assert lines[2] == "     … +2 earlier · ctrl+o"
     assert [ln.strip().split(" ", 1)[1] for ln in lines[3:6]] == [
         "Read(/f2.py)", "Read(/f3.py)", "Read(/f4.py)"]
     assert len(lines) == 6, "no result line while the subagent runs"
@@ -126,7 +126,7 @@ def test_finished_subagent_folds_to_meta_and_result_and_ctrl_o_lists_every_call(
     assert collapsed[3] == "     second line"
     assert len(collapsed) == 4
     expanded = _entry(feed, tools_expanded=True)
-    assert sum("Read(/f" in ln for ln in expanded) == 4 and "更早" not in "\n".join(expanded)
+    assert sum("Read(/f" in ln for ln in expanded) == 4 and "earlier" not in "\n".join(expanded)
 
 
 def test_parallel_subagents_keep_their_own_calls():
@@ -208,15 +208,18 @@ def test_detail_lists_every_call_and_reasoning_in_order():
     feed = _detail_feed()
     card = feed.card()
     lines = [plain(ln) for ln in render_detail_lines(card, now=float(card["start_ts"]) + 5)]
-    assert lines[0] == "任务: find the config"
+    assert lines[0] == "Task · find the config"
     think = next(i for i, ln in enumerate(lines) if "∴ Thought" in ln)
     call_a = next(i for i, ln in enumerate(lines) if "Read(/a.py)" in ln)
     assert think < call_a
-    assert "(ctrl+t 展开)" in lines[think] and "下面是末" not in lines[think]
+    assert lines[think].startswith("⎿ ∴ Thought ")
+    assert lines[think].endswith("chars  ctrl+t"), "a folded thought says how to open it"
+    assert " shown" not in lines[think], "the tail note shows only when expanded"
     assert lines[call_a].endswith("Read(/a.py) line one")
-    assert "工具 3 次 · 思考 1 段 · 距上次事件" in "\n".join(lines)
+    facts = next(ln for ln in lines if "tool calls" in ln)
+    assert facts.startswith("3 tool calls · 1 thinking · ") and facts.endswith(" since the last event")
     expanded = [plain(ln) for ln in render_detail_lines(card, expanded=True)]
-    assert any(f"下面是末 {CARD_THINKING_TAIL_CHARS} 字" in ln for ln in expanded)
+    assert any(f" · last {CARD_THINKING_TAIL_CHARS} shown" in ln for ln in expanded)
     assert any(ln.strip().startswith("…z") for ln in expanded)
 
 
@@ -352,8 +355,9 @@ def test_detail_marks_the_recoverable_failure_muted_and_the_end_result():
     row_c = next(ln for ln in raw if "Read(/c.py)" in ln)
     assert theme.status_light("error") in row_c and "Permission denied" in row_c
     text = "\n".join(plain(ln) for ln in raw)
-    assert "◆ 结果：完成 · 3 calls" in text and "⎿ found it" in text
-    assert "距上次事件" not in text
+    assert "Result · done · 3 calls · ↑" in text and "⎿ found it" in text
+    assert "◆" not in text
+    assert "3 tool calls · 1 thinking" in text and "since the last event" not in text
 
 
 def test_detail_band_keeps_the_text_buttons_on_a_narrow_screen():
@@ -361,13 +365,16 @@ def test_detail_band_keeps_the_text_buttons_on_a_narrow_screen():
     for width in (40, 60, 120):
         lines, spans = render_detail_band(card, index=2, total=3, width=width)
         band = [plain(ln) for ln in lines]
-        assert len(band) == 3 and all(string_width(ln) == width for ln in band)
+        assert len(band) == 1 and string_width(band[0]) == width, "one line, no box"
+        assert not any(ch in band[0] for ch in "╭╮╰╯│")
+        assert band[0].startswith(" ● "), "the lamp sits in marker column 1"
         assert [action for _s, _e, action in spans] == ["back", "prev", "next"]
         for start, end, action in spans:
             label = dict(BUTTONS)[action]
-            assert band[1][_col_to_index(band[1], start):_col_to_index(band[1], end)] == f" {label} "
-    wide = plain(render_detail_band(card, index=2, total=3, width=120)[0][1])
-    assert "general-purpose·" in wide and "(2 of 3)" in wide and "运行中" in wide
+            assert band[0][_col_to_index(band[0], start):_col_to_index(band[0], end)] == f" {label} "
+    assert dict(BUTTONS) == {"back": "main", "prev": "prev", "next": "next"}
+    wide = plain(render_detail_band(card, index=2, total=3, width=120)[0][0])
+    assert "general-purpose·" in wide and "(2 of 3)" in wide and " · running · " in wide
     assert "⌫" not in wide and "←" not in wide, "the icon buttons are retired"
 
 
@@ -383,11 +390,12 @@ def _col_to_index(line: str, col: int) -> int:
 def test_detail_button_hover_is_sel_bg_and_brighter():
     card = _detail_feed().card()
     pal = theme.palette()
-    plain_line = render_detail_band(card, index=1, total=1, width=100)[0][1]
-    hovered = render_detail_band(card, index=1, total=1, width=100, hover="prev")[0][1]
-    assert f"{theme.sgr_join(pal.panel_bg, pal.text)} 上一个 " in plain_line
-    assert f"{theme.sgr_join(pal.sel_bg, pal.em)} 上一个 " in hovered
-    assert f"{theme.sgr_join(pal.panel_bg, pal.text)} 主视图 " in hovered
+    plain_line = render_detail_band(card, index=1, total=1, width=100)[0][0]
+    hovered = render_detail_band(card, index=1, total=1, width=100, hover="prev")[0][0]
+    assert f"{theme.sgr_join(pal.panel_bg, pal.text)} prev " in plain_line
+    assert theme.sgr_join(pal.sel_bg, pal.em) not in plain_line
+    assert f"{theme.sgr_join(pal.sel_bg, pal.em)} prev " in hovered
+    assert f"{theme.sgr_join(pal.panel_bg, pal.text)} main " in hovered
 
 
 def test_detail_rows_carry_type_and_thinking_tints():
@@ -396,7 +404,8 @@ def test_detail_rows_carry_type_and_thinking_tints():
     rows = render_detail_rows(card, now=float(card["start_ts"]) + 5)
     assert any("Read(/a.py)" in plain(line) and bg == pal.read_bg_hex for line, bg in rows)
     assert any("∴ Thought" in plain(line) and bg == pal.think_bg_hex for line, bg in rows)
-    assert all(bg is None for line, bg in rows if "任务:" in plain(line) or not line)
+    assert any(plain(line).startswith("Task · ") for line, _bg in rows)
+    assert all(bg is None for line, bg in rows if plain(line).startswith("Task · ") or not line)
 
 
 # ── transcript node order ──────────────────────────────────────────────────
@@ -444,6 +453,14 @@ def _band_text(app) -> str:
     return plain(getattr(app._agent_detail_band_text, "value", "") or "")
 
 
+def _selected_rows(app) -> list[str]:
+    """The descriptions of the strip rows drawn on the selection background."""
+    sel = theme.sgr_join(theme.palette().sel_bg, "")
+    raw = getattr(app._agent_strip_text, "value", "") or ""
+    return [desc for line in raw.splitlines() if line.startswith(sel)
+            for desc in ("left side", "right side") if desc in plain(line)]
+
+
 def test_strip_selection_and_detail_page_keys(tmp_path, monkeypatch):
     app = _fake_session(tmp_path, monkeypatch)
     feed = Feed()
@@ -453,19 +470,20 @@ def test_strip_selection_and_detail_page_keys(tmp_path, monkeypatch):
     app._open_turn_region()
     app._on_snapshot(feed.snap())
     app._sync_agent_strip()
-    assert "在途 AGENT ─ 2" in _strip_text(app) and "← 选中" not in _strip_text(app)
+    assert _strip_text(app).splitlines()[0].rstrip() == " Agents · 2"
+    assert _selected_rows(app) == [], "nothing is selected until ↓"
 
     app._handle_key(KeyPress(key="down"))
-    assert "← 选中" in next(ln for ln in _strip_text(app).splitlines() if "left side" in ln)
+    assert _selected_rows(app) == ["left side"]
     app._handle_key(KeyPress(key="down"))
-    assert "← 选中" in next(ln for ln in _strip_text(app).splitlines() if "right side" in ln)
+    assert _selected_rows(app) == ["right side"]
 
     app._handle_key(KeyPress(key="return"))
     assert app._detail_active
     assert app._transcript.node.style.display == "none"
     assert app._agent_detail.node.style.display == "flex"
     assert "(2 of 2)" in _band_text(app)
-    assert "任务: right side" in plain("\n".join(app._agent_detail.snapshot()))
+    assert "Task · right side" in plain("\n".join(app._agent_detail.snapshot()))
 
     app._handle_key(KeyPress(key="left"))
     assert "(1 of 2)" in _band_text(app)
@@ -498,12 +516,14 @@ def test_a_click_on_a_strip_row_opens_that_subagent(tmp_path, monkeypatch):
     app._on_snapshot(feed.snap())
     app._sync_agent_strip()
     app._agent_strip.rect.y = 30
-    assert app._strip_row_at(31) is None and app._strip_row_at(34) is None
-    assert app._strip_row_at(33) == "agent:T2"
+    # row 30 is the ` Agents · 2` header; the subagent rows start right under it
+    assert app._strip_row_at(30) is None and app._strip_row_at(33) is None
+    assert app._strip_row_at(31) == "agent:T1"
+    assert app._strip_row_at(32) == "agent:T2"
     from circle.ink.parse_keypress import MouseEvent
 
     app._mouse_to_screen_coords = lambda x, y: (x, y)
-    app._handle_mouse(MouseEvent(type="press", button=0, x=5, y=33))
+    app._handle_mouse(MouseEvent(type="press", button=0, x=5, y=32))
     assert app._detail_active and app._detail_uuid == "agent:T2"
 
 

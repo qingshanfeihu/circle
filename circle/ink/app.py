@@ -26,7 +26,9 @@ from .selection import (
 )
 from .termio.dec import (
     DBP,
+    DCS_REPORTS,
     DFE,
+    ECS,
     DISABLE_MOUSE_TRACKING,
     EBP,
     EFE,
@@ -51,6 +53,9 @@ class InkApp:
         self._terminal = Terminal()
         self._alt_screen = alt_screen
         self._mouse = mouse
+        # Ask the terminal to say when its colour scheme changes (DEC mode 2031). Terminals that
+        # do not know the mode ignore it.
+        self.color_scheme_reports = False
         self._running = False
         self._suspended = False
 
@@ -160,6 +165,8 @@ class InkApp:
         if self._alt_screen:
             init_seq += ENTER_ALT_SCREEN
         init_seq += HIDE_CURSOR + EBP + EFE
+        if self.color_scheme_reports:
+            init_seq += ECS
         if self._mouse:
             
             
@@ -185,7 +192,7 @@ class InkApp:
         self._running = False
         self._suspended = False
 
-        cleanup = SHOW_CURSOR + DBP + DFE
+        cleanup = SHOW_CURSOR + DBP + DFE + DCS_REPORTS
         if self._mouse:
             cleanup += DISABLE_MOUSE_TRACKING
         if self._alt_screen:
@@ -196,7 +203,7 @@ class InkApp:
     def suspend_for_external(self) -> None:
         """Hand the TTY to $EDITOR without killing the session run loop."""
         self._suspended = True
-        cleanup = SHOW_CURSOR + DBP + DFE
+        cleanup = SHOW_CURSOR + DBP + DFE + DCS_REPORTS
         if self._mouse:
             cleanup += DISABLE_MOUSE_TRACKING
         if self._alt_screen:
@@ -211,12 +218,25 @@ class InkApp:
         if self._alt_screen:
             init_seq += ENTER_ALT_SCREEN
         init_seq += HIDE_CURSOR + EBP + EFE
+        if self.color_scheme_reports:
+            init_seq += ECS
         if self._mouse:
             init_seq += ENABLE_MOUSE_TRACKING
         init_seq += erase_in_display(2)
         self._terminal.write(init_seq)
         self._suspended = False
         self._force_full_render()
+
+    @property
+    def active(self) -> bool:
+        """True while the screen is ours: started, and not lent to an external program."""
+        return self._running and not self._suspended
+
+    def set_color_scheme_reports(self, on: bool) -> None:
+        """Turn the terminal's colour-scheme reports on or off, now if the screen is running."""
+        self.color_scheme_reports = on
+        if self.active:
+            self.write_passthrough(ECS if on else DCS_REPORTS)
 
     def write_passthrough(self, data: str) -> None:
         with self._render_lock:
@@ -290,6 +310,12 @@ class InkApp:
         cursor_seq = self.cursor.get_cursor_sequence()
         if cursor_seq:
             self._terminal.write(cursor_seq + SHOW_CURSOR)
+            self._cursor_visible = True
+        elif getattr(self, "_cursor_visible", False):
+            # nothing declares a cursor (the prompt row is hidden behind a card): hide it, or it
+            # parks wherever the last change was drawn
+            self._terminal.write(HIDE_CURSOR)
+            self._cursor_visible = False
 
         
         self._prev_screen, self._curr_screen = self._curr_screen, self._prev_screen

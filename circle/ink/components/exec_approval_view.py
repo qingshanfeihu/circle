@@ -1,26 +1,37 @@
+"""Tool approval as a card (contract 2026-09-29, R1–R3).
+
+The approval is the composer frame with different content, not a panel stacked above
+it. The session hands ``card_spec()`` to the frame; keys are handled here.
+
+Options, in order: ``Allow once``, ``Allow <scope> for this session`` (only when the
+policy lets the call be remembered) and ``Reject and explain``. Digits pick and confirm;
+``y`` / ``a`` / ``n`` do the same without being shown; ``up`` / ``down`` move; ``enter``
+confirms the focused row; ``esc`` and ``n`` reject at once. ``Reject and explain`` turns
+the frame's last row into an input: ``enter`` sends the text to the model with the
+rejection, an empty ``enter`` is a plain rejection, ``esc`` goes back to the options.
+
+While the card is up every printable key is swallowed — a stray ``y`` typed for the
+composer must not answer the question, and nothing typed is lost because the draft was
+saved when the card appeared. Control keys (ctrl+c and friends) and scrolling pass on.
+"""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..theme import GLYPH_MILESTONE, palette
+from circle.display_lexicon import tool_short_name
 
-_STAGE_PERMISSION = "permission"
-_STAGE_ALWAYS = "always"
+from .dialog_card import CardLine, CardOption, CardSpec, PopupItem, card_rows, popup_rows
 
-_OPTIONS_ALLOW = (
-    {"key": "approve", "label": "Allow once"},
-    {"key": "always", "label": "Allow always"},
-    {"key": "reject", "label": "Reject"},
-)
-_OPTIONS_FORCED = (
-    {"key": "approve", "label": "Allow once"},
-    {"key": "reject", "label": "Reject"},
-)
-_OPTIONS_ALWAYS_CONFIRM = (
-    {"key": "always_confirm", "label": "Confirm"},
-    {"key": "always_cancel", "label": "Cancel"},
-)
+# isdigit() is true for ² and ①, and int() of those raises: only these nine keys are answers.
+_DIGITS = frozenset("123456789")
+
+_APPROVE = "approve"
+_ALWAYS = "always"
+_EXPLAIN = "explain"
+
+# keys that are not the card's business and must reach the session (interrupt, scroll…)
+_PASS_THROUGH = frozenset({"pageup", "pagedown", "home", "end"})
 
 
 class ExecApprovalSession:
@@ -35,107 +46,120 @@ class ExecApprovalSession:
         self._payload = dict(payload or {})
         self._render = render
         self._on_finish = on_finish
-        self._stage = _STAGE_PERMISSION
         self._focus = 0
-        self._options = self._main_options()
+        self._input = False
+        self._options = self._build_options()
 
-    def _main_options(self) -> list[dict[str, str]]:
-        if self._payload.get("allow_always") is False:
-            return list(_OPTIONS_FORCED)
-        return list(_OPTIONS_ALLOW)
+    # ── content ─────────────────────────────────────────────────────────
 
-    def _header_title(self) -> str:
-        if self._stage == _STAGE_ALWAYS:
-            return "Always allow"
-        return "Permission required"
+    def _build_options(self) -> list[tuple[str, str]]:
+        opts = [(_APPROVE, "Allow once")]
+        if self._payload.get("allow_always") is not False:
+            scope = str(self._payload.get("scope") or "this call")
+            opts.append((_ALWAYS, f"Allow {scope} for this session"))
+        opts.append((_EXPLAIN, "Reject and explain"))
+        return opts
 
-    def render_lines(self) -> list[str]:
-        pal = palette()
-        Y, D, B, R = pal.yellow, pal.faint, pal.em, pal.reset
-        lines: list[str] = []
-        lines.append(f" {Y}△{R} {B}{self._header_title()}{R}")
-        if self._stage == _STAGE_ALWAYS:
-            scope = str(self._payload.get("scope") or self._payload.get("tool") or "this call")
-            lines.append(f"   {D}Allows {scope} for the rest of this session.{R}")
-            lines.append(f"   {D}Undo with /approvals revoke.{R}")
-        else:
-            icon = str(self._payload.get("icon") or GLYPH_MILESTONE)
-            title = str(self._payload.get("title") or self._payload.get("tool") or "")
-            lines.append(f"   {D}{icon}{R} {title}")
-            body = str(self._payload.get("body") or "")
-            for ln in body.splitlines() or [""]:
-                lines.append(f"   {ln}")
-            if self._payload.get("warn_delete"):
-                lines.append(f"   {Y} This deletes or overwrites data. {R}")
-            policy = str(self._payload.get("policy") or "")
-            if policy:
-                lines.append(f"   {D}{policy}{R}")
-        lines.append("")
-        btn_parts: list[str] = []
-        for i, opt in enumerate(self._options):
-            label = opt["label"]
-            if i == self._focus:
-                btn_parts.append(f"{Y}{label}{R}")
-            else:
-                btn_parts.append(f"{D}{label}{R}")
-        lines.append("   " + "  ".join(btn_parts))
-        lines.append(f"   {D}⇆ select · enter confirm{R}")
-        return lines
+    @property
+    def in_input(self) -> bool:
+        return self._input
+
+    def card_spec(self) -> CardSpec:
+        p = self._payload
+        name = tool_short_name(str(p.get("tool") or p.get("title") or "tool"))
+        more = int(p.get("more") or 0)
+        title = f"{name} needs your permission" + (f" · {more} more" if more else "")
+        body: list[CardLine] = []
+        for i, ln in enumerate(str(p.get("body") or "").splitlines() or [""]):
+            body.append(CardLine(ln, "em" if i == 0 else "text"))
+        if p.get("warn_delete"):
+            body.append(CardLine("This deletes or overwrites data.", "warn"))
+        policy = str(p.get("policy") or "")
+        if policy:
+            body.append(CardLine(policy, "dim"))
+        return CardSpec(
+            title=title,
+            body=body,
+            options=[CardOption(label) for _key, label in self._options],
+            focus=self._focus,
+            tint=str(p.get("tint") or ""),
+            input_row=self._input,
+        )
+
+    def render_lines(self, width: int = 80) -> list[str]:
+        """The card as plain rows (the legacy line-oriented controller shows these)."""
+        return card_rows(self.card_spec(), width)
+
+    # ── keys ────────────────────────────────────────────────────────────
+
+    def _index_of(self, kind: str) -> int | None:
+        for i, (key, _label) in enumerate(self._options):
+            if key == kind:
+                return i
+        return None
 
     def _submit(self, idx: int) -> None:
-        opt = self._options[idx]
-        key = opt["key"]
-        if self._stage == _STAGE_PERMISSION and key == "always":
-            self._stage = _STAGE_ALWAYS
-            self._options = list(_OPTIONS_ALWAYS_CONFIRM)
-            self._focus = 0
-            self._render()
-            return
-        if key == "always_cancel":
-            self._stage = _STAGE_PERMISSION
-            self._options = self._main_options()
-            self._focus = 0
-            self._render()
-            return
-        if key == "always_confirm":
-            self._on_finish({"decision": "always"})
-            return
-        if key == "approve":
+        kind = self._options[idx][0]
+        if kind == _APPROVE:
             self._on_finish({"decision": "approve"})
-            return
-        self._on_finish({"decision": "reject"})
+        elif kind == _ALWAYS:
+            self._on_finish({"decision": "always"})
+        else:
+            self._focus = idx
+            self._input = True
+            self._render()
 
-    def handle_key(self, key: str, _char: str) -> bool:
+    def submit_reason(self, text: str) -> None:
+        """``enter`` in the reason row: the text rides with the rejection (empty = plain)."""
+        self._on_finish({"decision": "reject", "message": str(text or "").strip()})
+
+    def cancel_input(self) -> None:
+        self._input = False
+        self._render()
+
+    def handle_key(self, key: str, char: str) -> bool:
+        if self._input:
+            return False  # the session routes typing, enter and esc for the reason row
         n = len(self._options)
-        if n == 0:
-            return False
-        if key in ("left", "h") or (key == "tab" and False):
-            self._focus = (self._focus - 1 + n) % n
+        ch = char if len(char or "") == 1 else (key if len(key or "") == 1 else "")
+        if key in ("up", "left", "ctrl+p") or ch in ("k", "h"):
+            self._focus = (self._focus - 1) % n
             self._render()
             return True
-        if key in ("right", "l", "tab"):
+        if key in ("down", "right", "tab", "ctrl+n") or ch in ("j", "l"):
             self._focus = (self._focus + 1) % n
             self._render()
             return True
-        if key == "enter":
+        if key in ("enter", "return"):
             self._submit(self._focus)
             return True
-        if key == "escape":
-            if self._stage == _STAGE_ALWAYS:
-                cancel_idx = next(
-                    i for i, o in enumerate(self._options) if o["key"] == "always_cancel"
-                )
-                self._submit(cancel_idx)
-            else:
-                reject_idx = next(
-                    i for i, o in enumerate(self._options) if o["key"] == "reject"
-                )
-                self._submit(reject_idx)
+        if key == "escape" or ch in ("n", "N"):
+            self._on_finish({"decision": "reject"})
             return True
-        return False
+        if ch in _DIGITS:
+            idx = int(ch) - 1
+            if 0 <= idx < n:
+                self._submit(idx)
+            return True
+        if ch in ("y", "Y"):
+            self._submit(0)
+            return True
+        if ch in ("a", "A"):
+            idx = self._index_of(_ALWAYS)
+            if idx is not None:
+                self._submit(idx)
+            return True
+        if (key or "").startswith("ctrl+") or key in _PASS_THROUGH:
+            return False
+        return True  # printable and everything else: swallowed
 
 
 class SessionApprovalsSession:
+    """``/approvals``: the session's always-allow rules as a popup above the frame.
+
+    Not a blocking question, so not a card: rows on the panel background, ``up`` /
+    ``down`` and digits pick, ``enter`` confirms, ``esc`` closes.
+    """
 
     def __init__(
         self,
@@ -151,38 +175,31 @@ class SessionApprovalsSession:
         self._on_finish = on_finish
         self._focus = 0
 
-    def render_lines(self) -> list[str]:
-        pal = palette()
-        Y, D, B, R = pal.yellow, pal.faint, pal.em, pal.reset
-        out = [f" {Y}△{R} {B}Session approvals{R}", f"   {D}☰ /approvals{R}"]
-        for ln in self._lines:
-            out.append(f"   {D}{ln}{R}" if ln.startswith("[") else f"   {ln}")
-        out.append("")
-        btn_parts = []
-        for i, opt in enumerate(self._options):
-            label = opt["label"]
-            btn_parts.append(f"{Y}{label}{R}" if i == self._focus else f"{D}{label}{R}")
-        out.append("   " + "  ".join(btn_parts))
-        out.append(f"   {D}⇆ select · enter confirm{R}")
-        return out
+    def render_lines(self, width: int = 100) -> list[str]:
+        items = [PopupItem(opt["label"]) for opt in self._options]
+        return popup_rows("Session approvals", items, self._focus, width, info=self._lines)
 
-    def handle_key(self, key: str, _char: str) -> bool:
+    def handle_key(self, key: str, char: str) -> bool:
         n = len(self._options)
         if n == 0:
             return False
-        if key in ("left", "h"):
-            self._focus = (self._focus - 1 + n) % n
+        ch = char if len(char or "") == 1 else (key if len(key or "") == 1 else "")
+        if key in ("up", "ctrl+p") or ch == "k":
+            self._focus = (self._focus - 1) % n
             self._render()
             return True
-        if key in ("right", "l", "tab"):
+        if key in ("down", "tab", "ctrl+n") or ch == "j":
             self._focus = (self._focus + 1) % n
             self._render()
             return True
-        if key == "enter":
+        if key in ("enter", "return"):
             self._on_finish(self._options[self._focus]["key"])
             return True
         if key == "escape":
             self._on_finish("close")
+            return True
+        if ch in _DIGITS and 1 <= int(ch) <= n:
+            self._on_finish(self._options[int(ch) - 1]["key"])
             return True
         return False
 

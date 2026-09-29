@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from circle.events import EventBus
 from circle.harness import create_harness
+from circle.ink.theme import status_light
 from circle.tui.agent_detail import render_detail_band
 from circle.tui.agent_strip import card_activity, snapshot_cards
 from circle.tui.message_model import BLOCK_TOOL_RESULT
@@ -103,10 +104,12 @@ def test_parallel_task_cards_wait_and_resume_in_place(tmp_path: Path):
     assert all(card["status"] == "running" and card["awaiting_approval"]
                and card["tokens_in"] == 10 and card["tokens_out"] == 2
                for card in before_by_uuid.values())
-    assert all(card_activity(card) == "等待审批" for card in before_by_uuid.values())
-    assert "等待审批" in "\n".join(render_turn(reducer.snapshot(), ViewOptions()))
+    assert all(card_activity(card) == "waiting for you" for card in before_by_uuid.values())
+    turn = "\n".join(render_turn(reducer.snapshot(), ViewOptions()))
+    assert turn.count(" · waiting for you") == 2, "each paused card's meta line says so"
     band, _spans = render_detail_band(before[0][1], index=1, total=2, width=100)
-    assert "等待审批" in "".join(band)
+    assert " · waiting for you" in "".join(band)
+    assert status_light("wait", reset=False)[2:] in band[0], "the lamp shares the band's SGR"
     assert not [
         block for message in reducer.snapshot().messages for block in message.content
         if block.type == BLOCK_TOOL_RESULT and block.is_error

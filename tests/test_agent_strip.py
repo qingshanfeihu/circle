@@ -1,5 +1,6 @@
-"""In-flight subagents render as the InfoTest bottom strip: badge, name, what it is
-doing, elapsed, tokens; at most six rows, a window that follows the selection."""
+"""In-flight subagents render as the bottom strip: a ` Agents · N` header, then one row
+per subagent — lamp, name, what it is doing, elapsed · tokens; at most six rows, a
+window that follows the selection."""
 
 import re
 
@@ -29,10 +30,10 @@ def _palette():
 
 
 def card(call_id, *, name="general-purpose", description="", title="", start=1000.0,
-         tokens=(0, 0), status="running", end=None):
+         tokens=(0, 0), status="running", end=None, **extra):
     payload = {"kind": "subagent", "name": name, "tool_use_id": call_id,
                "description": description, "reasoning_title": title, "start_ts": start,
-               "tokens_in": tokens[0], "tokens_out": tokens[1], "status": status}
+               "tokens_in": tokens[0], "tokens_out": tokens[1], "status": status, **extra}
     if end is not None:
         payload["end_ts"] = end
     return (f"agent:{call_id}", payload)
@@ -56,24 +57,51 @@ def test_busy_label_has_no_star_before_the_verb():
     assert "✶" not in label
 
 
-def test_strip_rows_carry_badge_name_activity_elapsed_and_tokens():
+def test_strip_rows_carry_lamp_name_activity_elapsed_and_tokens():
     rows = [card("toolu_01AAAAbbbb1111", description="列出当前目录", tokens=(1000, 234)),
             card("call_2", name="explore", title="Planning the search", start=1002.0)]
-    lines = [ANSI.sub("", ln) for ln in render_agent_strip(rows, width=80, now=1012.0)]
-    assert lines[0] == "─" * 80
-    assert lines[1].startswith("  在途 AGENT ─ 2")
-    first, second = lines[2], lines[3]
-    assert first.startswith("  agent  ") and "general-purpose·bbbb1111" in first
-    assert "列出当前目录" in first and "12s" in first and first.rstrip().endswith("1.2k")
-    assert "explore·call2" in second and "思考·Planning the search" in second
-    assert "10s" in second and second.rstrip().endswith("0")
-    assert lines[-1].strip().startswith("↓↑ 选择")
+    raw = render_agent_strip(rows, width=80, now=1012.0)
+    lines = [ANSI.sub("", ln) for ln in raw]
+    assert len(lines) == 3, "header + one row per subagent; no rule, no hint line"
+    pal = theme.palette()
+    assert raw[0].startswith(theme.sgr_join(pal.panel_bg, pal.faint))
+    assert lines[0].rstrip() == " Agents · 2" and string_width(lines[0]) == 80
+    first, second = lines[1], lines[2]
+    assert first.startswith(" ● general-purpose·bbbb1111  ")
+    assert _lamp("running", 1012.0) in raw[1], "the lamp shares the row's background SGR"
+    assert "列出当前目录" in first and first.rstrip().endswith("12s · 1.2k tokens")
+    assert "explore·call2" in second and "Planning the search" in second
+    assert "思考" not in second
+    assert second.rstrip().endswith("10s · 0 tokens")
+    assert "agent " not in first and "↓↑" not in "".join(lines)
+
+
+
+def _lamp(state: str, now: float = 0.0) -> str:
+    """The lamp's colour code + glyph as it sits inside a row's combined SGR (``…;33m●``)."""
+    return theme.status_light(state, now=now, reset=False)[2:]
+
+
+def test_a_card_waiting_on_the_user_gets_the_wait_lamp_and_says_so():
+    rows = [card("c1", description="build it", awaiting_approval=True),
+            card("c2", description="ask it", awaiting_question=True),
+            card("c3", description="still going")]
+    raw = render_agent_strip(rows, width=80, now=1005.0)
+    lines = [ANSI.sub("", ln) for ln in raw]
+    wait = _lamp("wait")
+    assert wait in raw[1] and wait in raw[2] and wait not in raw[3]
+    assert "waiting for you" in lines[1] and "build it" not in lines[1]
+    assert "waiting for you" in lines[2] and "ask it" not in lines[2]
+    assert "still going" in lines[3]
+    assert _lamp("running", 1005.0) in raw[3]
 
 
 def test_reasoning_title_wins_over_description_and_nothing_shows_a_dash():
-    assert card_activity({"reasoning_title": "Plan", "description": "do x"}) == "思考·Plan"
+    assert card_activity({"reasoning_title": "Plan", "description": "do x"}) == "Plan"
     assert card_activity({"description": "do   x\n y"}) == "do x y"
     assert card_activity({}) == "—"
+    assert card_activity({"awaiting_approval": True, "reasoning_title": "Plan"}) == "waiting for you"
+    assert card_activity({"awaiting_question": True, "description": "do x"}) == "waiting for you"
 
 
 def test_finished_card_elapsed_stops_at_its_end():
@@ -94,13 +122,14 @@ def test_six_rows_at_most_and_the_window_follows_the_selection():
     raw = render_agent_strip(visible, width=80, now=1001.0, selected=ids[7], total=8,
                              hidden=8 - len(visible))
     lines = [ANSI.sub("", ln) for ln in raw]
-    assert lines[1].startswith("  在途 AGENT ─ 8")
-    assert sum(1 for ln in lines if ln.startswith("  agent")) == MAX_ROWS
-    assert any("另有 2 个在途" in ln for ln in lines)
-    selected = next(i for i, ln in enumerate(lines) if "← 选中" in ln)
-    assert "task 7" in lines[selected]
-    assert raw[selected].startswith(theme.sgr_join(theme.palette().sel_bg, theme.palette().text))
-    assert sum("← 选中" in ln for ln in lines) == 1
+    assert lines[0].rstrip() == " Agents · 8"
+    assert sum(1 for ln in lines if ln.startswith(" ● ")) == MAX_ROWS
+    assert lines[-1].rstrip() == "  … +2 more"
+    pal = theme.palette()
+    on_sel = [i for i, ln in enumerate(raw) if ln.startswith(theme.sgr_join(pal.sel_bg, ""))]
+    assert len(on_sel) == 1
+    assert "task 7" in lines[on_sel[0]]
+    assert theme.sgr_join(pal.sel_bg, pal.em) in raw[on_sel[0]]
 
 
 def test_rows_never_run_past_the_width():
@@ -115,14 +144,17 @@ def test_nothing_running_draws_nothing():
     assert render_agent_strip([], width=80) == []
 
 
-def test_a_long_activity_leaves_room_for_the_selected_note_and_tokens():
+def test_a_long_activity_leaves_room_for_the_meter():
     rows = [card("c1", description="一个非常长的任务描述" * 20, tokens=(8200, 0)),
             card("c2", description="short")]
-    lines = [ANSI.sub("", ln) for ln in
-             render_agent_strip(rows, width=100, now=1500.0, selected="agent:c1", hover="agent:c2")]
-    row = next(ln for ln in lines if "← 选中" in ln)
-    assert row.rstrip().endswith("8.2k ← 选中"), row
     raw = render_agent_strip(rows, width=100, now=1500.0, selected="agent:c1", hover="agent:c2")
-    hovered = next(ln for ln in raw if "short" in ln)
+    lines = [ANSI.sub("", ln) for ln in raw]
+    row = next(ln for ln in lines if "一个非常长" in ln)
+    assert "…" in row, "the doing column gives way first"
+    assert row.endswith("8m 20s · 8.2k tokens "), row
+    assert string_width(row) == 100
+    assert "← 选中" not in "".join(lines)
     pal = theme.palette()
-    assert hovered.startswith(theme.sgr_join(pal.sel_bg, pal.text)) and "← 选中" not in hovered
+    hovered = next(ln for ln in raw if "short" in ln)
+    assert hovered.startswith(theme.sgr_join(pal.sel_bg, ""))
+    assert theme.sgr_join(pal.sel_bg, pal.em) in hovered

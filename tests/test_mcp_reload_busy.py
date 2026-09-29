@@ -34,7 +34,7 @@ def test_mcp_reload_during_parallel_workers_keeps_original_bridge(tmp_path, monk
     _wait_for(lambda: len(PausedParallelModel.entered) == 2)
     app._on_submit("/mcp reload")
     assert app._bridge is original_bridge
-    assert "等待当前回合完成后再重载 MCP" in "\n".join(app._transcript.snapshot())
+    assert "reload MCP after the current turn" in (app._footer._toast_text or "")  # noqa: SLF001
 
     app._start_user_turn("NEXT")
     assert app._msg_queue == [("steering", "NEXT")]

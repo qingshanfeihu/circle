@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .termio.tokenize import Token, Tokenizer
+from .theme import parse_color_spec
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,26 @@ class SwitchConversationEvent:
     conversation_id: str = ""
 
 
-InputEvent = KeyPress | MouseEvent | PasteEvent | UploadEvent | SwitchConversationEvent
+@dataclass(slots=True)
+class ColorReportEvent:
+    """The terminal answering an OSC 10, 11 or 4 colour query. ``slot`` is 10 (foreground),
+    11 (background) or the palette index."""
+
+    slot: int
+    color: str
+
+
+@dataclass(slots=True)
+class ColorSchemeEvent:
+    """The terminal saying its colour scheme changed (``CSI ? 997 ; 1|2 n``, mode 2031)."""
+
+    dark: bool
+
+
+InputEvent = (
+    KeyPress | MouseEvent | PasteEvent | UploadEvent | SwitchConversationEvent
+    | ColorReportEvent | ColorSchemeEvent
+)
 
 
 _CSI_KEYS: dict[str, str] = {
@@ -209,6 +229,15 @@ def _parse_osc(body: str) -> InputEvent | None:
     if not sep:
         return None
 
+    if code in ("10", "11"):
+        color = parse_color_spec(payload)
+        return ColorReportEvent(slot=int(code), color=color) if color else None
+
+    if code == "4":
+        index, _, spec = payload.partition(";")
+        color = parse_color_spec(spec)
+        return ColorReportEvent(slot=int(index), color=color) if color and index.isdigit() else None
+
     if code == _OSC_UPLOAD_CODE:
         try:
             filename = base64.b64decode(payload.encode("ascii")).decode("utf-8")
@@ -278,7 +307,14 @@ def _parse_csi(body: str) -> InputEvent | None:
     if not body:
         return None
 
-    
+    # Private-mode replies. The colour scheme report is the only one Circle asks for; the rest
+    # (a mode report ``?2031;2$y``, say) must never fall through to the key rules below, which
+    # would read the final ``n`` or ``y`` as a typed letter.
+    if body.startswith("?"):
+        if body.startswith("?997;") and body.endswith("n") and body[5:-1] in ("1", "2"):
+            return ColorSchemeEvent(dark=body[5:-1] == "1")
+        return None
+
     if body.startswith("<"):
         return _parse_sgr_mouse(body[1:])
 

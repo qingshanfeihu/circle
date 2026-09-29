@@ -61,6 +61,7 @@ from circle.tui.message_model import (
 )
 from circle.tui.tool_display import PREVIEW_LINES, display_lines
 
+_WAIT_SUFFIX_W = len("  waiting for you")
 COLLAPSED_HINT_MIN_HIDDEN = 1
 COLLAPSED_WRAP_ROWS = 3
 SUBAGENT_RECENT_CALLS = 3
@@ -71,8 +72,10 @@ _READ_RANGE = re.compile(r"^@@ lines (\d+)-(\d+) of \d+ @@")
 # 写＝改文件，agent＝子代理；执行命令、问询这类不归类的不铺底色。
 _TOOL_TYPE_READ = frozenset({"read_file", "ls", "glob", "grep", "lsp", "skill",
                              "webfetch", "websearch"})
-_TOOL_TYPE_WRITE = frozenset({"write_file", "edit_file", "apply_patch", "delete"})
+# 契约 D0：Bash（execute）会改状态，归写色；question 是模型在向你提问，归思考/计划的洋红。
+_TOOL_TYPE_WRITE = frozenset({"write_file", "edit_file", "apply_patch", "delete", "execute"})
 _TOOL_TYPE_AGENT = frozenset({"task"})
+_TOOL_TYPE_THINK = frozenset({"question"})
 
 # 块间空行裁决表：本块紧跟在哪些块后面算同一块（不补空行）；其余一律隔 1 行。
 # text 只续 thinking（∴ → ⏺ 同一回答块）；text → text 不续，两个 ⏺ 块之间恒 1 空行。
@@ -162,7 +165,25 @@ def tool_type_bg_hex(name: str) -> str | None:
         return pal.write_bg_hex or None
     if name in _TOOL_TYPE_AGENT:
         return pal.agent_bg_hex or None
+    if name in _TOOL_TYPE_THINK:
+        return pal.think_bg_hex or None
     return None
+
+
+def tool_type_bg_sgr(name: str) -> str:
+    """The same tint as an SGR background, for blocks built from raw escape codes (the
+    approval card carries the tint of the tool it asks about)."""
+    pal = palette()
+    name = str(name or "")
+    if name in _TOOL_TYPE_READ:
+        return pal.read_bg
+    if name in _TOOL_TYPE_WRITE:
+        return pal.write_bg
+    if name in _TOOL_TYPE_AGENT:
+        return pal.agent_bg
+    if name in _TOOL_TYPE_THINK:
+        return pal.think_bg
+    return ""
 
 
 def _text_entry(text: str, opts: ViewOptions) -> str:
@@ -178,8 +199,13 @@ def _tool_row(block: ContentBlock, result: ContentBlock | None, opts: ViewOption
     summary = tool_arg_summary(block.name, dict(block.input))
     if block.name == "read_file":
         summary = _read_summary(summary, result)
-    summary = _fit_summary(name, summary, opts.width)
+    waiting = result is None and block.name == "question" and block.status != "error"
+    # the "  waiting for you" suffix is part of the row: make room for it, or the row wraps
+    summary = _fit_summary(name, summary, opts.width - (_WAIT_SUFFIX_W if waiting else 0))
     call = f"{name}({summary})"
+    if waiting:
+        # 提问没有回执之前就是在等用户：青灯（第五态）
+        return f" {status_light('wait')} {pal.text}{call}{pal.reset}  {pal.blue}waiting for you{pal.reset}"
     if result is None:
         light = status_light("running" if block.status == "running" else "none")
         return f" {light} {pal.text}{call}{pal.reset}"
@@ -202,17 +228,13 @@ def _result_lines(block: ContentBlock, result: ContentBlock, opts: ViewOptions) 
         match = _READ_RANGE.match(raw[0]) if raw else None
         header = raw[0] if match else f"Read {len(raw)} line{'s' if len(raw) != 1 else ''}"
         hidden = max(0, len(raw) - (1 if match else 0))
-        hint = f" (ctrl+o expand +{hidden} {_line_word(hidden)})" if hidden else ""
-        if string_width(f"   ⎿ {header}{hint}") > opts.width:
-            hint = f" (ctrl+o +{hidden})" if hidden else ""
-        if string_width(f"   ⎿ {header}{hint}") > opts.width:
-            hint = f" (+{hidden})" if hidden else ""
+        hint = " · ctrl+o" if hidden else ""
         return [f"   ⎿ {pal.faint}{header}{hint}{pal.reset}"]
     if not opts.tools_expanded:
         shown = lines[:PREVIEW_LINES]
         hidden = len(lines) - len(shown)
         if hidden >= COLLAPSED_HINT_MIN_HIDDEN:
-            shown = [*shown, {"text": f"… +{hidden} {_line_word(hidden)} (ctrl+o to expand)", "tone": ""}]
+            shown = [*shown, {"text": f"… +{hidden} {_line_word(hidden)} · ctrl+o", "tone": ""}]
     else:
         shown = lines
     out: list[str] = []
@@ -229,7 +251,7 @@ def _result_lines(block: ContentBlock, result: ContentBlock, opts: ViewOptions) 
         for part_index, part in enumerate(parts):
             out.append(f"{prefix if part_index == 0 else '     '}{color}{part}{pal.reset}")
         if hidden_chars:
-            out.append(f"     {pal.faint}… +{hidden_chars} chars (ctrl+o to expand){pal.reset}")
+            out.append(f"     {pal.faint}… +{hidden_chars} chars · ctrl+o{pal.reset}")
     return out
 
 
@@ -246,7 +268,7 @@ def _extension_lines(block: ContentBlock, result: ContentBlock, opts: ViewOption
     if not lines or opts.tools_expanded or len(lines) <= PREVIEW_LINES:
         return lines or None
     hidden = len(lines) - PREVIEW_LINES
-    return [*lines[:PREVIEW_LINES], f"     {palette().faint}… +{hidden} {_line_word(hidden)} (ctrl+o to expand){palette().reset}"]
+    return [*lines[:PREVIEW_LINES], f"     {palette().faint}… +{hidden} {_line_word(hidden)} · ctrl+o{palette().reset}"]
 
 
 def subagent_call_row(item: Mapping[str, Any], *, now: float | None = None) -> str:
@@ -267,8 +289,8 @@ def _subagent_lines(card: Mapping[str, Any], opts: ViewOptions, now: float) -> l
     meta = (f"{card.get('name') or 'agent'} · {card_calls(card)} calls · "
             f"{format_elapsed(card_elapsed(card, now))} · "
             f"{format_tokens(card_tokens(card))} tokens")
-    if card.get("awaiting_approval"):
-        meta += " · 等待审批"
+    if card.get("awaiting_approval") or card.get("awaiting_question"):
+        meta += " · waiting for you"
     lines = [f"   ⎿ {pal.faint}{meta}{pal.reset}"]
     calls = [item for item in card.get("transcript") or ()
              if isinstance(item, Mapping) and item.get("kind") == "tool"]
@@ -279,7 +301,7 @@ def _subagent_lines(card: Mapping[str, Any], opts: ViewOptions, now: float) -> l
     else:
         shown = []
     if shown and len(calls) > len(shown):
-        lines.append(f"     {pal.faint}… +{len(calls) - len(shown)} 更早{pal.reset}")
+        lines.append(f"     {pal.faint}… +{len(calls) - len(shown)} earlier · ctrl+o{pal.reset}")
     lines += [f"     {subagent_call_row(item, now=now)}" for item in shown]
     return lines
 
@@ -294,12 +316,14 @@ def _tool_entry(block: ContentBlock, result: ContentBlock | None, opts: ViewOpti
     return "\n".join(parts)
 
 
-def _pending_entry(request: dict) -> str:
+def _pending_entry(request: dict, width: int = 100) -> str:
     pal = palette()
     name = str(request.get("name") or "tool")
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
-    call = f"{tool_short_name(name)}({tool_arg_summary(name, {'args': args})})"
-    return f" {status_light('running')} {pal.text}{call}{pal.reset} {pal.faint}等待审批{pal.reset}"
+    short = tool_short_name(name)
+    summary = _fit_summary(short, tool_arg_summary(name, {"args": args}), width - _WAIT_SUFFIX_W)
+    call = f"{short}({summary})"
+    return f" {status_light('wait')} {pal.text}{call}{pal.reset}  {pal.blue}waiting for you{pal.reset}"
 
 
 def render_turn_rows(snap: MessageSnapshot, opts: ViewOptions) -> list[Row]:
@@ -353,9 +377,9 @@ def render_turn_rows(snap: MessageSnapshot, opts: ViewOptions) -> list[Row]:
                 add(f" {pal.red}{GLYPH_ERROR}{pal.reset} {text}", "error")
             elif block.type == BLOCK_WARN:
                 pal = palette()
-                add(f" {pal.yellow}△{pal.reset} {block.payload.get('text') or ''}", "warn")
+                add(f" {pal.yellow}{GLYPH_ERROR}{pal.reset} {block.payload.get('text') or ''}", "warn")
     for request in opts.pending_calls:
-        add(_pending_entry(request), "tool", tool_type_bg_hex(str(request.get("name") or "")))
+        add(_pending_entry(request, opts.width), "tool", tool_type_bg_hex(str(request.get("name") or "")))
     if snap.streaming_text and snap.streaming_text.strip():
         add(_text_entry(snap.streaming_text, opts), "text")
     return rows

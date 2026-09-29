@@ -45,6 +45,6 @@ def test_compact_reports_approval_interrupt_without_running_tool(tmp_path, monke
     if app._is_loading:
         pytest.fail("compact worker did not finish")
     transcript = "\n".join(app._transcript.snapshot())
-    assert "遇到需要审批" in transcript
+    assert "A tool call needs approval" in transcript
     assert "— compacted" not in transcript
     assert (app.workspace / "victim.txt").read_text() == "keep"

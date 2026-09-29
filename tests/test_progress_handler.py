@@ -285,14 +285,14 @@ def test_session_turn_renders_rows_results_and_answer_from_snapshots(tmp_path, m
     _wait_idle(app)
     assert app._exec_approval is not None  # noqa: SLF001 — write_file waits for approval
     pending = ANSI.sub("", "\n".join(app._transcript.snapshot()))  # noqa: SLF001
-    assert "Write(/out.txt) 等待审批" in pending
+    assert "Write(/out.txt)  waiting for you" in pending
     app._bridge.resume = reject  # noqa: SLF001
     app._finish_exec_approval({"decision": "reject"})  # noqa: SLF001
     _wait_idle(app)
     raw = "\n".join(app._transcript.snapshot())  # noqa: SLF001
     text = ANSI.sub("", raw)
     assert "Read(/notes.txt:1-1)" in text
-    assert "Write(/out.txt)" in text and "等待审批" not in text
+    assert "Write(/out.txt)" in text and "waiting for you" not in text
     assert "The user rejected this tool call." in text
     assert "Finished reading." in text
     read_row = next(line for line in raw.splitlines() if "Read(/notes.txt:1-1)" in line)

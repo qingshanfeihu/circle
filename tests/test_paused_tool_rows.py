@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from circle.ink.parse_keypress import KeyPress
-from circle.tui.agent_strip import card_activity, snapshot_cards
+from circle.tui.agent_strip import card_activity, card_light, snapshot_cards
 from circle.tui.message_model import BLOCK_TOOL_RESULT, BLOCK_TOOL_USE
 from tests.test_approval_decision_stability import _calls
 from tests.test_slash_behaviors import _app
@@ -82,7 +82,8 @@ def test_subagent_question_waits_for_answer_and_counts_once(tmp_path, monkeypatc
     _wait_for(lambda: app._ask_session is not None and not app._bridge.is_running)
     card = snapshot_cards(app._bridge._sink.reducer.snapshot())[0][1]
     assert card["awaiting_question"] and not card["awaiting_approval"]
-    assert card_activity(card) == "等待回答"
+    assert card_activity(card) == "waiting for you"
+    assert card_light(card) == ("\x1b[36m", "●")
     app._handle_key(KeyPress(key="1", char="1"))
     _wait_for(lambda: app._last_assistant_plain == "finished" and not app._bridge.is_running)
     card = snapshot_cards(app._bridge._sink.reducer.snapshot())[0][1]

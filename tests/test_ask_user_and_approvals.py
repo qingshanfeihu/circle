@@ -155,7 +155,7 @@ def test_escape_after_answering_asks_to_confirm_and_cancel_reports_none():
     session, got = _panel([_q("A?", ["x"]), _q("B?", ["y"])])
     session.handle_key("1", "1")
     session.handle_key("escape", "")
-    assert got == [] and "确定全部放弃" in ANSI.sub("", "\n".join(session.render_lines()))
+    assert got == [] and "Press esc again to drop them all" in ANSI.sub("", "\n".join(session.render_lines()))
     session.handle_key("escape", "")
     assert got == [None]
 
@@ -199,7 +199,7 @@ def test_session_turn_answers_through_the_panel(tmp_path, monkeypatch):
     assert app._ask_session is None  # noqa: SLF001
     text = ANSI.sub("", "\n".join(app._transcript.snapshot()))  # noqa: SLF001
     assert "The user answered in the question panel" in text
-    assert "Using SQLite then." in text and text.count("✻ Cooked") == 1
+    assert "Using SQLite then." in text and len(re.findall(r"\d+s · ↑ \S+ · ↓ \S+", text)) == 1
 
 
 def test_typed_answer_goes_through_the_prompt(tmp_path, monkeypatch):
@@ -236,7 +236,7 @@ def test_approvals_page_revokes_a_rule(tmp_path, monkeypatch):
     page = app._approvals_page  # noqa: SLF001
     assert page is not None
     text = ANSI.sub("", "\n".join(page.render_lines()))
-    assert "[always] execute · npm test" in text and "撤销: npm test" in text
+    assert "[always] execute · npm test" in text and "Revoke: npm test" in text
     app._handle_key(KeyPress(key="enter", char="\r"))  # noqa: SLF001
     assert app._approvals_page is None  # noqa: SLF001
     assert store.rules(app._thread_id) == []  # noqa: SLF001

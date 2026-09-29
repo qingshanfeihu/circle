@@ -162,21 +162,24 @@ def render_thinking_line(*, body: str, done: bool, expanded: bool = False,
 
     pal = palette()
     title = str(title or "").strip()
+    # 契约：「Thought 6.3s · 标题」，运行中「Thinking · 标题」；不再逐行提示 ctrl+t
     if done:
-        header = "∴ Thought" + (f": {title}" if title else "")
+        header = "∴ Thought"
         if duration_s is not None:
             try:
-                header += f" · {_format_elapsed(max(0.0, float(duration_s)))}"
+                header += f" {_format_elapsed(max(0.0, float(duration_s)))}"
             except (TypeError, ValueError, OverflowError):
                 pass
     else:
-        header = "∴ Thinking" + (f": {title}" if title else "")
+        header = "∴ Thinking"
+    if title:
+        header += f" · {title}"
     header_sgr = sgr_join(pal.reason_dim if expanded else pal.reason, "\x1b[3m")
     line = f" {header_sgr}{header}{pal.reset}"
     body = str(body or "").strip()
+    if body and not expanded:
+        line += f"  {pal.faint}ctrl+t{pal.reset}"  # 只在真有内容被折起时提示
     if expanded and body:
         rendered = render_thinking_markdown(body, width - 3)
         line += f"\n   {pal.faint}{indent_continuations(rendered, '   ')}{pal.reset}"
-    elif not expanded:
-        line += f" {pal.faint}(ctrl+t to expand){pal.reset}"
     return line

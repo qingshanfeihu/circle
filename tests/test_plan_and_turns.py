@@ -1,5 +1,5 @@
-"""write_todos is bound and shown in the plan panel; each user turn ends with one
-``✻ Cooked`` line; ctrl+o / ctrl+t / /thinking redraw every turn in place; the busy
+"""write_todos is bound and shown in the plan box; each user turn ends with one
+usage line (``12s · ↑ 1.2k · ↓ 340``); ctrl+o / ctrl+t / /thinking redraw every turn in place; the busy
 word carries this run's tokens."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 
 from circle.events import EventBus
 from circle.ink import theme
-from circle.ink.components.plan_panel import MAX_ITEMS, plan_lines, plan_window
+from circle.ink.components.plan_panel import PLAN_ROWS, plan_lines, plan_window
 from circle.ink.parse_keypress import KeyPress
 from circle.testing import ScriptedModel
 from circle.tui.sink import TuiSink
@@ -69,32 +69,36 @@ def test_a_codex_model_gets_one_todo_middleware_not_two(tmp_path):
 # ── plan panel ─────────────────────────────────────────────────────────────
 
 
-def test_plan_lines_show_real_status_and_count_done():
+def test_plan_lines_are_a_closed_box_with_each_items_real_status():
     lines = [plain(ln) for ln in plan_lines([
         {"content": "a", "status": "completed"},
         {"content": "b", "status": "in_progress"},
         {"content": "c", "status": "pending"}], width=60)]
-    assert lines[0] == f" {theme.GLYPH_AGENT} Plan · 1/3 complete"
-    assert lines[1:] == ["   ● a", "   ◉ b", "   ○ c"]
+    assert lines[0].startswith("┌─") and "Plan 1/3" in lines[0] and lines[0].endswith("┐")
+    assert lines[-1].startswith("└") and lines[-1].endswith("┘")
+    assert all(len(ln) == 60 for ln in lines), "the box is a solid rectangle"
+    rows = lines[1:-1]
+    assert "●" in rows[0] and "1  a" in rows[0]      # completed: green lamp
+    assert "●" in rows[1] and "2  b" in rows[1]      # running: yellow lamp
+    assert "●" not in rows[2] and "3  c" in rows[2]  # pending: unlit
 
 
-def test_long_plans_show_a_window_around_the_first_open_item():
+def test_long_plans_show_five_whole_rows_around_the_current_item():
     todos = [{"content": f"step {i}", "status": "completed" if i < 12 else "pending"}
              for i in range(20)]
-    assert plan_window(todos) == (10, 10 + MAX_ITEMS)
+    assert plan_window(todos) == (10, 10 + PLAN_ROWS)
     lines = [plain(ln) for ln in plan_lines(todos, width=60)]
-    assert lines[1] == "   … 上面还有 10 项" and lines[2] == "   ● step 10"
-    assert not any("下面还有" in ln for ln in lines)
-    assert sum(1 for ln in lines if ln.startswith(("   ●", "   ○"))) == MAX_ITEMS
+    assert "step 10" in lines[1] and "step 14" in lines[-2]
+    assert len(lines) == PLAN_ROWS + 2 and lines[-1].endswith("11–15 / 20 ─┘")
     todos[3]["status"] = "pending"
     lines = [plain(ln) for ln in plan_lines(todos, width=60)]
-    assert lines[1] == "   … 上面还有 1 项" and lines[-1] == "   … 下面还有 9 项"
+    assert "step 1" in lines[1] and lines[-1].endswith("2–6 / 20 ─┘")
 
 
 def test_plan_items_are_cut_to_the_width():
     lines = [plain(ln) for ln in plan_lines([{"content": "x" * 300, "status": "pending"}],
                                             width=50)]
-    assert len(lines[1]) <= 50 and lines[1].endswith("…")
+    assert len(lines[1]) == 50 and "…" in lines[1] and lines[1].endswith("│")
 
 
 # ── the session ────────────────────────────────────────────────────────────
@@ -135,7 +139,7 @@ def _turn(app, events: list[tuple[str, dict]]):
     app._on_snapshot(posted[-1])  # noqa: SLF001
     app._render_turn_region()  # noqa: SLF001
     app._close_turn_region()  # noqa: SLF001
-    app._transcript.append_message("  ✻ Cooked")  # noqa: SLF001 — a line between turns
+    app._transcript.append_message("   0s · ↑ 0 · ↓ 0")  # noqa: SLF001 — a line between turns
 
 
 def test_todo_updates_reach_the_panel_and_stay_as_the_model_left_them(tmp_path, monkeypatch):
@@ -145,23 +149,26 @@ def test_todo_updates_reach_the_panel_and_stay_as_the_model_left_them(tmp_path, 
     _turn(app, [("todo_list", {"todos": todos})])
     assert app._plan_panel.is_visible and app._plan_panel.todos == todos  # noqa: SLF001
     text = plain(getattr(app._plan_panel._text, "value", ""))  # noqa: SLF001
-    assert "● first" in text and "○ second" in text, "an unfinished item is not drawn as done"
+    assert "●  1  first" in text and "   2  second" in text and "●  2  second" not in text, \
+        "an unfinished item is not drawn as done"
     app._cmd_new("")  # noqa: SLF001
     assert not app._plan_panel.is_visible  # noqa: SLF001
 
 
-def test_composer_gap_uses_existing_plan_and_ask_panel_spacing(tmp_path, monkeypatch):
+def test_one_blank_row_separates_the_transcript_from_the_bottom_stack(tmp_path, monkeypatch):
     app = _fake_session(tmp_path, monkeypatch)
+    app._sync_dialog_frame()
+    assert app._composer_gap.style.height == 0, "nothing to separate from yet"
     app._transcript.append_message(" ⏺ Answer")
     app._sync_dialog_frame()
     assert app._composer_gap.style.height == 1
     app._plan_panel.update([{"content": "step", "status": "pending"}])
     app._sync_dialog_frame()
-    assert app._composer_gap.style.height == 0
+    assert app._composer_gap.style.height == 1, "the plan box and the frame sit together below the gap"
     app._plan_panel.clear()
     app._ask_panel.update(["Choose an option"])
     app._sync_dialog_frame()
-    assert app._composer_gap.style.height == 0
+    assert app._composer_gap.style.height == 1
 
 
 def test_replay_redraws_every_turn_and_shifts_the_ones_after(tmp_path, monkeypatch):
@@ -174,8 +181,8 @@ def test_replay_redraws_every_turn_and_shifts_the_ones_after(tmp_path, monkeypat
     app._cmd_thinking("")  # noqa: SLF001 — hide thinking: each turn loses entries
     hidden = [plain(x) for x in app._transcript.snapshot()]  # noqa: SLF001
     assert not any("∴" in ln for ln in hidden)
-    assert [ln for ln in hidden if "answer" in ln or "Cooked" in ln or "question" in ln] == [
-        " > question", " ⏺ answer one", "  ✻ Cooked", " > question", " ⏺ answer two", "  ✻ Cooked"]
+    assert [ln for ln in hidden if "answer" in ln or "0s ·" in ln or "question" in ln] == [
+        " > question", " ⏺ answer one", "   0s · ↑ 0 · ↓ 0", " > question", " ⏺ answer two", "   0s · ↑ 0 · ↓ 0"]
     app._cmd_thinking("")  # noqa: SLF001
     app._handle_key(KeyPress(key="ctrl+t", ctrl=True, char="t"))  # noqa: SLF001
     shown = plain("\n".join(app._transcript.snapshot()))  # noqa: SLF001
@@ -216,17 +223,18 @@ def test_one_cooked_line_per_turn_even_across_an_approval(tmp_path, monkeypatch)
     app._on_submit("write it")  # noqa: SLF001
     _wait(app)
     assert app._exec_approval is not None  # noqa: SLF001
-    assert "Cooked" not in plain("\n".join(app._transcript.snapshot()))  # noqa: SLF001
+    waiting_text = plain("\n".join(app._transcript.snapshot()))  # noqa: SLF001
+    assert not re.search(r"\d+s · ↑ \S+ · ↓ \S+", waiting_text), "no usage line while the card waits"
     # the clock is stopped while the approval panel waits for the user
     assert app._turn_started_at == 0.0 and app._turn_elapsed > 0  # noqa: SLF001
     app._bridge.resume = reject  # noqa: SLF001
     app._finish_exec_approval({"decision": "reject"})  # noqa: SLF001
     _wait(app)
     lines = [plain(ln) for ln in app._transcript.snapshot()]  # noqa: SLF001
-    cooked = [ln for ln in lines if "✻ Cooked for" in ln]
-    assert len(cooked) == 1 and cooked[0].endswith("tokens")
+    cooked = [ln for ln in lines if re.fullmatch(r"\s+\d+s · ↑ \S+ · ↓ \S+", ln)]
+    assert len(cooked) == 1
     assert lines.index(cooked[0]) > next(i for i, ln in enumerate(lines) if "done" in ln)
-    assert not any("模型没有返回任何内容" in ln for ln in lines), "the model did answer"
+    assert not any("The model returned nothing" in ln for ln in lines), "the model did answer"
 
 
 def test_a_turn_with_nothing_from_the_model_says_so(tmp_path, monkeypatch):
@@ -234,7 +242,7 @@ def test_a_turn_with_nothing_from_the_model_says_so(tmp_path, monkeypatch):
     app._on_submit("hello")  # noqa: SLF001
     _wait(app)
     text = plain("\n".join(app._transcript.snapshot()))  # noqa: SLF001
-    assert "✻ Cooked for" in text and "模型没有返回任何内容（0 token）" in text
+    assert re.search(r"\d+s · ↑ 0 · ↓ 0", text) and "The model returned nothing (0 tokens)" in text
 
 
 # ── the busy word ──────────────────────────────────────────────────────────
@@ -251,9 +259,8 @@ def test_busy_word_carries_this_runs_tokens():
         footer.update(input_tokens=6200, output_tokens=400, status="running", llm_phase="")
         footer._refresh()  # noqa: SLF001
         label = captured[-1]
-        assert "↑ 1.2k · ↓ 300 tokens" in label and label.split("…")[0] == footer._verb  # noqa: SLF001
-        footer.update(llm_phase="output", output_token_count=40)
-        footer._refresh()  # noqa: SLF001
-        assert "↓ 300(+40) tokens" in captured[-1] and captured[-1].endswith("生成回答中")
+        # 契约：Verb… · 耗时 · ↓ 本轮输出；箭头自带 tokens 含义，不写单位
+        assert label.split("…")[0] == footer._verb and label.endswith("↓ 300")  # noqa: SLF001
+        assert "tokens" not in label
     finally:
         footer.shutdown()

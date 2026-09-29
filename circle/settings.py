@@ -39,7 +39,7 @@ class CircleSettings:
     initialized: bool = False
     auth: ModelAuth = field(default_factory=ModelAuth)
     trusted_folders: list[str] = field(default_factory=list)
-    theme: str = "terminal"
+    theme: str = "auto"
     # MCP server stubs: [{name, command|url, ...}]
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
     # 扩展开关：{name: {"enabled": bool}}；没写的扩展默认启用（circle/extensions.py）
@@ -59,6 +59,13 @@ class CircleSettings:
 
 def _default_dict() -> dict[str, Any]:
     return asdict(CircleSettings())
+
+
+def _theme_name(value: object) -> str:
+    """``auto`` follows the terminal, ``dark`` and ``light`` override it. Older files say
+    ``terminal`` for what is now ``auto``; anything unknown also means ``auto``."""
+    name = str(value or "").strip().lower()
+    return name if name in ("dark", "light") else "auto"
 
 
 def load_settings(home: Path | None = None) -> CircleSettings:
@@ -92,7 +99,7 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         initialized=bool(raw.get("initialized")),
         auth=auth,
         trusted_folders=folders,
-        theme=str(raw.get("theme") or "terminal"),
+        theme=_theme_name(raw.get("theme")),
         mcp_servers=mcp_servers,
         extensions=extensions,
         credential_files=credential_files,

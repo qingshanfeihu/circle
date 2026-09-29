@@ -53,8 +53,8 @@ class CircleApp:
         self._stage = "boot"
 
     def run(self) -> int:
-        init_palette_from_terminal()
         settings = load_settings(self.home)
+        init_palette_from_terminal(settings.theme)
         if self.force_init or not settings.is_ready():
             self.init = InitController(home=self.home)
             self._stage = "init"

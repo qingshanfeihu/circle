@@ -236,6 +236,16 @@ class PromptInput:
             self._pasted_contents.pop(pid, None)
         return out
 
+    def pasted_snapshot(self) -> dict[int, str]:
+        """The long pastes the draft refers to (``[Pasted text #1 …]``), for parking a draft."""
+        return dict(self._pasted_contents)
+
+    def restore_draft(self, text: str, pasted: dict[int, str]) -> None:
+        """Put a parked draft back together with the pastes its placeholders stand for."""
+        self.set_value(text)
+        self._pasted_contents = dict(pasted)
+        self._next_paste_id = max(self._pasted_contents, default=0) + 1
+
     def clear_pasted_refs(self) -> None:
         self._pasted_contents.clear()
         
@@ -243,12 +253,13 @@ class PromptInput:
 
     def _refresh(self) -> None:
         if not self._value and self._placeholder:
-            self._text_node.set_value(f"> {self._placeholder}")
-            self._cursor_mgr.declare(self._node, x=2, y=0)
+            self._text_node.set_value(f" › {self._placeholder}")
+            self._cursor_mgr.declare(self._node, x=3, y=0)
             return
         rect = getattr(self._node, "rect", None)
         node_w = rect.width if (rect and getattr(rect, "width", 0)) else 80
-        avail = max(10, node_w - 2)
+        avail = max(10, node_w - 3)
         disp, cur_col = _horizontal_window(self._value, self._cursor_pos, avail)
-        self._text_node.set_value(f"> {disp}")
-        self._cursor_mgr.declare(self._node, x=2 + cur_col, y=0)
+        # 标记列 1、文字列 3——和转录里的 › 同一列（框内再右移 1 是边框自己占的）
+        self._text_node.set_value(f" › {disp}")
+        self._cursor_mgr.declare(self._node, x=3 + cur_col, y=0)

@@ -22,28 +22,16 @@ from ...pricing import (
     format_usage_costs,
 )
 from .. import shimmer
+from ..string_width import string_width
 from ..dom import DOMElement, NodeType, create_element, create_text
-from ..theme import GLYPH_ERROR, palette, sgr_join
+from ..theme import GLYPH_ERROR, mix_with_floor, palette
 
 _VERBS = [
     "Thinking", "Considering", "Analyzing", "Brewing", "Pondering",
     "Cogitating", "Reflecting", "Processing", "Evaluating", "Examining",
 ]
 
-_PHASE_STATE_TEXT = {
-    "thinking": "深度思考中",
-    "output": "生成回答中",
-    "input": "接收/处理中",
-}
-
 _FOOTER_INDENT = " "
-
-_PHASE_STALE_S = 90.0
-
-# 字重不是颜色、不进调色板：yolo 前缀＝bold + pal.reason，经 sgr_join 合成一条
-# （ink 行内 SGR 不叠加，分两条写 bold 会被颜色顶掉）。
-_SGR_BOLD = "\x1b[1m"
-
 
 def _format_elapsed(seconds: float) -> str:
     if seconds < 60:
@@ -86,10 +74,10 @@ class FooterPane:
 
     def __init__(self, *, render_callback=None, thinking_text_cb=None) -> None:
         self._node = create_element(NodeType.BOX)
-        # 单行页脚（InfoTest 07 §11.25(4)）：只留计量行；键位说明收进 welcome，
-        # 忙碌词交给对话框上沿，可观测性告警交给对话框下沿。
+        # 单行页脚（InfoTest 07 §11.25(4)）：只留计量行；键位提示收进页眉的
+        # 「? for shortcuts」，忙碌词交给对话框上沿，模式词与告警交给对话框下沿。
         self._node.style.height = 1
-        self._node.text_styles.dim = True
+        self.apply_palette()
         self._status_line = create_text("")
         self._node.append_child(self._status_line)
         self._engine_line = create_text("")
@@ -123,9 +111,6 @@ class FooterPane:
         self._cache_write_1h_tokens: int = 0
         self._llm_phase: str = ""
         self._output_token_count: int = 0
-        self._phase_sig: tuple[str, int] = ("", 0)
-        self._phase_beat: float = 0.0
-        self._run_start_input: int = 0
         self.fork_last_event_ts: float = 0.0
         self.fork_stream_ts: float = 0.0
         self._run_start_output: int = 0
@@ -164,14 +149,10 @@ class FooterPane:
         self._refresh()
 
     def set_yolo(self, enabled: bool) -> None:
+        # 契约 R5：模式词（auto / read-only）画在输入框右下角，页脚不再带前缀；
+        # 这里只记住状态，供需要的调用方查询。
         self._yolo_enabled = bool(enabled)
         self._refresh()
-
-    def _yolo_prefix(self) -> str:
-        if not self._yolo_enabled:
-            return ""
-        pal = palette()
-        return f"{sgr_join(_SGR_BOLD, pal.reason)}yolo{pal.reset} · "
 
     def set_status(self, *, phase: str = "", model: str = "") -> None:
         """Gate UI helper used by CircleApp._rebuild (init/trust screens)."""
@@ -288,10 +269,6 @@ class FooterPane:
             self._reasoning_last_line = str(reasoning_last_line).strip()
         if reasoning_chars is not None:
             self.reasoning_chars = max(0, int(reasoning_chars))
-        sig = (self._llm_phase, self._output_token_count)
-        if sig != self._phase_sig:
-            self._phase_sig = sig
-            self._phase_beat = time.time()
         self._refresh()
 
     def set_engine_line(self, text: str) -> None:
@@ -412,7 +389,6 @@ class FooterPane:
             return
         self._busy_since = time.time()
         self._verb = random.choice(_VERBS)
-        self._run_start_input = self.input_tokens + self.fork_input
         self._run_start_output = self.output_tokens + self.fork_output
         self._timer_running = True
         self._tick()
@@ -450,14 +426,7 @@ class FooterPane:
         )
         write_1h = min(self._cache_write_1h_tokens + self.fork_cache_write_1h, write)
         miss = max(total_in - hit - write, 0)
-        parts = [
-            f"↑ {_format_token_count(total_in)} · ↓ {_format_token_count(display_out)} tokens"
-        ]
-        effort = (self.reasoning_effort or "").strip()
-        if self.model and effort:
-            parts.append(f"{self.model} ({effort})")
-        elif self.model:
-            parts.append(self.model)
+        parts = [f"↑ {_format_token_count(total_in)} · ↓ {_format_token_count(display_out)}"]
         if self._costs_supplied:
             parts.append(format_usage_costs(
                 self._main_costs, self._fork_costs, empty_model=self.model,
@@ -482,42 +451,20 @@ class FooterPane:
             else:
                 parts.append(f"{cost_currency(self.model)}{cost:.4f}")
         rate = (hit / total_in * 100.0) if total_in else 0.0
+        parts.append(f"cache {rate:.1f}%")
         budget = self.tokens_budget or 0
-        meter = f"CH{rate:.1f}%"
         if budget > 0 and self.context_input_tokens is not None:
             pct = min(999.0, self.context_input_tokens / budget * 100.0)
-            meter += (
-                f" CTX {_format_token_count(self.context_input_tokens)}/"
-                f"{_format_context_budget(budget)} ({pct:.0f}%)"
-            )
-        parts.append(meter)
+            parts.append(f"ctx {_format_token_count(self.context_input_tokens)}/"
+                         f"{_format_context_budget(budget)} ({pct:.0f}%)")
         return " · ".join(parts)
 
     def _busy_label(self, elapsed: float) -> str:
-        """The busy word on the composer's top edge (InfoTest ``FooterPane._busy_label``):
-        verb, this run's tokens, elapsed, and the phase or what it is waiting on."""
-        elapsed_str = _format_elapsed(elapsed)
-        run_in = max(0, self.input_tokens + self.fork_input - self._run_start_input)
+        """The busy word on the composer's top edge: ``Verb… · 12.4s · ↓ 1.9k``, then what the
+        run is waiting on (an API retry, a silent worker) when there is something to say."""
         run_out = max(0, self.output_tokens + self.fork_output - self._run_start_output)
-        state = _PHASE_STATE_TEXT.get(self._llm_phase)
-        if state and self._phase_beat and time.time() - self._phase_beat > _PHASE_STALE_S:
-            state = None
-        if state and self._max_thinking and self._llm_phase == "thinking":
-            state = "最大深度思考中"
-        if state:
-            if self._llm_phase == "input":
-                tok = f"↑ {_format_token_count(run_in)} tokens"
-                quiet = (max(0, int(time.time() - self.call_started_at))
-                         if self.call_started_at is not None else 0)
-                head = f"{self._verb} {quiet}s" if quiet >= 5 else self._verb
-            else:
-                tok = (f"↓ {_format_token_count(run_out + self.fork_live_output)}"
-                       f"(+{_format_token_count(self._output_token_count)}) tokens")
-                head = self._verb
-            wait = self._activity_slot_text(silent=False)
-            return f"{head}… · {tok} · {elapsed_str}" + (f" · {wait}" if wait else "") + f" · {state}"
-        tok = (f"↑ {_format_token_count(run_in)}"
-               f" · ↓ {_format_token_count(run_out + self.fork_live_output)} tokens")
+        parts = [f"{self._verb}…", _format_elapsed(elapsed),
+                 f"↓ {_format_token_count(run_out + self.fork_live_output)}"]
         silent = False
         if self.fork_last_event_ts > (self._busy_since or 0.0):
             idle = time.time() - self.fork_last_event_ts
@@ -528,10 +475,21 @@ class FooterPane:
             except (TypeError, ValueError):
                 stall_s = 180.0
             silent = idle >= stall_s and stream_idle >= stall_s
-        slot = self._activity_slot_text(silent=silent)
-        wait = f" · {slot}" if slot else ""
-        max_tag = " · 最大深度思考中" if self._max_thinking else ""
-        return f"{self._verb}… · {elapsed_str} · {tok}{wait}{max_tag}"
+        slot = self._activity_slot_text(silent=silent) or self._activity_slot_text(silent=False)
+        if slot:
+            parts.append(slot)
+        if self._max_thinking:
+            parts.append("max thinking")
+        return " · ".join(parts)
+
+    def apply_palette(self) -> None:
+        """Secondary colour for the whole line: half way to the background, but never below
+        3:1. The terminal's own dim attribute is 50% opacity, which on a light background
+        leaves the meters barely readable."""
+        pal = palette()
+        styles = self._node.text_styles
+        styles.dim = False
+        styles.color = mix_with_floor(pal.fg_hex, pal.bg_hex, 0.5, 3.0)
 
     def _refresh(self) -> None:
         # 忙碌词属于对话框上沿，不属于状态行：toast / search 接管状态行时不清它，
@@ -546,10 +504,21 @@ class FooterPane:
             match_disp = self._search_match if self._search_match else ""
             status_text = (f"(reverse-i-search) '{self._search_query}': {match_disp}"
                            f" · ctrl+r next · enter accept · esc cancel")
-            self._status_line.set_value(_FOOTER_INDENT + self._yolo_prefix() + status_text)
+            self._status_line.set_value(_FOOTER_INDENT + status_text)
             return
         if self._toast_text is not None:
-            self._status_line.set_value(_FOOTER_INDENT + self._toast_text)
+            # 契约：一闪在页脚右侧，左侧的计量留着（放不下时计量的尾巴让位）
+            width = getattr(getattr(self._node, "rect", None), "width", 0) or 100
+            flash = self._toast_text
+            room = width - len(_FOOTER_INDENT) - string_width(flash) - 3
+            meters = self._session_summary()
+            if room >= 12:
+                while string_width(meters) > room:
+                    meters = meters[:-1]
+                gap = width - len(_FOOTER_INDENT) - string_width(meters) - string_width(flash) - 1
+                self._status_line.set_value(f"{_FOOTER_INDENT}{meters}{' ' * max(1, gap)}{flash} ")
+            else:
+                self._status_line.set_value(_FOOTER_INDENT + flash)
             return
 
         status_text = self._hold_status or self._session_summary()
@@ -557,4 +526,4 @@ class FooterPane:
             pal = palette()
             status_text = (f"{pal.red}{GLYPH_ERROR} {self._sticky_error}"
                            f"{pal.reset} · {status_text}")
-        self._status_line.set_value(_FOOTER_INDENT + self._yolo_prefix() + status_text)
+        self._status_line.set_value(_FOOTER_INDENT + status_text)

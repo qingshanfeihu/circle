@@ -65,5 +65,5 @@ def run_main(
             )
             print(f"circle> {content}")
         else:
-            print("circle> （无输出）")
+            print("circle> (no output)")
     return 0

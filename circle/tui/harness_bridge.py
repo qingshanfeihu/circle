@@ -38,7 +38,7 @@ from circle.tui.sink import TuiSink
 logger = logging.getLogger(__name__)
 
 # 回合结束却没有正文时交给 on_done 的占位；会话据此判断模型其实没有作答
-NO_OUTPUT = "（无输出）"
+NO_OUTPUT = "(no output)"
 
 
 @dataclass

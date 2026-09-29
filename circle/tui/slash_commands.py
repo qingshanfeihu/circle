@@ -24,7 +24,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("init", "Analyze repo and write AGENTS.md"),
     SlashCommand("trust", "Trust this workspace and create .agent/"),
     SlashCommand("settings", "Show current settings"),
-    SlashCommand("themes", "List / set theme: /themes [name]"),
+    SlashCommand("themes", "Show or set the theme: /themes [auto|dark|light]"),
     SlashCommand("mcp", "List / reload MCP servers and tools"),
     SlashCommand("extensions", "List extensions: /extensions [reload]", aliases=("ext",)),
     SlashCommand("approvals", "Session approvals: /approvals [revoke N]"),
@@ -41,7 +41,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("compact", "Summarize context to free the window", aliases=("summarize",)),
     SlashCommand(
         "plan",
-        "Toggle plan mode: /plan [on|off]",
+        "Toggle read-only (plan) mode: /plan [on|off]",
         aliases=("plan-mode",),
     ),
     SlashCommand(
@@ -63,7 +63,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("unshare", "Delete the active local share file"),
     SlashCommand("editor", "Compose next message in $EDITOR / $VISUAL"),
     SlashCommand("reload", "Reload settings.json and rebuild the model"),
-    SlashCommand("yolo", "Toggle auto-approve all tool calls", aliases=("auto",)),
+    SlashCommand("yolo", "Toggle auto mode: approve every tool call without asking", aliases=("auto",)),
     SlashCommand("exit", "Quit Circle", aliases=("quit", "q")),
 )
 
@@ -154,7 +154,11 @@ def hotkeys_text() -> str:
             "  home/end        top / bottom of the transcript when the prompt is empty",
             "  mouse drag      select and copy; dragging to the top or bottom edge scrolls",
             "  tab             slash-command complete",
+            "  ?               this list (with an empty prompt)",
             "  /               slash commands (/help)",
+            "  1-9, up/down    answer a permission or question card; enter confirms, esc rejects,",
+            "                  y / a / n also work on permission cards",
+            "  mouse wheel     over the plan box scrolls it; elsewhere it scrolls the transcript",
         ]
     )
 

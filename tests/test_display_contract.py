@@ -2,7 +2,7 @@
 
 Block pacing through one gap rule, type tints on tool and thinking rows, the
 transcript's bottom without the old spare row, the single-line footer, the composer
-frame's labels, the welcome shown once, and the key and mouse matrix: ↑↓ scrolling
+frame's labels, the header (identity, one key hint), and the key and mouse matrix: ↑↓ scrolling
 when the prompt is empty and history is spent, Home/End, drag-select autoscroll that
 grows the selection, hover and click on the strip and the detail buttons.
 """
@@ -84,7 +84,7 @@ def kinds(rows):
             out.append("thinking")
         elif theme.GLYPH_AGENT in line:
             out.append("text")
-        elif "△" in line or theme.GLYPH_ERROR in line:
+        elif theme.GLYPH_ERROR in line:
             out.append("notice")
         else:
             out.append("tool")
@@ -123,7 +123,10 @@ def test_type_tints_follow_the_tool_and_leave_answers_plain():
     assert tool_type_bg_hex("grep") == tool_type_bg_hex("websearch") == pal.read_bg_hex
     assert tool_type_bg_hex("edit_file") == tool_type_bg_hex("apply_patch") == pal.write_bg_hex
     assert tool_type_bg_hex("task") == pal.agent_bg_hex
-    assert tool_type_bg_hex("execute") is None and tool_type_bg_hex("question") is None
+    # 契约 D0：Bash 归写色，question 归思考/计划的洋红
+    assert tool_type_bg_hex("execute") == pal.write_bg_hex
+    assert tool_type_bg_hex("question") == pal.think_bg_hex
+    assert tool_type_bg_hex("write_todos") is None
     snap = MessageSnapshot(messages=(
         thinking("t"), text("x", "answer"),
         call("a", "read_file", {"file_path": "/a"}), result("a", "read_file"),
@@ -133,7 +136,8 @@ def test_type_tints_follow_the_tool_and_leave_answers_plain():
     rows = render_turn_rows(snap, ViewOptions(pending_calls=[
         {"name": "edit_file", "args": {"file_path": "/c"}}]))
     tints = [bg for entry, bg in rows if entry]
-    assert tints == [pal.think_bg_hex, None, pal.read_bg_hex, pal.write_bg_hex, None,
+    # execute（Bash）归写色——契约 D0
+    assert tints == [pal.think_bg_hex, None, pal.read_bg_hex, pal.write_bg_hex, pal.write_bg_hex,
                      pal.write_bg_hex]
     assert all(bg is None for entry, bg in rows if not entry), "gap lines are never tinted"
 
@@ -251,19 +255,19 @@ def _busy_footer(**kwargs) -> tuple[FooterPane, list]:
     return footer, labels
 
 
-def test_footer_is_one_metering_line_with_yolo_up_front():
+def test_footer_is_one_metering_line_and_carries_no_mode_prefix():
     footer, _labels = _busy_footer()
-    pal = theme.palette()
     assert footer.node.style.height == 1 and len(footer.node.children) == 2
     footer.set_engine_line("engine")
     assert footer.node.style.height == 2
     footer.set_engine_line("")
     footer.set_yolo(True)
     status = footer._status_line.value  # noqa: SLF001
-    assert status.startswith(f" {theme.sgr_join(chr(27) + '[1m', pal.reason)}yolo{pal.reset} · ")
-    assert "ctrl+c" not in plain(status), "key hints live in the welcome, not the footer"
+    # 契约 R5：模式词（auto / read-only）在框的右下角，页脚不带前缀
+    assert "yolo" not in plain(status) and plain(status).startswith(" ↑ ")
+    assert "ctrl+c" not in plain(status), "key hints live in the header, not the footer"
     footer.set_search_state("gre", "grep foo")
-    assert plain(footer._status_line.value).startswith(" yolo · (reverse-i-search)")  # noqa: SLF001
+    assert plain(footer._status_line.value).startswith(" (reverse-i-search)")  # noqa: SLF001
     footer.shutdown()
 
 
@@ -307,28 +311,32 @@ def session(tmp_path, monkeypatch):
     return app
 
 
-def test_welcome_is_one_message_shown_once(session):
+def test_identity_lives_in_the_header_and_the_transcript_starts_empty(session):
     events = []
     session._extensions.emit = lambda name, payload: events.append(name)  # noqa: SLF001
     session._show_welcome()  # noqa: SLF001
     session._show_welcome()  # noqa: SLF001
-    welcome = [m for m in session._transcript.snapshot() if "Circle v" in plain(m)]  # noqa: SLF001
-    assert len(welcome) == 1 and welcome[0].startswith("\n")
-    assert "/help 查看命令" in plain(welcome[0]) and "ctrl+d 退出" in plain(welcome[0])
+    assert session._transcript.snapshot() == []  # noqa: SLF001
     assert events == ["session_start", "session_start"]
+    session._sync_header(100)  # noqa: SLF001
+    header = plain(session._header_text.value)  # noqa: SLF001
+    assert header.startswith(" circle ") and "test-model" in header
+    assert header.rstrip().endswith("? for shortcuts"), "the one place that teaches a key"
+    session._sync_header(30)  # noqa: SLF001
+    assert "?" not in plain(session._header_text.value), "narrow: the hint goes first"  # noqa: SLF001
 
 
 def test_user_turn_and_notices_keep_one_blank_between_blocks(session):
     session._bridge.start = lambda *_a, **_k: None  # noqa: SLF001
-    session._show_welcome()  # noqa: SLF001
     session._toast("note one")  # noqa: SLF001
     session._toast("note two")  # noqa: SLF001
     session._start_user_turn("hi")  # noqa: SLF001
     lines = [plain(m) for m in session._transcript.snapshot()]  # noqa: SLF001
     at = lines.index(" note one")
     assert lines[at - 1] == "" and lines[at + 1] == "" and lines[at + 2] == " note two"
-    rule = next(i for i, ln in enumerate(lines) if ln.startswith("─"))
-    assert lines[rule + 1:rule + 4] == ["", " > hi", ""]
+    assert not any(ln.startswith("─") for ln in lines), "no rules between turns; one blank row does it"
+    at_user = lines.index(" › hi")
+    assert lines[at_user - 1] == "" and lines[at_user + 1] == ""
     assert session._turn_base == len(lines)  # noqa: SLF001
     session._leave_busy()  # noqa: SLF001
 
@@ -498,22 +506,30 @@ def test_strip_hover_and_detail_buttons(session):
     session._mouse_to_screen_coords = lambda x, y: (x, y)  # noqa: SLF001
     pal = theme.palette()
 
-    session._handle_mouse(MouseEvent(type="move", button=3, x=5, y=33))  # noqa: SLF001
+    # row 30 is the ` Agents · 2` header; the rows follow it: T1 at 31, T2 at 32
+    session._handle_mouse(MouseEvent(type="move", button=3, x=5, y=30))  # noqa: SLF001
+    assert session._strip_hover is None, "the header is not a row"  # noqa: SLF001
+    session._handle_mouse(MouseEvent(type="move", button=3, x=5, y=32))  # noqa: SLF001
     assert session._strip_hover == "agent:T2"  # noqa: SLF001
     hovered = next(ln for ln in session._agent_strip_text.value.splitlines() if "right side" in ln)  # noqa: SLF001
-    assert hovered.startswith(theme.sgr_join(pal.sel_bg, pal.text)) and "← 选中" not in hovered
-    session._handle_mouse(MouseEvent(type="press", button=0, x=5, y=33))  # noqa: SLF001
+    assert hovered.startswith(theme.sgr_join(pal.sel_bg, ""))
+    assert theme.sgr_join(pal.sel_bg, pal.em) in hovered and "← 选中" not in hovered
+    session._handle_mouse(MouseEvent(type="press", button=0, x=5, y=32))  # noqa: SLF001
     assert session._detail_active and session._detail_uuid == "agent:T2"  # noqa: SLF001
 
+    # the band is one line: its buttons sit on the band's own row
     session._agent_detail_band.rect.y = 0  # noqa: SLF001
+    assert len(session._agent_detail_band_text.value.splitlines()) == 1  # noqa: SLF001
     start, _end, _action = next(span for span in session._detail_buttons if span[2] == "prev")  # noqa: SLF001
     session._handle_mouse(MouseEvent(type="move", button=3, x=start + 1, y=1))  # noqa: SLF001
+    assert session._detail_hover is None, "the row under the band is not a button"  # noqa: SLF001
+    session._handle_mouse(MouseEvent(type="move", button=3, x=start + 1, y=0))  # noqa: SLF001
     assert session._detail_hover == "prev"  # noqa: SLF001
-    assert f"{theme.sgr_join(pal.sel_bg, pal.em)} 上一个 " in session._agent_detail_band_text.value  # noqa: SLF001
-    session._handle_mouse(MouseEvent(type="press", button=0, x=start + 1, y=1))  # noqa: SLF001
+    assert f"{theme.sgr_join(pal.sel_bg, pal.em)} prev " in session._agent_detail_band_text.value  # noqa: SLF001
+    session._handle_mouse(MouseEvent(type="press", button=0, x=start + 1, y=0))  # noqa: SLF001
     assert session._detail_uuid == "agent:T1"  # noqa: SLF001
     back = next(span for span in session._detail_buttons if span[2] == "back")  # noqa: SLF001
-    session._handle_mouse(MouseEvent(type="press", button=0, x=back[0], y=1))  # noqa: SLF001
+    session._handle_mouse(MouseEvent(type="press", button=0, x=back[0], y=0))  # noqa: SLF001
     assert not session._detail_active  # noqa: SLF001
 
 

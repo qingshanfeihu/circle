@@ -104,7 +104,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
             try:
                 app._rebuild_agent(model=app.model_override)
             except RuntimeError as exc:
-                assert "当前回合仍在运行" in str(exc)
+                assert "A turn is still running" in str(exc)
         app._on_submit(cmd)
         # must not raise; transcript grows
         assert app._transcript.message_count() > 0

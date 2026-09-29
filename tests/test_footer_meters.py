@@ -22,8 +22,8 @@ def test_footer_shows_price_effort_cache_and_context():
         reasoning_tokens=800,
     )
     text = footer._session_summary()
-    assert text.startswith("↑ 20.0k · ↓ 1.0k tokens · claude-sonnet-5 (high) · $")
-    assert "CH25.0% CTX 18.0k/200.0k (9%)" in text
+    assert text.startswith("↑ 20.0k · ↓ 1.0k · $")
+    assert "cache 25.0% · ctx 18.0k/200.0k (9%)" in text
     assert "思考" not in text
 
 
@@ -32,7 +32,7 @@ def test_context_meter_uses_latest_request_not_session_sum():
     footer.update(tokens_budget=1_000_000, input_tokens=2_300_000,
                   context_input_tokens=100_000, cache_hit_tokens=460_000)
     text = footer._session_summary()
-    assert "CH20.0% CTX 100.0k/1.0M (10%)" in text
+    assert "cache 20.0% · ctx 100.0k/1.0M (10%)" in text
     assert "230%" not in text
 
 
@@ -59,7 +59,7 @@ def test_session_passes_latest_context_input_to_footer(tmp_path, monkeypatch):
     app._apply_usage({"input_tokens": 500_000, "context_input_tokens": 20_000,
                       "output_tokens": 100, "cache_hit": 100_000})
     text = app._footer._session_summary()
-    assert "CH20.0% CTX 20.0k/" in text
+    assert "cache 20.0% · ctx 20.0k/" in text
     app._footer.shutdown()
 
 
@@ -85,9 +85,9 @@ def test_footer_includes_subagents_but_context_stays_main(tmp_path, monkeypatch)
                       "usage": fork_usage})
     app._on_snapshot(reducer.snapshot())
     summary = app._footer._session_summary()
-    assert "↑ 1.0k · ↓ 100 tokens" in summary
+    assert "↑ 1.0k · ↓ 100" in summary
     assert "¥" in summary and "$" in summary
-    assert "CH62.0% CTX 80/200.0k" in summary
+    assert "cache 62.0% · ctx 80/200.0k" in summary
     app._footer.shutdown()
 
 

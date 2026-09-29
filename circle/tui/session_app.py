@@ -9,6 +9,7 @@ Streaming + exec approval via HarnessBridge.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 import threading
@@ -46,6 +47,7 @@ from circle.harness import BUILTIN_TOOL_NAMES, create_harness
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
 from circle.ink.components.ask_user_view import AskUserSession
+from circle.ink.components.dialog_card import card_rows
 from circle.ink.components.dialog_frame import build_loop_frame
 from circle.ink.components.exec_approval_view import (
     ExecApprovalSession,
@@ -57,13 +59,24 @@ from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
 from circle.ink.dom import NodeType, create_element, create_text
 from circle.ink.parse_keypress import (
+    ColorReportEvent,
+    ColorSchemeEvent,
     InputEvent,
     InputParser,
     KeyPress,
     MouseEvent,
     PasteEvent,
 )
-from circle.ink.theme import GLYPH_ERROR, init_palette_from_terminal, palette
+from circle.ink.string_width import string_width
+from circle.ink.theme import (
+    GLYPH_ERROR,
+    THEME_CHOICES,
+    apply_theme,
+    init_palette_from_terminal,
+    normalize_theme,
+    palette,
+)
+from circle.ink.theme_watch import ThemeWatcher
 from circle.mcp_loader import format_mcp_status
 from circle.model import build_chat_model, reasoning_effort_of
 from circle.model_guard import add_retry_listener
@@ -108,10 +121,14 @@ from circle.tui.transcript_view import (
     final_text,
     latest_todos,
     render_turn_rows,
+    tool_type_bg_sgr,
     turn_had_output,
 )
 
 logger = logging.getLogger(__name__)
+
+# 契约 R3：你正在打字时，卡片等你停手这么久再接管框，免得一个字母答错问题。
+_CARD_TYPING_IDLE_S = 1.0
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -185,11 +202,11 @@ def _format_llm_error(exc: BaseException) -> str:
     # Anthropic-style: {'type': 'error', 'error': {'message': '...'}}
     if "Service temporarily unavailable" in msg or "did not respond" in msg:
         return (
-            "模型网关暂时不可用（未返回响应）。"
-            "请稍后重试，或检查 base_url / 模型名是否可用。"
+            "The model gateway is unavailable (no response). "
+            "Retry later, or check the base_url and the model name."
         )
     if "timeout" in msg.lower() or "timed out" in msg.lower():
-        return f"请求超时：{msg}"
+        return f"Request timed out: {msg}"
     # Prefer nested message if present
     if "'message':" in msg:
         import re
@@ -217,10 +234,16 @@ class CircleSessionApp:
         self.model_override = model_override
 
         apply_auth_to_environ(settings, self.home)
-        init_palette_from_terminal()
+        init_palette_from_terminal(settings.theme)
 
         self._app = InkApp(alt_screen=True, mouse=True)
+        self._app.color_scheme_reports = normalize_theme(settings.theme) == "auto"
         self._app.style_pool.set_selection_bg([palette().sel_bg])
+        self._theme_watch = ThemeWatcher(
+            write=self._app.write_passthrough,
+            active=lambda: self._app.active,
+            on_change=self._on_terminal_theme_change,
+        )
         self._app._input_parser = _StandaloneEscapeInputParser(
             self._app._input_parser, self._handle_input)
         self._transcript = Transcript()
@@ -237,6 +260,11 @@ class CircleSessionApp:
         self._dialog = create_element(NodeType.BOX)
         self._dialog.style.height = 3
         self._dialog.style.overflow = "hidden"
+        # 页眉（常驻）：版本 · 模型 · 目录，右侧唯一一处键位提示
+        self._header = create_element(NodeType.BOX)
+        self._header.style.height = 2
+        self._header_text = create_text("")
+        self._header.append_child(self._header_text)
         self._dialog_top_text = create_text("")
         self._dialog_left_text = create_text("│")
         self._dialog_right_text = create_text("│")
@@ -244,9 +272,16 @@ class CircleSessionApp:
         dialog_top = create_element(NodeType.BOX)
         dialog_top.style.height = 1
         dialog_top.append_child(self._dialog_top_text)
+        # 卡片（审批 / 提问）的行放在上沿与输入行之间：还是同一个框，只是内容换了。
+        self._dialog_body = create_element(NodeType.BOX)
+        self._dialog_body.style.height = 0
+        self._dialog_body_text = create_text("")
+        self._dialog_body.append_child(self._dialog_body_text)
         dialog_mid = create_element(NodeType.BOX)
         dialog_mid.style.height = 1
         dialog_mid.style.flex_direction = "row"
+        self._dialog_mid = dialog_mid
+        self._prompt_shown = True
         dialog_left = create_element(NodeType.BOX)
         dialog_left.style.width = 1
         dialog_left.style.height = 1
@@ -262,6 +297,7 @@ class CircleSessionApp:
         dialog_mid.append_child(self._prompt.node)
         dialog_mid.append_child(dialog_right)
         self._dialog.append_child(dialog_top)
+        self._dialog.append_child(self._dialog_body)
         self._dialog.append_child(dialog_mid)
         self._dialog.append_child(dialog_bottom)
 
@@ -304,7 +340,6 @@ class CircleSessionApp:
         self._autoscroll_timer: threading.Timer | None = None
         self._autoscroll_delta = 0
         self._drag_point: tuple[int, int] | None = None
-        self._welcome_shown = False
         self._ticked_at = 0.0
         # write_todos 的计划面板（对话框上方）
         self._plan_panel = PlanPanel()
@@ -316,12 +351,13 @@ class CircleSessionApp:
         self._turn_elapsed = 0.0
 
         root = self._app.root
+        root.append_child(self._header)
         root.append_child(self._transcript.node)
         root.append_child(self._agent_detail_band)
         root.append_child(self._agent_detail.node)
+        root.append_child(self._composer_gap)
         root.append_child(self._plan_panel.node)
         root.append_child(self._ask_panel.node)
-        root.append_child(self._composer_gap)
         root.append_child(self._dialog)
         root.append_child(self._footer.node)
         root.append_child(self._agent_strip)
@@ -344,6 +380,8 @@ class CircleSessionApp:
         self._snap_rendered_at = 0.0
         self._call_started_at = 0.0
         self._exec_approval: ExecApprovalSession | None = None
+        self._last_key_at = 0.0
+        self._card_defer: object | None = None  # 等用户停手的那次延迟
         # A paused graph may have several interrupts, each with its own ordered
         # action_requests. Collect one reply per interrupt before resuming.
         self._interrupt_order: list[str | None] = []
@@ -359,6 +397,8 @@ class CircleSessionApp:
         # /approvals 管理页
         self._approvals_page: SessionApprovalsSession | None = None
         self._ask_saved_prompt = ""
+        self._ask_saved_pastes: dict[int, str] = {}
+        self._draft_parked = False
         self._last_ctrl_c = 0.0
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
         ensure_home(self.home)
@@ -412,7 +452,7 @@ class CircleSessionApp:
     def _rebuild_agent(self, *, model: Any | None = None) -> None:
         """Rebuild harness with current settings / plan mode."""
         if self._bridge.is_running or self._is_loading:
-            raise RuntimeError("当前回合仍在运行，不能重建 agent")
+            raise RuntimeError("A turn is still running; the agent cannot be rebuilt")
         chat = model or build_chat_model(
             self.settings, home=self.home, model_override=self.model_override
         )
@@ -481,6 +521,7 @@ class CircleSessionApp:
 
     def run(self) -> int:
         self._app.start()
+        self._theme_watch.start(self.settings.theme)
         remove_listener = add_retry_listener(self._on_model_retry)
         try:
             self._show_welcome()
@@ -495,42 +536,28 @@ class CircleSessionApp:
             except Exception:
                 logger.debug("footer shutdown failed", exc_info=True)
             remove_listener()
+            self._theme_watch.stop()
             self._bridge.cancel()
             self._app.stop()
         return 0
 
     def _on_model_retry(self, event: dict[str, Any]) -> None:
         """模型层重试与参数降级如实上屏：用户能看到在等什么、丢了什么。"""
-        kinds = {"rate_limit": "端点限流", "server": "端点出错", "network": "网络中断",
-                 "inband": "流内出错"}
-        if event.get("event") == "retry":
-            msg = (f"{kinds.get(str(event.get('kind')), '请求失败')}，{event.get('wait_s')}s 后重试"
-                   f"（{event.get('attempt')}/{event.get('max')}）")
-        elif event.get("event") == "param_dropped":
-            msg = f"端点不接受参数 {event.get('param')}，本会话起不再发送"
-        elif event.get("event") == "output_budget_exhausted":
-            msg = "模型的输出额度在给出回答前就被思考用完，本轮没有回答"
-        else:
-            return
+        kinds = {"rate_limit": "Endpoint rate-limited", "server": "Endpoint error",
+                 "network": "Network interrupted", "inband": "Stream error"}
         with self._app.lock:
-            self._toast(msg)
+            if event.get("event") == "retry":
+                self._flash(f"{kinds.get(str(event.get('kind')), 'Request failed')} · retrying in "
+                            f"{event.get('wait_s')}s · {event.get('attempt')}/{event.get('max')}", 6.0)
+            elif event.get("event") == "param_dropped":
+                self._toast(f"The endpoint rejects {event.get('param')} · not sent for the rest of this session")
+            elif event.get("event") == "output_budget_exhausted":
+                self._fail("The model spent its whole output budget thinking · no answer this turn")
 
     def _show_welcome(self) -> None:
+        """Session start. The identity (version · model · directory) lives in the header, which
+        is always there, so nothing is written into the transcript any more."""
         self._footer.update(status="ready")
-        if not self._welcome_shown:
-            # InfoTest 终版 welcome（07 §11.25(5)）：单条消息一次落，空行由消息内 \n 承载；
-            # 键位说明只在这里出现这一次（页脚不再常驻键位行）。
-            pal = palette()
-            auth = self.settings.auth
-            self._transcript.append_message(
-                f"\n {pal.em}Circle v{__version__}{pal.reset}"
-                f"\n {pal.dim}{auth.protocol} / {auth.model} · {self.workspace}{pal.reset}"
-                f"\n"
-                f"\n {pal.text}终端里的 AI coding agent，在项目目录里读改跑。{pal.reset}"
-                f"\n {pal.dim}/help 查看命令 · /init 初始化项目 · /models 切换模型 · "
-                f"ctrl+c 中断 · ctrl+d 退出 · ↑↓ 历史{pal.reset}"
-            )
-            self._welcome_shown = True
         self._app.render()
         self._extensions.emit("session_start", {"workspace": str(self.workspace)})
 
@@ -543,33 +570,108 @@ class CircleSessionApp:
             self._dialog_phase_origin = 0.0
         self._dialog_label = label
 
+    def _active_card(self):
+        """The blocking question that owns the frame right now, or None."""
+        approval, ask = self._exec_approval, self._ask_session  # one read each: other threads clear them
+        if approval is not None:
+            return approval.card_spec()
+        if ask is not None:
+            return ask.card_spec()
+        return None
+
+    def _mode_word(self) -> tuple[str, str]:
+        """The one-word mode at the frame's bottom-right. The default — approving each call
+        by hand — shows nothing. ``read-only`` (plan mode) wins over ``auto`` (yolo)."""
+        pal = palette()
+        if self._plan_mode:
+            return "read-only", pal.green
+        if self._approvals.yolo_enabled(self._thread_id):
+            return "auto", pal.yellow
+        return "", ""
+
+    def _sync_header(self, width: int) -> None:
+        """One row: ``circle <version> · <model> · <directory>`` and, when it fits, the one key
+        hint on the right. What gives way first: the hint, then the directory (cut from the left,
+        the tail is what identifies it), then the model name."""
+        pal = palette()
+        model = self.settings.auth.model
+        head = f" circle {__version__} · "
+        path = str(self.workspace)
+        home = str(Path.home())
+        if path == home or path.startswith(home + os.sep):
+            path = "~" + path[len(home):]
+        hint = "? for shortcuts"
+        room = width - 1
+        show_hint = width >= 60 and string_width(head + model) + 12 + string_width(hint) + 2 <= width
+        if show_hint:
+            room -= string_width(hint) + 2
+        left_room = room - string_width(head)
+        if left_room < 1:  # not even the identity fits: cut what there is
+            text = _cut_end(f"{head}{model}", max(1, room))
+            path = ""
+        else:
+            sep = " · "
+            model_shown = _cut_end(model, left_room)
+            path_room = left_room - string_width(model_shown) - string_width(sep)
+            if path_room >= 4:
+                path = _cut_start(path, path_room)
+                text = f"{head}{model_shown}{sep}{path}"
+            else:
+                text = f"{head}{model_shown}"
+        gap = max(1, width - string_width(text) - string_width(hint) - 1) if show_hint else 0
+        right = f"{' ' * gap}{pal.faint}{hint}{pal.reset} " if show_hint else ""
+        self._header_text.set_value(f"{pal.dim}{text}{pal.reset}{right}\n")
+
     def _sync_dialog_frame(self) -> None:
         width = self._app.width
         if width < 8:
             return
-        elapsed = None
-        if self._dialog_label:
-            elapsed = time.monotonic() - self._dialog_phase_origin
-        top, left, right, bottom = build_loop_frame(
-            width,
-            elapsed=elapsed,
-            label=self._dialog_label,
-            bottom_label=self._footer.obs_warning,
-        )
+        pal = palette()
+        self._sync_header(width)
+        card = self._active_card()
+        mode, mode_sgr = self._mode_word()
+        rows: list[str] = []
+        if card is not None:
+            # 轮到你：框停转、边框黄色静止、忙碌词撤下
+            top, left, right, bottom = build_loop_frame(
+                width, elapsed=None, label="", bottom_label=self._footer.obs_warning,
+                mode=mode, mode_sgr=mode_sgr, border=pal.yellow)
+            # 屏矮时只裁正文（写明裁了几行），标题和选项永远在：框里 overflow 会把底部选项裁掉。
+            strip_h = int(self._agent_strip.style.height or 0)
+            room = max(6, (self._app.height or 24) - 2 - 2 - 1 - 1 - strip_h - int(card.input_row) - 1)
+            rows = [f"{left}{row}{right}" for row in card_rows(card, width - 2, max_rows=room)]
+            show_prompt = bool(card.input_row)
+        else:
+            elapsed = None
+            if self._dialog_label:
+                elapsed = time.monotonic() - self._dialog_phase_origin
+            top, left, right, bottom = build_loop_frame(
+                width, elapsed=elapsed, label=self._dialog_label,
+                bottom_label=self._footer.obs_warning, mode=mode, mode_sgr=mode_sgr)
+            show_prompt = True
         self._dialog_top_text.set_value(top)
         self._dialog_left_text.set_value(left)
         self._dialog_right_text.set_value(right)
         self._dialog_bottom_text.set_value(bottom)
+        self._dialog_body_text.set_value("\n".join(rows))
+        self._dialog_body.style.height = len(rows)
+        self._set_view_visible(self._dialog_mid, show_prompt)
+        self._dialog.style.height = 2 + len(rows) + (1 if show_prompt else 0)
+        if show_prompt != self._prompt_shown:
+            self._prompt_shown = show_prompt
+            if show_prompt:
+                self._prompt._refresh()  # 光标回到输入行
+        if not show_prompt:
+            # every frame, not only on the change: clearing the parked draft re-declares the cursor
+            self._app.cursor.clear(self._prompt.node)
+        self._plan_panel.set_suppressed(card is not None)
+        self._plan_panel.tick()
         self._tick_agents()
         self._render_agent_detail()
         self._sync_agent_strip()
         self._sync_plan_panel()
         active_view = self._agent_detail if self._detail_active else self._transcript
-        self._composer_gap.style.height = int(
-            active_view.message_count() > 0
-            and not self._plan_panel.is_visible
-            and not self._ask_panel.is_visible
-        )
+        self._composer_gap.style.height = int(active_view.message_count() > 0)
 
     # ── subagents: strip, selection, detail page ───────────────────────────
 
@@ -609,7 +711,7 @@ class CircleSessionApp:
             text.set_value("")
             return
         hover = self._strip_hover if self._strip_hover in self._strip_visible_ids else None
-        lines = render_agent_strip(visible, width=max(40, self._app.width or 80),
+        lines = render_agent_strip(visible, width=max(20, self._app.width or 80),
                                    selected=selected, hover=hover, total=len(cards),
                                    hidden=len(cards) - len(visible))
         strip.style.height = len(lines)
@@ -619,7 +721,7 @@ class CircleSessionApp:
         """The card of the strip row under the mouse (rule and header come first)."""
         if not self._strip_visible_ids:
             return None
-        at = int(row) - int(getattr(self._agent_strip.rect, "y", 0)) - 2
+        at = int(row) - int(getattr(self._agent_strip.rect, "y", 0)) - 1
         return self._strip_visible_ids[at] if 0 <= at < len(self._strip_visible_ids) else None
 
     def _find_card(self, uuid_: str | None) -> Any:
@@ -702,7 +804,7 @@ class CircleSessionApp:
         if not self._detail_active:
             return
         card = self._find_card(self._detail_uuid)
-        width = max(40, self._app.width or 80)
+        width = max(20, self._app.width or 80)
         drawn = self._detail_drawn
         state = (width, self._thinking_expanded, self._detail_hover)
         if not force and drawn is not None and drawn[0] is card and drawn[1:] == state:
@@ -714,7 +816,7 @@ class CircleSessionApp:
             self._agent_detail_band_text.set_value("")
             self._detail_buttons = []
             view.clear()
-            view.append_message(" " + _faint("这个子代理的记录已不可用，按 esc 返回主视图"))
+            view.append_message(" " + _faint("This subagent's record is no longer available."))
             return
         ids = self._detail_ids
         band, self._detail_buttons = render_detail_band(
@@ -779,9 +881,15 @@ class CircleSessionApp:
     # ── input ──────────────────────────────────────────────────────────
 
     def _handle_input(self, event: InputEvent) -> None:
+        if isinstance(event, (ColorReportEvent, ColorSchemeEvent)):
+            self._theme_watch.handle(event)
+            return
         if isinstance(event, PasteEvent):
             if self._input_history.in_search_mode:
                 return
+            card = self._active_card()
+            if card is not None and not card.input_row:
+                return  # the prompt row is hidden behind the card: a paste has nowhere to go
             self._prompt.handle_paste(event.text)
             self._app.render()
             return
@@ -793,8 +901,9 @@ class CircleSessionApp:
         self._handle_key(event)
 
     def _handle_key(self, kp: KeyPress) -> None:
+        self._last_key_at = time.monotonic()
         # InfoTest ist_app._handle_key — same session-ring order.
-        if self._exec_approval is not None and self._exec_approval.handle_key(kp.key, kp.char):
+        if self._exec_approval is not None and self._handle_exec_approval_key(kp):
             return
 
         if self._ask_session is not None and self._handle_ask_key(kp):
@@ -836,7 +945,7 @@ class CircleSessionApp:
                 with self._app.lock:
                     self._bridge.cancel()
                     self._dismiss_user_panels()
-                    self._notice([" " + _faint("(cancelled)")])
+                    self._notice([_stop_line()])
                     self._leave_busy()
                     self._app.render()
                     self._drain_after_worker()
@@ -846,7 +955,7 @@ class CircleSessionApp:
                 self._app._running = False
                 return
             self._last_ctrl_c = now
-            self._notice([" " + _faint("(press ctrl+c again to exit)")])
+            self._footer.set_toast("Press ctrl+c again to exit", 1.5)
             self._app.render()
             return
 
@@ -859,7 +968,7 @@ class CircleSessionApp:
                 with self._app.lock:
                     self._bridge.cancel()
                     self._dismiss_user_panels()
-                    self._notice([" " + _faint("(cancelled)")])
+                    self._notice([_stop_line()])
                     self._leave_busy()
                     self._drain_after_worker()
             else:
@@ -918,6 +1027,11 @@ class CircleSessionApp:
             self._tab_complete()
             return
 
+        # 页眉写着「? for shortcuts」：空输入框里按 ? 就是快捷键表
+        if not self._prompt.value and (kp.char == "?" or kp.key == "?"):
+            self._dispatch_slash("hotkeys", "")
+            return
+
         # Pi-style: Alt+Enter queues a follow-up while busy (or sends now).
         if kp.key in {"alt+enter", "alt+return"} or (getattr(kp, "alt", False) and kp.key in {"enter", "return"}):
             text = self._prompt.value
@@ -947,10 +1061,7 @@ class CircleSessionApp:
         if pending:
             if not self._secret_hint_shown:
                 self._secret_hint_shown = True
-                self._footer.update(
-                    status=f"ctrl+s 补录机密（{len(pending)} 项待输入）"
-                )
-                self._app.render()
+                self._flash(f"{len(pending)} secret(s) waiting · ctrl+s to enter", 5.0)
         elif self._secret_hint_shown:
             self._secret_hint_shown = False
             self._footer.update(status="ready")
@@ -961,15 +1072,14 @@ class CircleSessionApp:
             return
         pending = secret_prompt.list_pending(self.home)
         if not pending:
-            self._footer.update(status="没有待输入的机密")
-            self._app.render()
+            self._flash("No secrets waiting")
             return
         request = pending[0]
         self._secret_entry = {"request": request, "buffer": ""}
         self._prompt.clear()
         self._secret_hint_shown = False
-        question = str(request.get("question") or "请输入机密")
-        self._footer.hold_status(f"请输入{question}（回车确认 / Esc 取消）")
+        question = str(request.get("question") or "the secret")
+        self._footer.hold_status(f"Enter {question} · enter confirms · esc cancels")
         self._app.render()
 
     def _sync_secret_display(self) -> None:
@@ -987,15 +1097,14 @@ class CircleSessionApp:
         request = entry["request"]
         if kp.key in {"enter", "return"}:
             if not entry["buffer"]:
-                self._footer.update(status="机密不能为空（Esc 取消）")
-                self._app.render()
+                self._flash("A secret can't be empty · esc cancels")
                 return
             try:
                 secret_prompt.submit_answer(self.home, request["id"], entry["buffer"])
             except secret_prompt.SecretPromptError as exc:
-                self._footer.update(status=f"提交失败：{exc}")
+                self._fail(f"Could not submit: {exc}")
             else:
-                self._footer.update(status="已收集（未显示）")
+                self._flash("Collected · not shown")
             self._secret_entry = None
             entry["buffer"] = ""
             self._prompt.clear()
@@ -1003,16 +1112,14 @@ class CircleSessionApp:
                 self._start_secret_entry()
             else:
                 self._footer.clear_hold_status()
-                self._footer.update(status="设备口令已收集")
-                self._app.render()
+                self._flash("Secrets collected")
             return
         if kp.key == "escape":
             self._secret_entry = None
             entry["buffer"] = ""
             self._prompt.clear()
             self._footer.clear_hold_status()
-            self._footer.update(status="已取消")
-            self._app.render()
+            self._flash("Cancelled")
             return
         if kp.key == "backspace":
             entry["buffer"] = entry["buffer"][:-1]
@@ -1147,7 +1254,7 @@ class CircleSessionApp:
         """The detail band's button under the mouse (buttons sit on the band's middle line)."""
         if not self._detail_active or not self._detail_buttons:
             return None
-        if int(row) != int(getattr(self._agent_detail_band.rect, "y", 0)) + 1:
+        if int(row) != int(getattr(self._agent_detail_band.rect, "y", 0)):
             return None
         return next((action for start, end, action in self._detail_buttons
                      if start <= int(col) < end), None)
@@ -1412,15 +1519,14 @@ class CircleSessionApp:
         self._show_thinking = True
         self._rerender_turns()
         self._render_agent_detail(force=True)
-        self._app.render()
+        self._flash("Thinking " + ("expanded" if self._thinking_expanded else "collapsed"), 1.2)
 
     def _toggle_tool_outputs(self) -> None:
         """InfoTest ``_toggle_expand`` / ctrl+o — tool-output verbosity."""
         self._tool_outputs_expanded = not self._tool_outputs_expanded
         self._show_details = self._tool_outputs_expanded
         self._rerender_turns()
-        state = "expanded" if self._tool_outputs_expanded else "collapsed"
-        self._toast(f"Tool output → {state} (ctrl+o)")
+        self._flash("Tool output " + ("expanded" if self._tool_outputs_expanded else "collapsed"), 1.2)
         self._footer.update(status="ready" if not self._is_loading else "running")
         self._app.render()
 
@@ -1438,7 +1544,7 @@ class CircleSessionApp:
         if self._bridge.is_running or self._is_loading or self._msg_queue:
             self._msg_queue.append((kind, text))
             label = "follow-up" if kind == "followup" else "steering"
-            self._toast(f"已排队 {label}（{len(self._msg_queue)}）")
+            self._footer.set_toast(f"Queued {label} · {len(self._msg_queue)}")
             self._drain_message_queue()
             return
         self._start_user_turn(text)
@@ -1446,7 +1552,7 @@ class CircleSessionApp:
     def _start_user_turn(self, text: str) -> None:
         if self._bridge.is_running or self._is_loading:
             self._msg_queue.append(("steering", text))
-            self._toast(f"已排队 steering（{len(self._msg_queue)}）")
+            self._footer.set_toast(f"Queued steering · {len(self._msg_queue)}")
             return
         self._push_undo_checkpoint()
         self._session_tree.add("user", text)
@@ -1454,11 +1560,9 @@ class CircleSessionApp:
         if self._session_title == "new":
             self._session_title = text.split("\n", 1)[0][:60]
 
-        if self._transcript.message_count() > 0:
-            w = max(40, self._transcript.node.rect.width or 80)
-            self._transcript.append_message(_faint('─' * w))
+        # 契约 D5：回合之间靠 1 空行分隔，不画横线。
         self._transcript.ensure_block_gap()
-        self._transcript.append_messages([f" {_faint('>')} {line}" for line in text.split("\n")])
+        self._transcript.append_messages(_user_rows(text))
         self._transcript.ensure_block_gap()
         self._open_turn_region()
         self._turn_elapsed = 0.0
@@ -1500,7 +1604,18 @@ class CircleSessionApp:
         self._transcript.append_messages(list(lines))
 
     def _toast(self, msg: str) -> None:
+        """A state change worth keeping: one faint line in the transcript (契约 R6)."""
         self._notice([f" {_faint(msg)}"])
+        self._app.render()
+
+    def _flash(self, msg: str, ttl: float = 2.0) -> None:
+        """An operation receipt: the footer's right side for a moment, never the transcript."""
+        self._footer.set_toast(msg, ttl_seconds=ttl)
+        self._app.render()
+
+    def _fail(self, msg: str) -> None:
+        """Something did not work and the user should be able to read why: a ✖ line that stays."""
+        self._notice([_error_line(msg)])
         self._app.render()
 
     def _cmd_yolo(self, args: str) -> None:
@@ -1509,8 +1624,8 @@ class CircleSessionApp:
         self._approvals.set_yolo(self._thread_id, enabled)
         self._footer.set_yolo(enabled)
         self._bridge.auto_approve = enabled
-        self._toast("yolo → 开（自动批准所有工具调用）" if enabled
-                    else "yolo → 关（恢复逐项审批）")
+        self._toast("Auto on · tool calls run without asking" if enabled
+                    else "Auto off · asking for each call again")
         self._app.render()
 
     def _dispatch_slash(self, name: str, args: str) -> None:
@@ -1549,14 +1664,14 @@ class CircleSessionApp:
             "tree",
         }
         if name not in _busy_ok and (self._bridge.is_running or self._is_loading):
-            self._toast("(busy — 等待当前回合完成)")
+            self._footer.set_toast("Busy · wait for the current turn to finish")
             return
         ext_command = self._extensions.commands().get(name)
         if ext_command is not None:
             try:
                 ext_command.handler(args, self._command_context())
             except Exception as exc:  # noqa: BLE001 — 扩展命令出错只提示，不影响会话
-                self._toast(f"/{name} 失败: {type(exc).__name__}: {exc}")
+                self._fail(f"/{name} failed: {type(exc).__name__}: {exc}")
             return
         handlers = {
             "login": self._cmd_login,
@@ -1595,7 +1710,7 @@ class CircleSessionApp:
         }
         handler = handlers.get(name)
         if handler is None:
-            self._toast(f"未知命令 /{name} — 试 /help")
+            self._flash(f"Unknown command /{name} · try /help")
             return
         handler(args)
 
@@ -1640,24 +1755,20 @@ class CircleSessionApp:
         provider = args.strip().lower()
         if not provider:
             cur = self.settings.auth.oauth_provider or self.settings.auth.mode
-            self._toast(
-                f"用法: /login anthropic|openai  ·  当前: {cur or '未登录'}"
-            )
-            self._toast("API URL+KEY 请运行 circle --init（避免密钥进 transcript）")
+            self._flash(f"Usage: /login anthropic|openai · signed in as: {cur or 'nobody'} · "
+                        "for an API URL + key run `circle --init`", 6.0)
             return
         if provider not in SUPPORTED_OAUTH_PROVIDERS:
-            self._toast(
-                f"未知提供方 {provider!r}；可选: {', '.join(SUPPORTED_OAUTH_PROVIDERS)}"
-            )
+            self._fail(f"Unknown provider {provider!r} · choose {', '.join(SUPPORTED_OAUTH_PROVIDERS)}")
             return
-        self._toast(f"正在登录 {provider}…")
+        self._flash(f"Signing in to {provider}…", 4.0)
         try:
             session = start_oauth_login(provider)
         except OAuthNotConfiguredError as exc:
-            self._toast(str(exc))
+            self._fail(str(exc))
             return
         except ValueError as exc:
-            self._toast(str(exc))
+            self._fail(str(exc))
             return
 
         models = list(session.models) or [self.settings.auth.model]
@@ -1685,17 +1796,17 @@ class CircleSessionApp:
             self._rebuild_agent(model=chat)
             self.model_override = None
         except Exception as exc:  # noqa: BLE001
-            self._toast(f"凭证已保存，但重建模型失败: {exc}")
+            self._fail(f"Credentials saved, but rebuilding the model failed: {exc}")
             return
         self._footer.update(model=self.settings.auth.model)
-        self._toast(f"已登录 {provider} · 模型 {self.settings.auth.model}")
+        self._toast(f"Signed in to {provider} · model {self.settings.auth.model}")
 
     def _cmd_logout(self, _args: str) -> None:
         clear_credentials(self.home)
         self.settings.auth = ModelAuth()
         self.settings.initialized = False
         save_settings(self.settings, self.home)
-        self._toast("已退出登录（credentials 已清空）。下次对话前请 /login 或 circle --init")
+        self._toast("Signed out · credentials cleared · /login or `circle --init` before the next turn")
 
     def _cmd_new(self, _args: str) -> None:
         self._archive_current()
@@ -1706,7 +1817,7 @@ class CircleSessionApp:
         self._session_title = "new"
         self._transcript.clear()
         self._show_welcome()
-        self._toast(f"新会话 {self._thread_id}")
+        self._toast(f"New session {self._thread_id}")
 
     def _cmd_resume(self, args: str) -> None:
         self._archive_current()
@@ -1716,17 +1827,17 @@ class CircleSessionApp:
                 and self._transcript.message_count() > 3):
             sessions.append(self._snapshot_record())
         if not sessions:
-            self._toast("没有可恢复的会话（先聊几轮或 /new 归档当前）")
+            self._flash("No session to resume · chat a while or /new to archive this one")
             return
         target = args.strip()
         if not target:
-            self._toast("会话列表：")
+            self._toast("Sessions:")
             for i, rec in enumerate(sessions, 1):
                 mark = " *" if rec.thread_id == self._thread_id else ""
                 self._transcript.append_message(
                     " " + _faint(f"{i}. {rec.thread_id}  {rec.title[:40]}{mark}")
                 )
-            self._toast("用法: /resume <n|id>")
+            self._flash("Usage: /resume <n|id>")
             return
         chosen: _SessionRecord | None = None
         if target.isdigit():
@@ -1739,13 +1850,13 @@ class CircleSessionApp:
                     chosen = rec
                     break
         if chosen is None:
-            self._toast(f"找不到会话 {target!r}")
+            self._fail(f"No session {target!r}")
             return
         if chosen.thread_id == self._thread_id:
-            self._toast("已在该会话")
+            self._flash("Already in that session")
             return
         self._switch_thread(chosen.thread_id, lines=chosen.lines, bgs=chosen.bgs)
-        self._toast(f"已恢复 {chosen.thread_id} · {chosen.title[:40]}")
+        self._toast(f"Resumed {chosen.thread_id} · {chosen.title[:40]}")
 
     def _cmd_continue(self, _args: str) -> None:
         prev = self._previous_thread_id
@@ -1756,7 +1867,7 @@ class CircleSessionApp:
                     prev = rec.thread_id
                     break
         if not prev or prev == self._thread_id:
-            self._toast("没有上一会话")
+            self._flash("No previous session")
             return
         lines = None
         bgs = None
@@ -1768,21 +1879,21 @@ class CircleSessionApp:
                 title = rec.title
                 break
         self._switch_thread(prev, lines=lines or [], bgs=bgs)
-        self._toast(f"已继续 {prev} · {title[:40]}")
+        self._toast(f"Continued {prev} · {title[:40]}")
 
     def _cmd_models(self, args: str) -> None:
         name = args.strip()
         if not name:
             models = self._list_models()
             current = self.settings.auth.model
-            self._toast(f"当前模型: {current}")
+            self._toast(f"Model: {current}")
             for m in models[:40]:
                 mark = " *" if m == current else ""
                 self._transcript.append_message(" " + _faint(f"  {m}{mark}"))
             if len(models) > 40:
-                self._toast(f"…共 {len(models)} 个，用法 /models <name>")
+                self._flash(f"… {len(models)} models in all · /models <name> switches", 5.0)
             else:
-                self._toast("用法: /models <name>")
+                self._flash("/models <name> switches", 4.0)
             self._app.render()
             return
         self._switch_model(name)
@@ -1813,11 +1924,11 @@ class CircleSessionApp:
         try:
             model = build_chat_model(self.settings, home=self.home)
         except Exception as exc:  # noqa: BLE001
-            self._toast(f"切换失败: {exc}")
+            self._fail(f"Could not switch model: {exc}")
             return
         self._rebuild_agent(model=model)
         self._footer.update(model=name)
-        self._toast(f"模型 → {name}")
+        self._toast(f"Model → {name}")
 
     def _cmd_compact(self, args: str) -> None:
         """Run deepagents ``compact_conversation`` in the current thread."""
@@ -1828,9 +1939,9 @@ class CircleSessionApp:
         except Exception:  # noqa: BLE001
             msgs = []
         if len(msgs) < 2:
-            self._toast("对话太短，无需压缩")
+            self._flash("Nothing to compact yet")
             return
-        self._toast("正在压缩上下文（deepagents compact_conversation）…")
+        self._flash("Compacting context…", 8.0)
         self._enter_busy()
         self._app.render()
 
@@ -1846,7 +1957,7 @@ class CircleSessionApp:
                     config=thread_config(self._thread_id),
                 )
                 if result.get("__interrupt__"):
-                    raise RuntimeError("遇到需要审批的工具调用；压缩已停止，请在普通对话中处理")
+                    raise RuntimeError("A tool call needs approval · compacting stopped · handle it in the normal conversation")
                 out_msgs = result.get("messages") or []
                 last = out_msgs[-1] if out_msgs else None
                 content = getattr(last, "content", "") if last is not None else ""
@@ -1867,7 +1978,7 @@ class CircleSessionApp:
                 if err is not None:
                     self._leave_busy()
                     self._transcript.append_message(
-                        _error_line(f"compact 失败: {_format_llm_error(err)}")
+                        _error_line(f"Compact failed: {_format_llm_error(err)}")
                     )
                     self._app.render()
                     return
@@ -1887,11 +1998,10 @@ class CircleSessionApp:
         elif not token:
             want = not self._plan_mode
         else:
-            self._toast("用法: /plan [on|off]")
+            self._flash("Usage: /plan [on|off]")
             return
         if want == self._plan_mode:
-            state = "开" if want else "关"
-            self._toast(f"plan mode 已是{state}")
+            self._flash(f"Read-only is already {'on' if want else 'off'}")
             return
         self._plan_mode = want
         try:
@@ -1903,12 +2013,12 @@ class CircleSessionApp:
             )
         except Exception as exc:  # noqa: BLE001
             self._plan_mode = not want
-            self._toast(f"切换 plan mode 失败: {exc}")
+            self._fail(f"Could not switch read-only: {exc}")
             return
         if want:
-            self._toast("plan mode → 开（硬拦截写改/shell；仅允许 /plan.md）")
+            self._toast("Read-only on · writes and shell are blocked, /plan.md is allowed")
         else:
-            self._toast("plan mode → 关")
+            self._toast("Read-only off")
 
     def _cmd_skill(self, args: str) -> None:
         from circle.skills import (
@@ -1929,7 +2039,7 @@ class CircleSessionApp:
         skill_args = parts[1] if len(parts) > 1 else ""
         body = load_skill_body(name, skills=skills)
         if body.startswith("Error:"):
-            self._toast(body)
+            self._fail(body)
             return
         try:
             inject_thread_message(
@@ -1938,10 +2048,10 @@ class CircleSessionApp:
                 skill_boundary_message(name=name, body=body, args=skill_args),
             )
         except Exception as exc:  # noqa: BLE001
-            self._toast(f"加载 skill 失败: {exc}")
+            self._fail(f"Could not load skill: {exc}")
             return
         suffix = f" args={skill_args!r}" if skill_args else ""
-        self._toast(f"已加载 skill `{name}`{suffix}（已写入 checkpointer 线程）")
+        self._toast(f"Loaded skill `{name}`{suffix}")
 
     def _cmd_tree(self, args: str) -> None:
         token = (args or "").strip()
@@ -1951,18 +2061,18 @@ class CircleSessionApp:
             self._app.render()
             return
         if not self._session_tree.jump(token):
-            self._toast(f"未知节点 {token}")
+            self._fail(f"No node {token}")
             return
-        self._toast(f"已跳到节点 {token}（后续对话从此分支）")
+        self._toast(f"Jumped to node {token} · the conversation branches from here")
 
     def _cmd_fork(self, args: str) -> None:
         token = (args or "").strip() or (self._session_tree.active_id or "")
         if not token:
-            self._toast("用法: /fork <id>")
+            self._flash("Usage: /fork <id>")
             return
         forked = self._session_tree.fork_from(token)
         if forked is None:
-            self._toast(f"无法 fork {token}")
+            self._fail(f"Cannot fork {token}")
             return
         self._archive_current()
         old_thread = self._thread_id
@@ -1974,9 +2084,9 @@ class CircleSessionApp:
         self._reset_turn_regions()
         self._transcript.clear()
         self._show_welcome()
-        self._toast(f"已 fork 自 {token} → {self._thread_id}")
-        self._notice([f" {_faint('>')} {node.text.splitlines()[0][:80]}"
-                      for node in self._session_tree.path_to() if node.role == "user"])
+        self._toast(f"Forked from {token} → {self._thread_id}")
+        self._notice([row for node in self._session_tree.path_to() if node.role == "user"
+                      for row in _user_rows(node.text.splitlines()[0][:80])])
         self._app.render()
 
     def _cmd_clone(self, _args: str) -> None:
@@ -1991,14 +2101,14 @@ class CircleSessionApp:
         self._reset_turn_regions()
         self._transcript.clear()
         self._show_welcome()
-        self._toast(f"已 clone 当前分支 → {self._thread_id}")
+        self._toast(f"Cloned this branch → {self._thread_id}")
         self._app.render()
 
     def _cmd_thinking(self, _args: str) -> None:
         self._show_thinking = not self._show_thinking
         self._rerender_turns()
-        state = "显示" if self._show_thinking else "隐藏"
-        self._toast(f"思考块 → {state}")
+        state = "shown" if self._show_thinking else "hidden"
+        self._flash(f"Thinking {state}", 1.2)
 
     def _cmd_details(self, _args: str) -> None:
         self._toggle_tool_outputs()
@@ -2026,21 +2136,21 @@ class CircleSessionApp:
 
     def _cmd_undo(self, _args: str) -> None:
         if not self._undo_stack:
-            self._toast("没有可撤销的回合")
+            self._flash("Nothing to undo")
             return
         self._redo_stack.append(self._snapshot_record())
         rec = self._undo_stack.pop()
         self._restore_record(rec)
-        self._toast("已撤销上一回合")
+        self._toast("Undid the last turn")
 
     def _cmd_redo(self, _args: str) -> None:
         if not self._redo_stack:
-            self._toast("没有可重做的回合")
+            self._flash("Nothing to redo")
             return
         self._undo_stack.append(self._snapshot_record())
         rec = self._redo_stack.pop()
         self._restore_record(rec)
-        self._toast("已重做")
+        self._toast("Redid the turn")
 
     def _cmd_init(self, args: str) -> None:
         """Send the initialize template to the agent to write AGENTS.md."""
@@ -2048,7 +2158,7 @@ class CircleSessionApp:
 
         tmpl = load_command_prompt("initialize")
         if not tmpl:
-            self._toast("缺少 prompts/commands/initialize.md")
+            self._fail("Missing prompts/commands/initialize.md")
             return
         focus = (args or "").strip() or "(none)"
         prompt = tmpl.replace("$ARGUMENTS", focus)
@@ -2059,10 +2169,10 @@ class CircleSessionApp:
         from circle.trust import accept_trust
 
         if is_folder_trusted(self.settings, self.workspace):
-            self._toast(f"已信任: {self.workspace}")
+            self._toast(f"Trusted {self.workspace}")
             return
         self.settings = accept_trust(self.settings, self.workspace, home=self.home)
-        self._toast(f"已信任并创建 .agent/: {self.workspace}")
+        self._toast(f"Trusted {self.workspace} · created .agent/")
 
     def _cmd_settings(self, _args: str) -> None:
         auth = self.settings.auth
@@ -2080,31 +2190,58 @@ class CircleSessionApp:
         self._app.render()
 
     def _cmd_themes(self, args: str) -> None:
-        available = ("terminal", "dark", "light")
         name = args.strip().lower()
+        if name == "terminal":  # the old name of auto
+            name = "auto"
         if not name:
-            self._toast(f"当前主题: {self.settings.theme}")
-            self._toast("可选: " + ", ".join(available))
+            self._toast(f"Theme: {self.settings.theme} · available: {', '.join(THEME_CHOICES)}")
             return
-        if name not in available:
-            self._toast(f"未知主题 {name!r}；可选: {', '.join(available)}")
+        if name not in THEME_CHOICES:
+            self._fail(f"Unknown theme {name!r} · available: {', '.join(THEME_CHOICES)}")
             return
         self.settings.theme = name
         save_settings(self.settings, self.home)
-        self._toast(f"主题 → {name}（终端色板仍以探测为准）")
+        pal = self._apply_theme()
+        shown = "dark" if pal.is_dark else "light"
+        self._toast(f"Theme → {name}" if name != "auto" else f"Theme → auto ({shown})")
+
+    def _apply_theme(self):
+        """Make the palette follow ``settings.theme``: repaint, and listen to the terminal only
+        while the theme is ``auto``."""
+        pal = self._repaint_theme()
+        auto = normalize_theme(self.settings.theme) == "auto"
+        self._theme_watch.set_mode(self.settings.theme)
+        self._app.set_color_scheme_reports(auto)
+        return pal
+
+    def _repaint_theme(self):
+        pal = apply_theme(self.settings.theme)
+        self._app.style_pool.set_selection_bg([pal.sel_bg])
+        self._footer.apply_palette()
+        self._app._force_full_render()
+        return pal
+
+    def _on_terminal_theme_change(self) -> None:
+        """The terminal switched between dark and light (or changed its colours) under us."""
+        was_dark = palette().is_dark
+        pal = self._repaint_theme()
+        logger.info("terminal colours changed: %s background %s",
+                    "dark" if pal.is_dark else "light", pal.bg_hex)
+        if pal.is_dark != was_dark:
+            self._flash(f"Theme → {'dark' if pal.is_dark else 'light'}")
 
     def _cmd_mcp(self, args: str) -> None:
         token = (args or "").strip().lower()
         if token in {"reload", "refresh", "connect"}:
             if self._bridge.is_running or self._is_loading:
-                self._toast("(busy — 等待当前回合完成后再重载 MCP)")
+                self._footer.set_toast("Busy · reload MCP after the current turn")
                 return
             try:
                 self._rebuild_agent()
             except Exception as exc:  # noqa: BLE001
-                self._toast(f"MCP reload 失败: {exc}")
+                self._fail(f"MCP reload failed: {exc}")
                 return
-            self._toast(f"MCP 已重载，工具 {len(self._mcp_tools)} 个")
+            self._toast(f"MCP reloaded · {len(self._mcp_tools)} tools")
             return
         for line in format_mcp_status(self.settings.mcp_servers, self._mcp_tools).splitlines():
             self._transcript.append_message(f" {_faint(line)}")
@@ -2119,26 +2256,27 @@ class CircleSessionApp:
             return
         if parts[:1] == ["revoke"]:
             if len(parts) != 2 or not parts[1].isdigit():
-                self._toast("用法: /approvals revoke <序号>")
+                self._flash("Usage: /approvals revoke <number>")
                 return
             rule = store.revoke(self._thread_id, int(parts[1]) - 1)
             if rule is None:
-                self._toast(f"没有第 {parts[1]} 条规则")
+                self._flash(f"No rule number {parts[1]}")
                 return
-            self._toast(f"已撤销：{rule.get('tool')} · {rule.get('label')}")
+            self._toast(f"Revoked · {rule.get('tool')} · {rule.get('label')}")
         rules = store.rules(self._thread_id)
-        lines = ["本会话的「始终允许」规则：" if rules else "本会话没有「始终允许」规则。"]
+        lines = ["Always-allow rules this session:" if rules else "No always-allow rules this session."]
         for i, rule in enumerate(rules, 1):
             lines.append(f"  {i}. {rule.get('tool')} · {rule.get('label') or rule.get('pattern')}")
         recent = store.log(self._thread_id)[-5:]
         if recent:
-            names = {"once": "允许一次", "always": "始终允许", "reject": "拒绝", "revoke": "撤销"}
-            lines.append("最近的审批：")
+            names = {"once": "allowed once", "always": "allowed for session", "reject": "rejected",
+                     "revoke": "revoked"}
+            lines.append("Recent approvals:")
             for entry in recent:
                 lines.append(f"  {names.get(str(entry.get('kind')), entry.get('kind'))} · "
                              f"{entry.get('tool')}")
         if rules:
-            lines.append("撤销：/approvals revoke <序号>")
+            lines.append("Revoke one: /approvals revoke <number>")
         for line in lines:
             self._transcript.append_message(f" {_faint(line)}")
         self._app.render()
@@ -2151,9 +2289,9 @@ class CircleSessionApp:
             try:
                 self._rebuild_agent()
             except Exception as exc:  # noqa: BLE001
-                self._toast(f"扩展重载失败: {exc}")
+                self._fail(f"Extension reload failed: {exc}")
                 return
-            self._toast(f"扩展已重载，工具 {len(self._extensions.tool_specs())} 个")
+            self._toast(f"Extensions reloaded · {len(self._extensions.tool_specs())} tools")
         for line in self._extensions.describe():
             self._transcript.append_message(f" {_faint(line)}")
         self._app.render()
@@ -2161,11 +2299,11 @@ class CircleSessionApp:
     def _cmd_name(self, args: str) -> None:
         title = args.strip()
         if not title:
-            self._toast(f"当前会话名: {self._session_title}")
-            self._toast("用法: /name <title>")
+            self._toast(f"Session name: {self._session_title}")
+            self._flash("/name <title> renames it", 4.0)
             return
         self._session_title = title[:80]
-        self._toast(f"会话名 → {self._session_title}")
+        self._toast(f"Session name → {self._session_title}")
 
     def _cmd_session(self, _args: str) -> None:
         n = self._transcript.message_count()
@@ -2205,19 +2343,19 @@ class CircleSessionApp:
             # fall back: last non-empty transcript line
             for msg in reversed(self._transcript.snapshot()):
                 plain = _strip_ansi(msg).strip()
-                if plain and not plain.startswith(">") and "Circle ·" not in plain:
+                if plain and not plain.startswith((">", "›")) and "Circle ·" not in plain:
                     text = plain
                     break
         if not text:
-            self._toast("没有可复制的助手消息")
+            self._flash("No assistant message to copy")
             return
         if self._clipboard_set(text):
-            self._toast(f"已复制 {len(text)} 字符到剪贴板")
+            self._flash(f"Copied {len(text)} chars")
         else:
             path = self.home / "exports" / "last-copy.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text + "\n", encoding="utf-8")
-            self._toast(f"无剪贴板工具，已写入 {path}")
+            self._toast(f"No clipboard tool · wrote {path}")
 
     def _write_markdown_export(self, path: Path) -> None:
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -2248,12 +2386,12 @@ class CircleSessionApp:
         else:
             path = self.home / "exports" / f"circle-{self._thread_id}-{stamp}.md"
         self._write_markdown_export(path)
-        self._toast(f"已导出 {path}")
+        self._toast(f"Exported {path}")
 
     def _cmd_import(self, args: str) -> None:
         raw = args.strip()
         if not raw:
-            self._toast("用法: /import <path.md>")
+            self._flash("Usage: /import <path.md>")
             return
         path = Path(raw).expanduser()
         if not path.is_absolute():
@@ -2262,7 +2400,7 @@ class CircleSessionApp:
             alt = self.home / "exports" / raw
             path = alt if alt.is_file() else path
         if not path.is_file():
-            self._toast(f"找不到文件 {raw}")
+            self._fail(f"No such file: {raw}")
             return
         body = path.read_text(encoding="utf-8")
         self._push_undo_checkpoint()
@@ -2285,9 +2423,9 @@ class CircleSessionApp:
                 ),
             )
         except Exception as exc:  # noqa: BLE001
-            self._toast(f"已导入 UI，但写入 checkpointer 失败: {exc}")
+            self._fail(f"Imported for display, but saving to the checkpointer failed: {exc}")
             return
-        self._toast(f"已导入 {path}（已写入 checkpointer 线程）")
+        self._toast(f"Imported {path}")
 
     def _cmd_share(self, _args: str) -> None:
         ensure_home(self.home)
@@ -2297,8 +2435,8 @@ class CircleSessionApp:
         self._write_markdown_export(path)
         self._share_path = path
         copied = self._clipboard_set(str(path))
-        extra = " · 路径已复制" if copied else ""
-        self._toast(f"本地分享副本: {path}{extra}")
+        extra = " · path copied" if copied else ""
+        self._toast(f"Local share copy: {path}{extra}")
 
     def _cmd_unshare(self, _args: str) -> None:
         path = self._share_path
@@ -2306,15 +2444,15 @@ class CircleSessionApp:
             candidate = self.home / "shares" / f"{self._thread_id}.md"
             path = candidate if candidate.is_file() else None
         if path is None or not path.is_file():
-            self._toast("没有活动的分享文件")
+            self._flash("No active share file")
             return
         try:
             path.unlink()
         except OSError as exc:
-            self._toast(f"删除失败: {exc}")
+            self._fail(f"Delete failed: {exc}")
             return
         self._share_path = None
-        self._toast(f"已取消分享 {path}")
+        self._toast(f"Unshared {path}")
 
     def _cmd_editor(self, _args: str) -> None:
         import os
@@ -2330,7 +2468,7 @@ class CircleSessionApp:
             or ("nano" if shutil.which("nano") else "")
         )
         if not editor:
-            self._toast("未设置 $VISUAL/$EDITOR，且找不到 nvim/vim/nano")
+            self._fail("No $VISUAL / $EDITOR set, and no nvim, vim or nano found")
             return
         initial = self._prompt.value
         with tempfile.NamedTemporaryFile(
@@ -2349,7 +2487,7 @@ class CircleSessionApp:
                 self._app.resume_from_external()
             text = tmp_path.read_text(encoding="utf-8")
         except OSError as exc:
-            self._toast(f"打开编辑器失败: {exc}")
+            self._fail(f"Could not open the editor: {exc}")
             return
         finally:
             try:
@@ -2357,20 +2495,21 @@ class CircleSessionApp:
             except OSError:
                 pass
         self._prompt.set_value(text.rstrip("\n"))
-        self._toast("已从编辑器载入（Enter 发送）")
+        self._flash("Loaded from the editor · enter sends")
         self._app.render()
 
     def _cmd_reload(self, _args: str) -> None:
         self.settings = load_settings(self.home)
         apply_auth_to_environ(self.settings, self.home)
+        self._apply_theme()
         self._extensions = self._load_extensions()
         try:
             self._rebuild_agent()
         except Exception as exc:  # noqa: BLE001
-            self._toast(f"reload 部分失败: {exc}")
+            self._fail(f"Reload partly failed: {exc}")
             return
         self._footer.update(model=self.settings.auth.model)
-        self._toast("已重新加载 settings / 模型")
+        self._toast("Reloaded settings and the model")
 
     # ── busy / footer ──────────────────────────────────────────────────
 
@@ -2519,7 +2658,7 @@ class CircleSessionApp:
         self._snap_sig = None
 
     def _sync_plan_panel(self, snap: MessageSnapshot | None = None) -> None:
-        width = max(40, self._app.width or 80)
+        width = max(20, self._app.width or 80)
         todos = latest_todos(snap) if snap is not None else None
         if todos is not None and todos != self._plan_panel.todos:
             self._plan_width = width
@@ -2645,21 +2784,21 @@ class CircleSessionApp:
         return elapsed, tokens_in, tokens_out
 
     def _cooked_lines(self, *, answered: bool) -> list[str]:
-        """One ``✻ Cooked`` line per user turn (not per approval pause), and a red line
-        when the model gave nothing at all."""
+        """One usage line (``12s · ↑ 1.2k · ↓ 340``) per user turn (not per approval pause),
+        and a red line when the model gave nothing at all."""
         if not self._turn_started_at and not self._turn_elapsed:
             return []
         elapsed, tokens_in, tokens_out = self._turn_totals()
         self._turn_started_at = 0.0
         self._turn_elapsed = 0.0
         pal = palette()
-        lines = [(f"  {pal.dim}✻ Cooked for {format_elapsed(elapsed)} · ↑ {format_tokens(tokens_in)}"
-                  f" · ↓ {format_tokens(tokens_out)} tokens{pal.reset}")]
+        lines = [(f"   {pal.dim}{format_elapsed(elapsed)} · ↑ {format_tokens(tokens_in)}"
+                  f" · ↓ {format_tokens(tokens_out)}{pal.reset}")]
         snap = self._last_snap
         quiet = not answered and (snap is None or not turn_had_output(snap))
         if quiet and tokens_in == 0 and tokens_out == 0:
-            lines.append(_error_line("模型没有返回任何内容（0 token），本轮未完成；"
-                                     "检查账户额度与接口状态后重试"))
+            lines.append(_error_line("The model returned nothing (0 tokens) · turn not completed. "
+                                     "Check account quota and endpoint status, then retry."))
         return lines
 
     def _on_interrupt(self, interrupts: Any) -> None:
@@ -2718,7 +2857,7 @@ class CircleSessionApp:
         # 不认识的中断形态：不能替用户作答，如实说明、停在这里
         with self._app.lock:
             self._transcript.append_message(
-                _warn_line(f"收到无法处理的中断（{kind}），本回合已暂停。"))
+                _warn_line(f"Unhandled interrupt ({kind}) · the turn is paused."))
             self._leave_busy()
             self._app.render()
 
@@ -2736,17 +2875,18 @@ class CircleSessionApp:
             return
         self._next_approval()
 
-    def _record_approval(self, key: str) -> None:
+    def _record_approval(self, key: str, message: str = "") -> None:
         iid, req = self._approval_queue.pop(0)
         name = str(req.get("name") or "tool")
         approved = self._approvals.remember(self._thread_id, name, req.get("args") or {}, key)
+        # 拒绝时用户可以说明原因：原因随拒绝一起交给模型，让它知道该怎么改
+        reason = REJECTED_BY_USER + (f" The user said: {message}" if message else "")
         self._approval_decisions[iid].append(
             {"type": "approve"} if approved
-            else {"type": "reject", "message": REJECTED_BY_USER})
+            else {"type": "reject", "message": reason})
         if not approved:
             # 被拒的调用不会执行、也就没有工具回调；补一行让它留在本回合里
-            self._bridge.announce_blocked({"name": name, "args": req.get("args") or {}},
-                                          REJECTED_BY_USER)
+            self._bridge.announce_blocked({"name": name, "args": req.get("args") or {}}, reason)
 
     def _next_approval(self) -> None:
         with self._app.lock:
@@ -2754,25 +2894,30 @@ class CircleSessionApp:
                 _iid, req = self._approval_queue[0]
                 name = str(req.get("name") or "tool")
                 args = req.get("args") or {}
+                if self._approvals.yolo_enabled(self._thread_id):
+                    # /yolo may have been turned on while this question waited (or while the card
+                    # was held back for typing): the rest of the queue is approved, not asked
+                    self._approval_decisions[self._approval_queue.pop(0)[0]].append({"type": "approve"})
+                    continue
                 if self._plan_mode and name in _PLAN_BLOCKED_TOOLS:
                     path = str(args.get("file_path") or args.get("path") or "")
                     if name != "write_file" or Path(path).name.lower() not in {"plan.md", "plan"}:
-                        self._toast(f"plan mode 自动拒绝 {name}")
+                        self._toast(f"read-only: rejected {name}")
                         self._record_approval("reject")
                         continue
+                if self._defer_card_while_typing(self._next_approval):
+                    return
                 review = self._approvals.review(name, args)
-                pending = len(self._approval_queue) - 1
-                body = _approval_body(name, args)
-                if pending:
-                    body += f"\n（之后还有 {pending} 个待审批调用）"
                 self._begin_exec_approval({
                     "tool": name,
                     "title": name,
-                    "body": body,
+                    "body": _approval_body(name, args),
                     "policy": review.reason,
                     "allow_always": review.allow_always,
                     "warn_delete": review.warn_delete,
                     "scope": review.scope,
+                    "more": len(self._approval_queue) - 1,
+                    "tint": tool_type_bg_sgr(name),
                 })
                 return
         self._complete_approvals()
@@ -2799,9 +2944,7 @@ class CircleSessionApp:
 
     def _resume_with(self, value: Any) -> None:
         with self._app.lock:
-            if self._ask_saved_prompt:
-                self._prompt.set_value(self._ask_saved_prompt)
-            self._ask_saved_prompt = ""
+            self._restore_draft()
             self._turn_started_at = time.time()
             self._enter_busy()
             self._pending_calls = []
@@ -2813,11 +2956,11 @@ class CircleSessionApp:
 
     def _begin_ask_user(self, asks: list[tuple[str | None, dict[str, Any]]]) -> None:
         with self._app.lock:
+            if self._defer_card_while_typing(lambda: self._begin_ask_user(asks)):
+                return
             self._ask_queue = list(asks)
             self._ask_replies = []
-            if not self._ask_saved_prompt:
-                self._ask_saved_prompt = self._prompt.value
-            self._prompt.clear()
+            self._park_draft()
         self._next_ask_user()
 
     def _next_ask_user(self) -> None:
@@ -2838,16 +2981,12 @@ class CircleSessionApp:
 
     def _render_ask_user(self) -> None:
         with self._app.lock:
-            if self._ask_session is None:
-                self._ask_panel.clear()
-            else:
-                self._ask_panel.update(self._ask_session.render_lines())
             self._app.render()
 
     def _finish_ask_user(self, answers: list[list[str]] | None) -> None:
         with self._app.lock:
             session, self._ask_session = self._ask_session, None
-            self._ask_panel.clear()
+            self._prompt.clear()
             if session is not None:
                 self._toast(_strip_ansi(session.result_summary()).strip())
             if self._ask_queue:
@@ -2881,6 +3020,7 @@ class CircleSessionApp:
 
     def _dismiss_user_panels(self) -> None:
         """The turn was cancelled: nothing will resume it, so no panel waits on the user."""
+        self._card_defer = None
         self._ask_session = None
         self._ask_queue = []
         self._ask_replies = []
@@ -2890,10 +3030,8 @@ class CircleSessionApp:
         self._interrupt_order = []
         self._interrupt_replies = {}
         self._pending_calls = []
-        self._ask_panel.clear()
-        if self._ask_saved_prompt:
-            self._prompt.set_value(self._ask_saved_prompt)
-            self._ask_saved_prompt = ""
+        self._close_popup()
+        self._restore_draft()
 
     # ── /approvals page ──────────────────────────────────────────────────
 
@@ -2903,18 +3041,19 @@ class CircleSessionApp:
         lines: list[str] = []
         options: list[dict[str, str]] = []
         if not rules:
-            lines.append("本会话没有「始终允许」规则。")
+            lines.append("No always-allow rules this session.")
         for i, rule in enumerate(rules):
             label = str(rule.get("label") or rule.get("pattern") or "")
             lines.append(f"[always] {rule.get('tool')} · {label}")
-            options.append({"key": f"revoke:{i}", "label": f"撤销: {label[:40]}"})
-        names = {"once": "允许一次", "always": "始终允许", "reject": "拒绝", "revoke": "撤销"}
+            options.append({"key": f"revoke:{i}", "label": f"Revoke: {label[:40]}"})
+        names = {"once": "allowed once", "always": "allowed for session", "reject": "rejected",
+                 "revoke": "revoked"}
         recent = store.log(self._thread_id)[-5:]
         if recent:
-            lines.append("最近的审批：")
+            lines.append("Recent approvals:")
             lines += [f"[{names.get(str(e.get('kind')), e.get('kind'))}] {e.get('tool')}"
                       for e in recent]
-        options.append({"key": "close", "label": "关闭"})
+        options.append({"key": "close", "label": "Close"})
         with self._app.lock:
             self._approvals_page = SessionApprovalsSession(
                 lines=lines, options=options, render=self._render_approvals_page,
@@ -2926,7 +3065,7 @@ class CircleSessionApp:
             if self._approvals_page is None:
                 self._ask_panel.clear()
             else:
-                self._ask_panel.update(self._approvals_page.render_lines())
+                self._ask_panel.update(self._approvals_page.render_lines(max(20, self._app.width or 80)))
             self._app.render()
 
     def _finish_approvals_page(self, choice: str) -> None:
@@ -2936,14 +3075,63 @@ class CircleSessionApp:
             if choice.startswith("revoke:"):
                 rule = self._approvals.store.revoke(self._thread_id, int(choice.split(":", 1)[1]))
                 if rule is not None:
-                    self._toast(f"已撤销：{rule.get('tool')} · {rule.get('label') or rule.get('pattern')}"
-                                "，下次同类调用会再问")
+                    self._toast(f"Revoked · {rule.get('tool')} · {rule.get('label') or rule.get('pattern')}"
+                                " · the next call like it will ask again")
             self._app.render()
 
-    def _begin_exec_approval(self, payload: dict) -> None:
-        if not self._ask_saved_prompt:
+    def _park_draft(self) -> None:
+        """A card takes the frame: keep what the user was typing (and the long pastes its
+        placeholders stand for), empty the composer, and close any popup that would compete
+        for the keyboard."""
+        if not self._draft_parked:
             self._ask_saved_prompt = self._prompt.value
+            self._ask_saved_pastes = self._prompt.pasted_snapshot()
+            self._draft_parked = True
         self._prompt.clear()
+        self._close_popup()
+
+    def _restore_draft(self) -> None:
+        """The card is gone: whatever was typed under it (a rejection reason) goes, and the
+        parked draft comes back whole."""
+        if not self._draft_parked:
+            return  # nothing was parked (the card never appeared): the live draft is the user's
+        self._prompt.clear()
+        if self._ask_saved_prompt:
+            self._prompt.restore_draft(self._ask_saved_prompt, self._ask_saved_pastes)
+        self._ask_saved_prompt = ""
+        self._ask_saved_pastes = {}
+        self._draft_parked = False
+
+    def _close_popup(self) -> None:
+        """``/approvals`` is a popup, not a card: it must not keep (or take) the keys while a
+        card holds the frame, nor outlive a cancelled turn."""
+        self._approvals_page = None
+        self._ask_panel.clear()
+
+    def _defer_card_while_typing(self, begin: Callable[[], None]) -> bool:
+        """Hold a card back while the user is typing a draft; ``begin`` runs once they have
+        been idle for ``_CARD_TYPING_IDLE_S``. The pending row already says *waiting for you*."""
+        idle = time.monotonic() - self._last_key_at
+        if not self._prompt.value or idle >= _CARD_TYPING_IDLE_S:
+            return False
+        token = self._card_defer = object()
+
+        def later() -> None:
+            # RLock: begin() may take it again. Holding it across begin() closes the gap in which
+            # ctrl+c could cancel the turn between the token check and the card appearing.
+            with self._app.lock:
+                if self._card_defer is not token:
+                    return  # cancelled or replaced meanwhile
+                self._card_defer = None
+                begin()  # re-checks: more typing defers again
+
+        timer = threading.Timer(_CARD_TYPING_IDLE_S - idle + 0.05, later)
+        timer.daemon = True
+        timer.start()
+        return True
+
+    def _begin_exec_approval(self, payload: dict) -> None:
+        self._park_draft()
         self._exec_approval = ExecApprovalSession(
             payload,
             render=self._render_exec_approval,
@@ -2952,19 +3140,39 @@ class CircleSessionApp:
         self._render_exec_approval()
 
     def _render_exec_approval(self) -> None:
-        if self._exec_approval is None:
-            self._ask_panel.clear()
-            self._app.render()
-            return
-        self._ask_panel.update(self._exec_approval.render_lines())
+        # 卡片由 _sync_dialog_frame 画进框里；这里只要求重绘
         self._app.render()
 
     def _finish_exec_approval(self, decision: dict) -> None:
         self._exec_approval = None
-        self._ask_panel.clear()
+        self._prompt.clear()
         if self._approval_queue:
-            self._record_approval(str(decision.get("decision") or "reject"))
+            self._record_approval(str(decision.get("decision") or "reject"),
+                                  str(decision.get("message") or ""))
         self._next_approval()
+
+    def _handle_exec_approval_key(self, kp: KeyPress) -> bool:
+        session = self._exec_approval
+        if session is None:
+            return False
+        if session.in_input:
+            # 「Reject and explain」：字符进输入行，enter 发送（空＝纯拒绝），esc 回到选项
+            if kp.key in ("enter", "return"):
+                text = self._prompt.value
+                self._prompt.clear()
+                session.submit_reason(text)
+                return True
+            if kp.key == "escape":
+                self._prompt.clear()
+                session.cancel_input()
+                return True
+            if kp.key in ("ctrl+c", "ctrl+d"):
+                return False
+            if self._prompt.handle_key(kp.key if kp.key else "char",
+                                       kp.char if len(kp.char) == 1 else ""):
+                self._app.render()
+            return True
+        return session.handle_key(kp.key, kp.char)
 
 
 def _faint(text: str) -> str:
@@ -2979,7 +3187,50 @@ def _error_line(text: str) -> str:
 
 def _warn_line(text: str) -> str:
     pal = palette()
-    return f" {pal.yellow}△{pal.reset} {text}"
+    return f" {pal.yellow}{GLYPH_ERROR}{pal.reset} {text}"
+
+
+def _user_rows(text: str) -> list[str]:
+    """Your message: the blue ``›`` on the first row (marker column 1), the words emphasised,
+    continuation rows indented to the text column."""
+    pal = palette()
+    lines = text.split("\n")
+    return [(f" {pal.blue}›{pal.reset} " if i == 0 else "   ") + f"{pal.em}{ln}{pal.reset}"
+            for i, ln in enumerate(lines)]
+
+
+def _cut_end(text: str, room: int) -> str:
+    """Keep the start of ``text`` within ``room`` columns, ``…`` where it was cut."""
+    if string_width(text) <= room:
+        return text
+    out, used = [], 0
+    for ch in text:
+        w = string_width(ch)
+        if used + w > room - 1:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out) + "…"
+
+
+def _cut_start(text: str, room: int) -> str:
+    """Keep the end of ``text`` within ``room`` columns (a path's tail identifies it)."""
+    if string_width(text) <= room:
+        return text
+    out, used = [], 0
+    for ch in reversed(text):
+        w = string_width(ch)
+        if used + w > room - 1:
+            break
+        out.append(ch)
+        used += w
+    return "…" + "".join(reversed(out))
+
+
+def _stop_line() -> str:
+    """A stopped turn: a dim ✖ (the same glyph as a failure, told apart by colour)."""
+    pal = palette()
+    return f" {pal.dim}{GLYPH_ERROR} Interrupted{pal.reset}"
 
 
 _PLAN_BLOCKED_TOOLS = frozenset({"execute", "write_file", "edit_file", "apply_patch", "delete"})
@@ -3007,7 +3258,7 @@ def run_circle_session(
 ) -> int:
     """Entry used by CLI: init/trust gates then CircleSessionApp."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print("Circle TUI 需要交互式终端。", file=sys.stderr)
+        print("Circle needs an interactive terminal.", file=sys.stderr)
         return 2
 
     home = home or circle_home()
@@ -3054,8 +3305,8 @@ def _run_gates_then_session(
 
     class _GateThenSession(CircleApp):
         def run(self) -> int:  # type: ignore[override]
-            init_palette_from_terminal()
             settings = load_settings(self.home)
+            init_palette_from_terminal(settings.theme)
             if self.force_init or not settings.is_ready():
                 self.init = InitController(home=self.home)
                 self._stage = "init"

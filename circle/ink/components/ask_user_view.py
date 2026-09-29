@@ -14,8 +14,10 @@ from __future__ import annotations
 from typing import Callable
 
 from ..theme import palette
+from .dialog_card import CardLine, CardOption, CardSpec, card_rows
 
 _OTHER_VALUE = "__other__"
+_DIGITS = frozenset("123456789")  # not str.isdigit(): ² and ① are digits to it and int() rejects them
 
 
 def indent_continuations(text: str, prefix: str = "   ") -> str:
@@ -64,67 +66,48 @@ class AskUserSession:
     def _rows_count(self) -> int:
         return len(self._options()) + (1 if self._allow_other() else 0)
 
-    def render_lines(self) -> list[str]:
+    def card_spec(self) -> CardSpec:
+        """The question as a card (contract R3). Options are one numbered menu; a typed answer
+        is the last row (``Type your own``, key ``o``); nothing here teaches keys."""
         q = self._cur_question()
-        opts = self._options()
         multi = bool(q.get("multiSelect"))
         sel = self._selected[self._q_idx]
-        pal = palette()
-        B, D, C, G, Y, X = pal.em, pal.dim, pal.blue, pal.green, pal.yellow, pal.reset
-        lines: list[str] = []
-        if self._other_input:
-            lines.append(f" {C}✎{X} {B}正在输入自己的回答{X}{D}——在下方输入框打字，"
-                         f"enter 提交 · esc 取消{X}")
-        header = q.get("header", "")
         total = len(self._questions)
-        nav = f" ({self._q_idx + 1}/{total})" if total > 1 else ""
-        q_text = indent_continuations(str(q.get("question", "")))
-        q_lines = q_text.split("\n")
+        title = "The model has a question" + (f" · {self._q_idx + 1}/{total}" if total > 1 else "")
+        header = str(q.get("header", "") or "")
+        q_lines = str(q.get("question", "")).split("\n")
+        body: list[CardLine] = []
         if len(q_lines) > 6 and not self._expanded:
-            folded = "\n".join(q_lines[:4])
-            hint = f"   {D}… +{len(q_lines) - 5} 行（ctrl+o 展开）{X}"
-            lines.append(f" {C}?{X} {B}{folded}\n{hint}\n{q_lines[-1]}{X}{D}{nav}{X}")
+            body += [CardLine(ln, "em") for ln in q_lines[:4]]
+            body.append(CardLine(f"… +{len(q_lines) - 5} lines · ctrl+o", "dim"))
+            body.append(CardLine(q_lines[-1], "em"))
         else:
-            lines.append(f" {C}?{X} {B}{q_text}{X}{D}{nav}{X}")
+            body += [CardLine(ln, "em") for ln in q_lines]
         if header:
-            lines.append(f"   {D}[{header}]{X}")
-
-        rows = list(opts)
+            body.append(CardLine(header, "dim"))
+        options: list[CardOption] = []
+        for opt in self._options():
+            label = str(opt.get("label", ""))
+            options.append(CardOption(label, note=str(opt.get("description", "") or ""),
+                                      selected=(label in sel) if multi else None))
+        notes: list[CardLine] = []
         if self._allow_other():
-            rows.append({"label": "Other", "description": "自己输入回答", "_other": True})
-        for i, opt in enumerate(rows):
-            label = opt.get("label", "")
-            desc = opt.get("description", "")
-            is_other = opt.get("_other")
-            focused = i == self._highlight
-            selected = (_OTHER_VALUE if is_other else label) in sel
-            marker = (f"{G}[x]{X} " if selected else "[ ] ") if multi else ""
-            cursor = f"{C}❯{X}" if focused else " "
-            styled = f"{G}{label}{X}" if selected else (f"{B}{label}{X}" if focused else label)
-            line = f" {cursor} {D}{i + 1}.{X} {marker}{styled}"
-            if desc:
-                line += f"  {G if selected else D}— {desc}{X}"
-            lines.append(line)
-            if is_other and self._other_text.get(self._q_idx):
-                lines.append(f"       {G}→ {self._other_text[self._q_idx]}{X}")
-            if is_other and self._other_empty_hint:
-                lines.append(f"       {Y}回答不能为空，请输入内容或按 esc 取消{X}")
-
-        last_q = self._q_idx == total - 1
-        hint = "↑↓ 移动 · "
-        if multi:
-            hint += "数字/space 勾选 · " + ("enter 提交 · " if last_q else "enter 下一题 · ")
-        else:
-            hint += "数字/enter 选定并提交 · " if last_q else "数字/enter 选定并进下题 · "
-        if total > 1:
-            hint += "←→/Tab 切题 · "
-        if self._allow_other():
-            hint += "o 自己输入 · "
-        hint += "esc 取消"
-        lines.append(f"   {D}{hint}{X}")
+            typed = self._other_text.get(self._q_idx)
+            options.append(CardOption("Type your own", key="o",
+                                      selected=(_OTHER_VALUE in sel) if multi else None))
+            if typed:
+                notes.append(CardLine(f"→ {typed}", "text"))
+            if self._other_empty_hint:
+                notes.append(CardLine("An answer can't be empty. Type something or press esc.", "warn"))
         if self._leave_warn:
-            lines.append(f"   {Y}{self._leave_warn}{X}")
-        return lines
+            notes.append(CardLine(self._leave_warn, "warn"))
+        return CardSpec(title=title, body=body, options=options,
+                        focus=min(self._highlight, max(0, len(options) - 1)),
+                        notes=notes, tint=palette().think_bg, input_row=self._other_input)
+
+    def render_lines(self, width: int = 100) -> list[str]:
+        """The card as plain rows (tests and the legacy line-oriented controller read this)."""
+        return card_rows(self.card_spec(), width)
 
     def handle_key(self, key: str, char: str) -> bool:
         if self._other_input:
@@ -142,7 +125,7 @@ class AskUserSession:
             self._highlight = (self._highlight + 1) % rows_count
             self._render()
             return True
-        if key and key.isdigit():
+        if key and key in _DIGITS:
             n = int(key)
             if 1 <= n <= rows_count:
                 if self._warned_op == "submit":
@@ -228,17 +211,14 @@ class AskUserSession:
     def _guard_switch(self, target_idx: int) -> bool:
         if not (0 <= target_idx < len(self._questions)) or not self._has_uncommitted_selection():
             return True
-        return self._warn_once("switch", "这一题移动过光标但还没选定——数字/enter 选定后再切"
-                                         "（再切一次就不选、直接切走）")
+        return self._warn_once("switch", "Not chosen yet. Press enter to choose, or switch again to skip it.")
 
     def _guard_cancel(self) -> bool:
         if self._has_uncommitted_selection():
-            return self._warn_once("cancel", "这一题移动过光标但还没选定——数字/enter 选定；"
-                                             "再按一次 esc 放弃整个问答")
+            return self._warn_once("cancel", "Not chosen yet. Press enter to choose, or esc again to drop the question.")
         answered = sum(1 for sel in self._selected if sel)
         if answered:
-            return self._warn_once("cancel", f"已答 {answered} 题，确定全部放弃？"
-                                             "（再按 esc 确认 / 其他键返回）")
+            return self._warn_once("cancel", f"{answered} answered. Press esc again to drop them all.")
         return True
 
     def _toggle_current(self) -> None:
@@ -263,8 +243,7 @@ class AskUserSession:
         if not q.get("multiSelect"):
             self._selected[self._q_idx] = {self._options()[self._highlight].get("label", "")}
         elif self._has_uncommitted_selection() and not self._warn_once(
-                "advance", "这一题移动过光标但没有勾选——space/数字 勾选后 enter；"
-                           "再按一次 enter 就按没选继续"):
+                "advance", "Nothing ticked yet. Tick with space, or press enter again to go on without."):
             return
         self._advance_or_submit()
 
@@ -302,9 +281,9 @@ class AskUserSession:
         missing = self._unanswered_count()
         if missing and not self._warn_once(
                 "submit",
-                f"还有 {missing} 题没答，没答的会作为空答案交给模型——再按 enter 确认提交"
+                f"{missing} unanswered. Press enter again to send them as empty."
                 if len(self._questions) > 1 else
-                "这一题没选任何项，会作为空答案交给模型——再按 enter 确认"):
+                "Nothing chosen. Press enter again to send an empty answer."):
             return
         self._submit()
 
@@ -335,14 +314,14 @@ class AskUserSession:
         return out
 
     def result_summary(self) -> str:
-        pal = palette()
+        """One faint line for the transcript once the question is settled."""
         if self._answers is None:
-            return f" {pal.dim}● 已取消{pal.reset}"
+            return "Question cancelled"
         parts = [f"{q.get('question', '')} → {', '.join(a)}"
                  for q, a in zip(self._questions, self._answers) if a]
         if not parts:
-            return f" {pal.dim}● 已提交空答案{pal.reset}"
-        return f" {pal.green}●{pal.reset} {pal.dim}已回答 · {indent_continuations(' · '.join(parts))}{pal.reset}"
+            return "Question answered with nothing"
+        return f"Answered · {indent_continuations(' · '.join(parts))}"
 
     def _submit(self) -> None:
         self._answers = [self.answer_for(i) for i in range(len(self._questions))]

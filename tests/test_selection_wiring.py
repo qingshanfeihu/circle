@@ -261,7 +261,7 @@ def test_ctrl_c_without_selection_falls_through_to_abort_branch():
     app._transcript = Transcript()
     app._handle_key(KeyPress(key="ctrl+c"))
     assert not app._app.terminal_writes
-    assert any("ctrl+c again" in m for m in app._transcript.snapshot())
+    assert any("ctrl+c again" in m for m in app._footer.toasts), "a flash in the footer, not a transcript line"
 
 
 class _FakeRect:
