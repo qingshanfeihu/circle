@@ -402,17 +402,13 @@ class ApprovalPolicy:
         self._inside: Callable[[str], bool] = lambda _path: False
         self._yolo_threads: set[str] = set()
         self._yolo_lock = threading.RLock()
-        # A paused HITL node is re-entered on resume. Its `when` predicates
-        # must see the same rules and yolo setting as before the interrupt.
-        self._visible_turns: dict[str, tuple[bool, set[tuple[str, str]]]] = {}
+        # HITL re-enters the same tool call on resume. Remember that call's
+        # first predicate result while letting later calls see live policy.
+        self._visible_turns: dict[str, dict[tuple[str, str, str], bool]] = {}
 
     def begin_visible_turn(self, thread_id: str) -> None:
         with self._yolo_lock:
-            self._visible_turns[thread_id] = (
-                thread_id in self._yolo_threads,
-                {(str(rule.get("tool") or ""), str(rule.get("pattern") or ""))
-                 for rule in self.store.rules(thread_id)},
-            )
+            self._visible_turns[thread_id] = {}
 
     def end_visible_turn(self, thread_id: str) -> None:
         with self._yolo_lock:
@@ -431,11 +427,6 @@ class ApprovalPolicy:
     def yolo_enabled(self, thread_id: str) -> bool:
         with self._yolo_lock:
             return bool(thread_id and thread_id in self._yolo_threads)
-
-    def visible_turn_yolo(self, thread_id: str) -> bool:
-        with self._yolo_lock:
-            frozen = self._visible_turns.get(thread_id)
-            return frozen[0] if frozen is not None else thread_id in self._yolo_threads
 
     def bind_workspace(self, resolve: Callable[[str], Path], root: Path) -> None:
         """How the backend maps a tool path to disk, so rules can stay inside ``root``."""
@@ -493,27 +484,35 @@ class ApprovalPolicy:
         review = self.review(tool, args)
         if review.verdict == "DENY":
             return False  # the backend refuses to run it; asking first would be pointless
-        with self._yolo_lock:
-            frozen = self._visible_turns.get(thread_id) if allow_yolo else None
-            yolo = frozen[0] if frozen is not None else thread_id in self._yolo_threads
-        if allow_yolo and yolo:
+        if allow_yolo and self.yolo_enabled(thread_id):
             return False  # policy skips the interrupt; command_guard still enforces DENY
         if review.verdict == "ASK_FORCED":
             return True
-        if frozen is not None:
-            return (tool, review.pattern) not in frozen[1]
         return not self.store.matches(thread_id, tool, review.pattern)
 
     def interrupt_on(self, gated: Iterable[str]) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
         for tool in gated:
             def when(request: Any, _tool: str = tool) -> bool:
-                args = (getattr(request, "tool_call", None) or {}).get("args")
+                call = getattr(request, "tool_call", None) or {}
+                args = call.get("args")
                 runtime = getattr(request, "runtime", None)
                 config = getattr(runtime, "config", None) or {}
                 visible = (config.get("configurable") or {}).get("circle_visible_turn") is True
-                return self.needs_approval(_tool, args, _thread_of(request),
-                                           allow_yolo=visible)
+                thread_id = _thread_of(request)
+                if not visible:
+                    return self.needs_approval(_tool, args, thread_id, allow_yolo=False)
+                call_id = str(call.get("id") or "")
+                args_key = json.dumps(args, sort_keys=True, ensure_ascii=False,
+                                      separators=(",", ":"), default=str)
+                key = (call_id, _tool, args_key)
+                with self._yolo_lock:
+                    decisions = self._visible_turns.get(thread_id)
+                    if decisions is None:
+                        return self.needs_approval(_tool, args, thread_id)
+                    if key not in decisions:
+                        decisions[key] = self.needs_approval(_tool, args, thread_id)
+                    return decisions[key]
 
             out[tool] = {"allowed_decisions": ["approve", "reject"], "when": when}
         return out
