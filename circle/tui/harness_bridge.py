@@ -500,52 +500,34 @@ class HarnessBridge:
                 self._on_status("cancelled")
                 return
 
-            if used_stream:
-                state = self._agent.get_state(self._config)
-                interrupts = getattr(state, "interrupts", None) or ()
-                if interrupts:
-                    self._remember_interrupts(interrupts)
-                    bus.emit("run_end", payload={"awaiting_user": True})
-                    self._on_interrupt(interrupts)
-                    self._on_status("approval")
-                    return
-                bus.emit("run_end")
-                values = getattr(state, "values", None) or {}
-                messages = values.get("messages") if isinstance(values, dict) else None
-                if messages:
-                    final_text = (
-                        message_text(getattr(messages[-1], "content", None))
-                        or final_text
-                    )
-                self._on_done(final_text or NO_OUTPUT)
-                self._on_status("ready")
-                return
-
-            if stream_exc is not None:
+            if stream_exc is not None and not used_stream:
                 self._sink.flush()
                 self._on_error(stream_exc)
                 self._on_status("ready")
                 return
-
-            result = self._agent.invoke(payload, config=config)
+            # A resumed subgraph can finish without yielding any messages in
+            # messages mode. The stream still ran and consumed Command(resume).
+            # Invoking that same payload again would apply the decision to the
+            # next pending interrupt.
+            state = self._agent.get_state(self._config)
             if self._cancelled:
                 self._on_status("cancelled")
                 return
-            if isinstance(result, dict):
-                interrupts = result.get("__interrupt__")
-                if interrupts:
-                    self._remember_interrupts(interrupts)
-                    bus.emit("run_end", payload={"awaiting_user": True})
-                    self._on_interrupt(interrupts)
-                    self._on_status("approval")
-                    return
-                messages = result.get("messages") or []
-                if messages:
-                    final_text = (
-                        message_text(getattr(messages[-1], "content", None))
-                        or final_text
-                    )
+            interrupts = getattr(state, "interrupts", None) or ()
+            if interrupts:
+                self._remember_interrupts(interrupts)
+                bus.emit("run_end", payload={"awaiting_user": True})
+                self._on_interrupt(interrupts)
+                self._on_status("approval")
+                return
             bus.emit("run_end")
+            values = getattr(state, "values", None) or {}
+            messages = values.get("messages") if isinstance(values, dict) else None
+            if messages:
+                final_text = (
+                    message_text(getattr(messages[-1], "content", None))
+                    or final_text
+                )
             self._on_done(final_text or NO_OUTPUT)
             self._on_status("ready")
         except Exception as exc:  # noqa: BLE001
