@@ -69,3 +69,5 @@ Any file whose name is `plan.md` or `plan` can be written in any folder. `edit_f
 ## Slow failures
 
 If your endpoint is unreachable, a turn can take minutes to give up. Circle retries up to six times within about five minutes, and each try waits up to 45 seconds.
+
+- Checkpoint writes complete synchronously between agent steps to avoid stalled multi-step turns. Slow storage can increase latency between steps.

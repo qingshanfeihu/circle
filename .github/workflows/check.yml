@@ -5,7 +5,7 @@ name: check
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
 
 permissions:
@@ -19,10 +19,27 @@ jobs:
         runner: [ubuntu-22.04, macos-15, windows-2025]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Isolate dependencies and test data
+        run: |
+          python - <<'PYTHON'
+          import os, venv
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'circle-test'
+          venv.create(root, with_pip=True)
+          with open(os.environ['GITHUB_PATH'], 'a') as path:
+              path.write(str(root / ('Scripts' if os.name == 'nt' else 'bin')) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('CIRCLE_HOME=' + str(Path(os.environ['RUNNER_TEMP']) / 'circle-home') + '\n')
+              env.write('PYTHONUTF8=1\n')
+          PYTHON
+      - run: python -m pip install -U pip setuptools==79.0.1 wheel
       - run: python -m pip install -e '.[dev]'
       - run: python -m pytest -q

@@ -9,13 +9,16 @@ Asset name convention (install.sh, install.ps1, ``circle update``):
   with the program ``circle`` (``circle.exe`` on Windows).
 """
 
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
+
+root = Path(SPECPATH).parent
 
 datas = []
 binaries = []
 hiddenimports = []
 
-for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith"):
+for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith", "langchain_openai", "langchain_anthropic", "sqlite_vec"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -29,9 +32,11 @@ for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith
 hiddenimports += collect_submodules("circle")
 datas += collect_data_files("circle", includes=["prompts/**/*.md"])
 
+datas += copy_metadata("circle")
+
 a = Analysis(
-    ["../circle/__main__.py"],
-    pathex=[".."],
+    [str(root / "circle" / "__main__.py")],
+    pathex=[str(root)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

@@ -14,7 +14,7 @@ Until a release exists, none of that reaches anyone. Cut one whenever `## Unrele
 
 The first time, and after any change to `.github/workflows/release.yml`, `packaging/circle.spec` or `install.*`:
 
-1. Open **Actions → release → Run workflow** on the branch.
+1. Push a `release/**` candidate branch, or open **Actions → release → Run workflow** on the branch. Branch builds never publish.
 2. Wait for the five build jobs. Windows may fail on the first runs; read its log and fix what it shows. Each runs the tests, freezes the program, runs `scripts/smoke_frozen.py` on it, and packs the asset. Nothing is published on a manual run.
 3. Download an artifact and try it if a platform is new.
 
@@ -37,9 +37,10 @@ The workflow then:
 1. checks that the tag, both version files and the changelog agree (`scripts/release.py --check`);
 2. runs the test suite on every platform;
 3. freezes the program with `packaging/circle.spec`;
-4. starts it and opens a session (`scripts/smoke_frozen.py`): the version matches, the prompt files are inside, `/help` and `/exit` work;
+4. starts it and opens offline OpenAI and Anthropic sessions (`scripts/smoke_frozen.py`): the version matches, the prompt files are inside, `/help` and `/exit` work;
 5. packs `circle-<os>-<arch>.tar.gz` (`.zip` on Windows) and its `.sha256` (`scripts/pack_release.py`);
-6. once all five pass, publishes the release with the assets, `install.sh`, `install.ps1`, `SHA256SUMS`, and the changelog section as the notes.
+6. installs each actual archive twice in a scratch prefix, verifies its checksum and starts the installed program (`scripts/smoke_install.py`);
+7. checks all five embedded build identities against the tag commit (`scripts/verify_release.py`), uploads assets to a draft and verifies the complete asset names and sizes before publishing the release with the assets, `install.sh`, `install.ps1`, `SHA256SUMS`, and the changelog section as the notes.
 
 | Runner | Asset |
 |---|---|
@@ -60,6 +61,8 @@ A platform that fails blocks the release. Every archive and its checksum must be
 ## A bad release
 
 Do not reuse a version number. People who installed it are "up to date" and will not receive a fix under the same number. Publish `X.Y.(Z+1)` with the fix. To pull the bad one, `gh release delete vX.Y.Z --cleanup-tag`; anyone who already has it can go back with `circle update --version <good>`.
+
+Builds use isolated virtual environments and setuptools 79.0.1: newer setuptools removes interfaces needed by the frozen dependency runtime. Each archive embeds `BUILD_INFO.json` with its version, commit and native target.
 
 ## How the pieces fit
 

@@ -52,18 +52,27 @@ def main(argv: list[str]) -> int:
                   file=sys.stderr)
             return 1
 
+        printed_home = run(exe, ["--print-home"], env)
+        if printed_home.returncode or Path(printed_home.stdout.strip()).resolve() != home.resolve():
+            raise RuntimeError(f"smoke: unexpected data home: {printed_home.stdout!r}")
+
         prompts = sorted((folder / "_internal" / "circle" / "prompts").rglob("*.md"))
         if not prompts:
             print("smoke: no prompt files inside the bundle", file=sys.stderr)
             return 1
 
-        session = run(exe, ["--line", str(workspace)], env, stdin="/help\n/exit\n")
-        if session.returncode != 0 or "Available commands" not in session.stdout:
-            print(f"smoke: the session did not start (exit {session.returncode})\n"
-                  f"{session.stdout[-1500:]}\n{session.stderr[-1500:]}", file=sys.stderr)
-            return 1
+        for protocol in ('openai', 'anthropic'):
+            settings = complete_api_key_init(
+                base_url="http://127.0.0.1:9", api_key="sk-smoke", model="smoke-model", home=home,
+                probe=lambda *_a, **_k: ProbeResult(protocol=protocol, models=["smoke-model"]))
+            accept_trust(settings, workspace, home=home)
+            session = run(exe, ["--line", str(workspace)], env, stdin="/help\n/exit\n")
+            if session.returncode != 0 or "Available commands" not in session.stdout:
+                print(f"smoke: the session did not start (exit {session.returncode})\n"
+                      f"{session.stdout[-1500:]}\n{session.stderr[-1500:]}", file=sys.stderr)
+                return 1
 
-    print(f"smoke ok: circle {__version__}, {len(prompts)} prompt files, session starts")
+    print(f"smoke ok: circle {__version__}, {len(prompts)} prompt files, both provider sessions start")
     return 0
 
 

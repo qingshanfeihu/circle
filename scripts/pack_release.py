@@ -11,6 +11,9 @@ and the same name plus .sha256, in the current folder. The archive holds one top
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -21,6 +24,13 @@ def pack(os_tag: str, arch: str, dist: Path = Path("dist"), out: Path = Path("."
     tree = dist / "circle"
     if not tree.is_dir():
         raise SystemExit(f"pack_release: {tree} does not exist; run pyinstaller first")
+    from circle import __version__
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if os.environ.get("GITHUB_SHA") and os.environ["GITHUB_SHA"] != commit:
+        raise SystemExit("pack_release: checkout differs from GITHUB_SHA")
+    (tree / "BUILD_INFO.json").write_text(json.dumps({
+        "commit": commit, "version": __version__, "os": os_tag, "arch": arch,
+    }, indent=2) + "\n", encoding="utf-8")
     if os_tag == "windows":
         asset = out / f"circle-{os_tag}-{arch}.zip"
         with zipfile.ZipFile(asset, "w", zipfile.ZIP_DEFLATED) as zf:
