@@ -55,6 +55,7 @@ New here? Start with the [Quickstart](quickstart.md).
 
 - [Contributing](../CONTRIBUTING.md)
 - [Architecture](development/architecture.md)
+- [Releasing](development/releasing.md)
 - [The TUI contract](development/tui-contract.md)
 - [Registering Circle in skills.sh](development/skills-registry.md)
 - [Security policy](../SECURITY.md)

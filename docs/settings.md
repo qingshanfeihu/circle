@@ -20,7 +20,8 @@ Read [Before you edit by hand](#before-you-edit-by-hand) first.
   "theme": "terminal",
   "mcp_servers": [],
   "extensions": {},
-  "credential_files": []
+  "credential_files": [],
+  "update_check": true
 }
 ```
 
@@ -41,6 +42,7 @@ Read [Before you edit by hand](#before-you-edit-by-hand) first.
 | `mcp_servers` | list of objects | `[]` | MCP servers to connect. See [MCP](mcp.md). |
 | `extensions` | object | `{}` | `{"name": {"enabled": false}}` turns an extension off. See [Extensions](extensions.md). |
 | `credential_files` | list of strings | `[]` | File name patterns the model may not touch from the shell. See [Security](security.md#credential-files). |
+| `update_check` | boolean | `true` | Once a day, when the full-screen interface starts, ask GitHub whether a newer release exists and say so in one line. `false` turns it off. See [Updating](cli.md#updating). |
 
 ## credentials.json
 

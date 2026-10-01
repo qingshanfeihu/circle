@@ -52,6 +52,10 @@ Read [The TUI contract](docs/development/tui-contract.md) first. In short:
 - Key hints appear only where something is folded. Do not add hints for obvious keys.
 - Check your change on a dark and a light background.
 
+## Releases
+
+Add a line under `## Unreleased` in `CHANGELOG.md` with every change a user would notice; an empty section cannot be released. Maintainers cut a release with `python scripts/release.py X.Y.Z` and a tag. See [Releasing](docs/development/releasing.md).
+
 ## Change the docs
 
 Files in `docs/` describe what the code does today. If you change behaviour, change the page that mentions it in the same pull request. State limits plainly. Do not document what does not work as if it did; put it in [Known issues](docs/known-issues.md).

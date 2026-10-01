@@ -177,7 +177,12 @@ class InkApp:
         self._terminal.write(init_seq)
 
         
-        signal.signal(signal.SIGWINCH, self._on_resize)
+        if hasattr(signal, "SIGWINCH"):
+            signal.signal(signal.SIGWINCH, self._on_resize)
+        else:  # Windows has no such signal: look at the window size a few times a second
+            threading.Thread(
+                target=self._watch_size, daemon=True, name="ink-resize",
+            ).start()
 
         
         self._input_thread = threading.Thread(
@@ -343,17 +348,24 @@ class InkApp:
         if self._running:
             self.render()
 
+    def _watch_size(self) -> None:
+        size = (self._terminal.columns, self._terminal.rows)
+        while self._running:
+            time.sleep(0.1)
+            now = (self._terminal.columns, self._terminal.rows)
+            if now != size and not self._suspended:
+                size = now
+                self._on_resize(0, None)
+
     def _read_input(self) -> None:
-        fd = self._terminal.input_fd
         while self._running:
             if self._suspended:
                 time.sleep(0.05)
                 continue
             try:
-                data = os.read(fd, 4096)
-                if not data:
+                text = self._terminal.read_input()
+                if not text:
                     break
-                text = data.decode("utf-8", errors="replace")
                 events = self._input_parser.feed(text)
                 input_handler = self._on_input
                 mouse_handler = self._on_mouse

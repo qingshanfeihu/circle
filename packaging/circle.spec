@@ -4,11 +4,12 @@
 Build (CI):
   pyinstaller packaging/circle.spec --noconfirm --clean
 
-Asset name convention (install.sh):
-  circle-<os>-<arch>.tar.gz  containing onedir folder ``circle/`` with binary ``circle``.
+Asset name convention (install.sh, install.ps1, ``circle update``):
+  circle-<os>-<arch>.tar.gz  (zip on Windows) holding the onedir folder ``circle/``
+  with the program ``circle`` (``circle.exe`` on Windows).
 """
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 datas = []
 binaries = []
@@ -23,30 +24,10 @@ for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith
     except Exception:  # noqa: BLE001 — optional collect; build still proceeds
         hiddenimports += collect_submodules(pkg)
 
-hiddenimports += [
-    "circle",
-    "circle.cli",
-    "circle.harness",
-    "circle.init_flow",
-    "circle.main_session",
-    "circle.model",
-    "circle.oauth",
-    "circle.paths",
-    "circle.probe",
-    "circle.settings",
-    "circle.trust",
-    "circle.trust_flow",
-    "circle.tui",
-    "circle.tui.app",
-    "circle.tui.controllers",
-    "circle.tui.session",
-    "circle.tui.session_app",
-    "circle.tui.slash_commands",
-    "circle.tui.harness_bridge",
-    "circle.tui.content_blocks",
-    "circle.ink",
-    "circle.ink.app",
-]
+# Everything under circle/ (modules that are only imported by name, extensions, the TUI), and the
+# prompt files the agent reads at start: they are data, not imports, so nothing else finds them.
+hiddenimports += collect_submodules("circle")
+datas += collect_data_files("circle", includes=["prompts/**/*.md"])
 
 a = Analysis(
     ["../circle/__main__.py"],

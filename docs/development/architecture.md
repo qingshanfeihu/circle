@@ -9,6 +9,7 @@ Circle is a Python package, `circle/`. It assembles an agent from [deepagents](h
 | Layer | Where | Job |
 |---|---|---|
 | Entry | `cli.py`, `__main__.py`, `main_session.py` | Parse arguments, choose full-screen or line mode. |
+| Updates | `update.py` | The daily release check and `circle update`. Shares its install layout with `install.sh` and `install.ps1`. |
 | Setup | `init_flow.py`, `probe.py`, `oauth.py`, `trust.py`, `trust_flow.py`, `settings.py`, `paths.py` | First run, endpoint probe, settings and credentials, workspace trust. |
 | Agent assembly | `harness.py`, `model.py`, `system_prompt.py`, `prompt_features.py`, `prompts/` | Build the model, the system prompt and the deepagents graph. |
 | Tools | `sandbox.py`, `apply_patch.py`, `lsp_tool.py`, `websearch.py`, `secret_prompt.py`, `mcp_loader.py`, `skills.py`, `commands.py` | What the model can call, and what else Circle loads. |
@@ -27,6 +28,7 @@ Circle is a Python package, `circle/`. It assembles an agent from [deepagents](h
 | Module | Job |
 |---|---|
 | `session_app.py` | The session screen: input, keys, commands, cards, mouse. The largest file. |
+| `ink/termio/terminal.py`, `ink/termio/winconsole.py` | Raw input, output and window size. POSIX uses `termios`; Windows switches the console to escape-sequence input and output and reads and writes UTF-16. |
 | `ink/theme.py`, `ink/theme_watch.py` | The palette, and the watcher that keeps it in step with the terminal's colours while the theme is `auto`. |
 | `app.py`, `controllers.py` | The setup and trust screens shown before a session. |
 | `harness_bridge.py` | Runs the agent graph on a worker thread and turns its stream into events. |
@@ -50,7 +52,8 @@ The rules for what is shown where are in [The TUI contract](tui-contract.md). Re
 | Path | What |
 |---|---|
 | `tests/` | The test suite. See [Contributing](../../CONTRIBUTING.md). |
-| `scripts/` | Manual and live drivers. Not run in CI. |
+| `scripts/` | `release.py`, `pack_release.py` and `smoke_frozen.py` run in the release workflow (see [Releasing](releasing.md)). The other files are manual and live drivers, not run in CI. |
 | `packaging/circle.spec` | The PyInstaller recipe for release binaries. |
-| `install.sh` | The installer attached to releases. |
+| `install.sh`, `install.ps1` | The installers attached to releases. They and `update.py` share one layout: `versions/<version>/` and a `current` link. Change the three together. |
+| `.github/workflows/` | `check.yml` runs the tests on every push; `release.yml` builds, smoke-tests and publishes on a tag. |
 | `circle_harness.py` | A compatibility shim that re-exports `circle.harness`. |

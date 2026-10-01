@@ -22,17 +22,29 @@ Circle 在你指定的目录里读代码、改文件、跑命令。任何兼容 
 
 ## 安装
 
-需要 macOS 或 Linux，以及 Python 3.11 或更新版本。
+优先安装预编译版本，无需先安装 Python 环境。
+
+**macOS**（Apple 芯片或 Intel）：
 
 ```bash
-git clone https://github.com/qingshanfeihu/circle
-cd circle
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
 ```
 
-也有预编译的二进制和安装脚本，但目前唯一的发布版本较旧，只有 macOS Apple 芯片的包。用之前请看[快速开始](docs/quickstart.md#1-install)。
+**Linux**（x86_64 或 arm64）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
+```
+
+**Windows**（x86_64），在 PowerShell 中运行：
+
+```powershell
+irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
+```
+
+安装器会下载适合当前平台的最新 Release，验证 SHA-256，并将 Circle 加入用户 PATH。macOS 和 Linux 需要 `bash`、`curl`、`tar`，以及 `sha256sum` 或 `shasum`；Linux 构建需要 glibc 2.35 或更新版本。Windows 需要 Windows 10（1809）或更新版本、PowerShell 5.1 或更新版本。没有原生 Windows ARM64 构建，x86_64 模拟运行尚未验证。
+
+安装后重新打开终端，再运行 `circle`；以后用 `circle update` 升级。如果已安装旧版 `v0.1.0`，请先退出 Circle，再运行一次安装器迁移到新目录布局。详见[快速开始](docs/quickstart.md#1-install)、[发布页面](https://github.com/qingshanfeihu/circle/releases)和[已知问题](docs/known-issues.md#install-and-release)。Windows 控制台交互仍需真机测试。
 
 ## 运行
 
@@ -42,6 +54,8 @@ circle
 ```
 
 第一次会让你填 base URL、key 和模型，然后确认信任这个目录。之后输入任务按 `enter` 即可。输入 `/` 看命令，输入 `?` 看快捷键。
+
+终端界面使用对话卡片、状态灯，以及跟随终端颜色的 `auto` 主题。如果终端不能报告颜色，可用 `/themes dark` 或 `/themes light` 手动指定。各信号的含义和限制见[界面说明](docs/interface.md)。
 
 ## 了解更多
 
@@ -56,10 +70,18 @@ circle
 
 ## 开发
 
+从源码安装或参与开发时才需要 Python 3.11 或更新版本：
+
 ```bash
+git clone https://github.com/qingshanfeihu/circle
+cd circle
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -e '.[dev]'
 python -m pytest -q
 ```
+
+Windows PowerShell 中使用 `py -3 -m venv .venv` 和 `.venv\Scripts\Activate.ps1`。提交代码不会自动发布新版本：发布工作流由推送 `v*` tag 触发。详见[发布指南](docs/development/releasing.md)。
 
 参见 [CONTRIBUTING.md](CONTRIBUTING.md)、给编码 agent 看的 [AGENTS.md](AGENTS.md) 和[架构](docs/development/architecture.md)。安全问题请按 [SECURITY.md](SECURITY.md) 报告。
 

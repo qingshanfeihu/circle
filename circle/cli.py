@@ -15,6 +15,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="circle",
         description="Circle — compile harness",
+        epilog="子命令: circle update  升级到最新 Release（circle update --help）",
     )
     parser.add_argument(
         "workspace",
@@ -42,7 +43,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if raw[:1] == ["update"]:  # a folder named "update" is opened as ./update
+        from circle.update import update_main
+
+        return update_main(raw[1:])
+    args = _build_parser().parse_args(raw)
     if args.version:
         print(__version__)
         return 0
@@ -59,9 +65,14 @@ def main(argv: list[str] | None = None) -> int:
         and not (os_environ_no_tui())
     )
     if use_tui:
+        from circle.ink.termio.terminal import TerminalUnsupported
         from circle.tui.session_app import run_circle_session
 
-        return run_circle_session(workspace, home=home, force_init=args.init)
+        try:
+            return run_circle_session(workspace, home=home, force_init=args.init)
+        except TerminalUnsupported as exc:
+            print(f"circle: {exc}\nPlain line mode still works: circle --line", file=sys.stderr)
+            return 1
 
     # Line-mode fallback (CI / pipes)
     from circle.init_flow import run_init

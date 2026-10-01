@@ -1,6 +1,6 @@
 # CLI
 
-Circle has one command, `circle`. It opens the full-screen interface in a folder you choose.
+Circle has one command, `circle`, and one subcommand, `circle update`. `circle` opens the full-screen interface in a folder you choose.
 
 ```bash
 circle [workspace]
@@ -17,7 +17,37 @@ circle [workspace]
 | `--line` | Use the plain line-by-line mode instead of the full-screen interface. |
 | `-h`, `--help` | Show usage. |
 
-There are no subcommands, no print mode, and no flags to pick a model or resume a session. Use [slash commands](slash-commands.md) inside a session for those.
+There is no print mode, and there are no flags to pick a model or resume a session. Use [slash commands](slash-commands.md) inside a session for those.
+
+## Updating
+
+```bash
+circle update [--check] [--version X.Y.Z]
+```
+
+| Option | What it does |
+|---|---|
+| *(none)* | Install the newest release. |
+| `--check` | Say whether a newer release exists. Install nothing. |
+| `--version X.Y.Z` | Install that release instead, including an older one, to go back. |
+
+`circle update` works on a copy that `install.sh` or `install.ps1` put in place. It finds the newest release on GitHub, downloads the file for your operating system and processor, checks its sha256 against the `.sha256` file published beside it, unpacks it next to the running version, and only then moves the `current` link. A session that is already open keeps running the old code until you restart it. The newest three versions stay on disk, so `circle update --version <old>` goes back without a download, and a session opened a few updates ago still finds its own files. Older ones are removed.
+
+A copy that runs from a git checkout, or that was installed with `pip`, is not changed. `circle update` prints what to run instead. To open a folder that is called `update`, write `./update`.
+
+| Code | When |
+|---|---|
+| `0` | Updated, already up to date, or `--check` finished. |
+| `1` | It could not: GitHub was not reachable, no release matches, the checksum failed, or this copy was not installed by the installer. |
+| `2` | `--version` is not a version like `0.2.0`. |
+
+If GitHub is reached through a proxy that inspects HTTPS, set `SSL_CERT_FILE` to a PEM file with its certificate. On Windows the Windows certificate store is used.
+
+### The reminder
+
+When the full-screen interface starts, Circle checks once a day whether a newer release exists, and if it does, adds one faint line to the conversation: `Circle 0.2.0 is available (you have 0.1.0) · run circle update`. The check is a `HEAD` request to `github.com/<repo>/releases/latest`, made in the background; it sends nothing beyond what any web request carries (your address and `circle/<version>` as the user agent). The answer is kept in `update-check.json` in the [data folder](configuration.md#where-circle-keeps-things). Line mode never checks.
+
+Turn it off with `"update_check": false` in [settings](settings.md#keys), or `CIRCLE_NO_UPDATE_CHECK=1` in the environment.
 
 ## Full-screen and line mode
 

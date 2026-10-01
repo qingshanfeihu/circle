@@ -10,6 +10,7 @@ Assembly order:
 from __future__ import annotations
 
 import platform
+import sys
 import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -229,6 +230,9 @@ def format_env_block(
         f"  Today's date: {datetime.now(UTC).astimezone().date().isoformat()}",
         f"  Is directory a git repo: {'yes' if _is_git_repo(root) else 'no'}",
     ]
+    if sys.platform == "win32":
+        lines.append("  Shell: cmd.exe (Windows command syntax; there is no bash. Paths use "
+                     "backslashes; PowerShell is available as `powershell -Command`)")
     if model_id:
         lines.append(f"  Model: {model_id}")
     if protocol:

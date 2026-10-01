@@ -44,6 +44,8 @@ class _LspInput(BaseModel):
 
 class _LspClient:
     def __init__(self, cmd: list[str], root: Path) -> None:
+        # CreateProcess does not look for pyright-langserver.cmd; which() does (PATHEXT)
+        cmd = [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

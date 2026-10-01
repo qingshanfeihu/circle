@@ -101,6 +101,12 @@ Skills, instruction files and custom commands in a project folder are read wheth
 
 The model asks for a secret with the `question` tool. You type the value with `ctrl+s`, masked. Circle writes it straight to the file the task named, at mode `0600`, and tells the model only that it was collected. The value never enters the conversation. The model chooses the file: read the task before you enter a value.
 
+## The update check and downloads
+
+Circle makes one request of its own that has nothing to do with your model: once a day, in the background, a `HEAD` request to `github.com/<repo>/releases/latest` to learn whether a newer release exists (see [Updating](cli.md#the-reminder)). Turn it off with `update_check` or `CIRCLE_NO_UPDATE_CHECK`. Nothing about your files, prompts or settings is sent.
+
+`circle update` and the installers download a program and run it. They check its sha256 against a file published in the same release. That catches a damaged or truncated download; it does not help if the release itself were replaced, because the checksum comes from the same place. They use HTTPS and verify certificates. If your network breaks that, give them the certificate to trust (`CURL_CA_BUNDLE`, `SSL_CERT_FILE`); do not switch verification off.
+
 ## What is not protected
 
 - There is no operating-system sandbox. A command can read any file you can, use the network, and start background processes.

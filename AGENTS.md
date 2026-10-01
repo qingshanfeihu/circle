@@ -50,6 +50,8 @@ Several agents and people may work in this checkout at once.
 ## Things that are easy to get wrong
 
 - `circle --init` and `/login` are not safe places to experiment: `--init` resets settings, and OAuth is not implemented.
-- The version is in two places, `pyproject.toml` and `circle/__init__.py`. Change both.
+- The version is in two places, `pyproject.toml` and `circle/__init__.py`. Change both: `python scripts/release.py X.Y.Z` does, and dates the changelog. `tests/test_release_script.py` fails if they differ. Do not tag or publish a release unless the user asked.
 - `circle_harness.py` at the root is a compatibility shim. Import `circle.harness` in new code.
+- `install.sh`, `install.ps1` and `circle/update.py` share one install layout (`versions/<version>/` and a `current` link) and one asset naming (`circle-<os>-<arch>`). Change them together; `tests/test_install_sh.py`, `tests/test_install_ps1.py` and `tests/test_update.py` pin it.
+- No module may import `termios`, `tty` or `fcntl` at load time. Windows has none of them; `tests/test_windows_support.py` scans for it.
 - One test in `tests/test_extensions.py` is skipped unless an optional sibling checkout exists. The skip is expected.

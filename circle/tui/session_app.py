@@ -23,7 +23,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from circle import __version__, secret_prompt
+from circle import __version__, secret_prompt, update
 from circle.approvals import REJECTED_BY_USER, default_policy
 from circle.checkpoint_store import (
     copy_thread_if_possible,
@@ -525,6 +525,7 @@ class CircleSessionApp:
         remove_listener = add_retry_listener(self._on_model_retry)
         try:
             self._show_welcome()
+            self._start_update_check()
             while self._app._running:
                 self._maybe_update_secret_hint()
                 time.sleep(0.05)
@@ -560,6 +561,24 @@ class CircleSessionApp:
         self._footer.update(status="ready")
         self._app.render()
         self._extensions.emit("session_start", {"workspace": str(self.workspace)})
+
+    def _start_update_check(self) -> None:
+        """Once a day, ask whether a newer release exists. If so, one faint line stays in the
+        transcript (契约 R6: a state that is worth coming back to). Runs off the UI thread; a
+        network that does not answer costs nothing."""
+        if not update.check_enabled(self.settings):
+            return
+
+        def _work() -> None:
+            try:
+                latest = update.available_update(self.home)
+                if latest:
+                    with self._app.lock:
+                        self._toast(update.notice_text(latest))
+            except Exception:  # noqa: BLE001 — a reminder must never hurt the session
+                logger.debug("update check failed", exc_info=True)
+
+        threading.Thread(target=_work, name="circle-update-check", daemon=True).start()
 
     def _update_thinking_line(self, text: str | None) -> None:
         """Store the status that the closed frame embeds in its top edge."""
@@ -2322,6 +2341,10 @@ class CircleSessionApp:
         import shutil
         import subprocess
 
+        if sys.platform == "win32":
+            from circle.ink.termio import winconsole
+
+            return winconsole.set_clipboard(text)
         payload = text.encode("utf-8")
         for cmd in (
             ["pbcopy"],
@@ -2466,6 +2489,7 @@ class CircleSessionApp:
             or ("nvim" if shutil.which("nvim") else "")
             or ("vim" if shutil.which("vim") else "")
             or ("nano" if shutil.which("nano") else "")
+            or ("notepad" if sys.platform == "win32" else "")
         )
         if not editor:
             self._fail("No $VISUAL / $EDITOR set, and no nvim, vim or nano found")

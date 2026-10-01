@@ -32,7 +32,7 @@ ClipboardPath = Literal["native", "tmux-buffer", "osc52"]
 
 def get_clipboard_path() -> ClipboardPath:
     native_available = (
-        sys.platform == "darwin" and not os.environ.get("SSH_CONNECTION")
+        sys.platform in ("darwin", "win32") and not os.environ.get("SSH_CONNECTION")
     )
     if native_available:
         return "native"
@@ -115,9 +115,10 @@ def _copy_native_async(text: str) -> None:
         _linux_copy = ""
         return
     if sys.platform == "win32":
-        
-        
-        _spawn_copy(["clip"], text)
+        # clip.exe reads its input in the OEM code page and garbles anything outside it
+        from . import winconsole
+
+        threading.Thread(target=winconsole.set_clipboard, args=(text,), daemon=True).start()
         return
 
 

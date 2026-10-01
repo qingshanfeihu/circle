@@ -10,6 +10,7 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 |---|---|---|
 | `CIRCLE_HOME` | Where Circle keeps settings, credentials, history and sessions. | `~/.circle` |
 | `CIRCLE_NO_TUI` | `1`, `true` or `yes` forces [line mode](cli.md#full-screen-and-line-mode). | unset |
+| `CIRCLE_NO_UPDATE_CHECK` | `1`, `true` or `yes` turns off the daily [update reminder](cli.md#the-reminder). | unset |
 | `VISUAL`, `EDITOR` | Used by `/editor`. Falls back to `nvim`, `vim`, `nano`. | unset |
 
 ## Model requests
@@ -54,6 +55,18 @@ At start, and after `/login`, `/models` and `/reload`, Circle exports these from
 
 `/logout` removes all five. Commands the model runs in the shell get a filtered copy of the environment: any variable whose name contains a word such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` is removed, so the API key does not reach them. `OPENAI_BASE_URL` and `CIRCLE_MODEL` do.
 
-## Installer
+## Installer and updates
 
-`install.sh` reads `CIRCLE_REPO`, `CIRCLE_VERSION`, `CIRCLE_BIN_DIR`, `CIRCLE_PREFIX`, `CIRCLE_HOME` and `CIRCLE_FROM_SOURCE`. See [Quickstart](quickstart.md#1-install).
+| Variable | Read by | Effect |
+|---|---|---|
+| `CIRCLE_REPO` | `install.sh`, `install.ps1`, `circle update` | The GitHub repository to take releases from. Default `qingshanfeihu/circle`. |
+| `CIRCLE_VERSION` | `install.sh`, `install.ps1` | Install this version instead of the newest, for example `0.2.0`. |
+| `CIRCLE_PREFIX` | `install.sh`, `install.ps1` | Where versions are kept. Default `~/.local/share/circle`, or `%LOCALAPPDATA%\circle` on Windows. |
+| `CIRCLE_BIN_DIR` | `install.sh` | Where the `circle` link goes. Default `~/.local/bin`. |
+| `CIRCLE_NO_PATH` | `install.ps1` | `1` leaves your `PATH` alone. |
+| `CIRCLE_FROM_SOURCE` | `install.sh` | `1` runs `pip install -e` on the checkout instead of downloading. |
+| `CURL_CA_BUNDLE` | `install.sh` (through curl) | A PEM file of certificate authorities, for a network that inspects HTTPS. |
+| `SSL_CERT_FILE` | `circle update` | The same, for Circle's own requests. |
+| `HTTPS_PROXY` | all three | A proxy for the download. |
+
+See [Quickstart](quickstart.md#1-install) and [Updating](cli.md#updating).

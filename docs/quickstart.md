@@ -4,7 +4,29 @@ Circle runs in your terminal and works on the files in a folder you choose. To u
 
 ## 1. Install
 
-Circle needs macOS or Linux. Windows is not supported.
+Circle runs on macOS, Linux and Windows 10 or newer. Windows console interaction still needs real-machine testing; read the [Windows entry in Known issues](known-issues.md#install-and-release) first.
+
+**Prebuilt program** is faster and needs no Python, but check the [Releases page](https://github.com/qingshanfeihu/circle/releases) first: a release only helps if it has a file for your platform. Releases built by the release workflow carry macOS (Apple silicon and Intel), Linux (x86_64 and arm64) and Windows (x86_64).
+
+On macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
+```
+
+The installer downloads the release for your OS and CPU, checks its sha256, unpacks it under `~/.local/share/circle/versions/<version>` (`%LOCALAPPDATA%\circle` on Windows), points `current` at it, puts `circle` on your `PATH`, and adds that folder to your shell's startup file if needed. To pin a version, set `CIRCLE_VERSION`, for example `CIRCLE_VERSION=0.2.0`.
+
+If `install.sh` runs in a Windows shell (Git Bash, MobaXterm, Cygwin), it hands over to PowerShell and installs the Windows program. Run `circle` in Windows Terminal, PowerShell or cmd: a terminal window that is not a Windows console cannot show the full-screen interface, use `circle --line` for [line mode](cli.md#full-screen-and-line-mode) there.
+
+If the installer stops with a certificate error, your network is replacing HTTPS certificates. Export its root certificate as a PEM file and run the installer again with `CURL_CA_BUNDLE=/path/to/ca.pem` (macOS, Linux) or import it into the Windows certificate store (PowerShell uses that store).
+
+To upgrade later, run `circle update`. See [Updating](cli.md#updating).
 
 **From source** works everywhere and is the way to get the current code. It needs Python 3.11 or newer:
 
@@ -16,14 +38,6 @@ python3 -m venv .venv
 pip install -r requirements.txt
 pip install -e .
 ```
-
-**Prebuilt binary** is faster, but check the [Releases page](https://github.com/qingshanfeihu/circle/releases) first: a release only helps if it has a file for your platform. At the time of writing that is macOS on Apple silicon only.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
-```
-
-The installer downloads the release for your OS and CPU, puts `circle` in `~/.local/bin`, and adds that folder to your shell's `PATH` if needed. It does not verify checksums. To pin a version, set `CIRCLE_VERSION`, for example `CIRCLE_VERSION=0.1.0`.
 
 Verify:
 

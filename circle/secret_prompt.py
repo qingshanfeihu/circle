@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import re
@@ -57,6 +56,37 @@ def _answer_path(home: Path | str, request_id: str) -> Path:
     return requests_dir(home) / f"{request_id}.answer"
 
 
+def _lock_file(fh: Any, msvcrt: Any = None) -> None:
+    """Take an exclusive lock on the open file, waiting for it. POSIX has flock; Windows locks
+    one byte with msvcrt, which does not wait by itself."""
+    if os.name != "nt" and msvcrt is None:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        return
+    if msvcrt is None:
+        import msvcrt
+    fh.seek(0)
+    while True:
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            time.sleep(0.01)
+
+
+def _unlock_file(fh: Any, msvcrt: Any = None) -> None:
+    if os.name != "nt" and msvcrt is None:
+        import fcntl
+
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is None:
+        import msvcrt
+    fh.seek(0)
+    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 @contextlib.contextmanager
 def _locked(home: Path | str) -> Iterator[None]:
     """跨线程互斥：提交答案与消费/清理答案必须串行，否则超时清理与
@@ -64,11 +94,11 @@ def _locked(home: Path | str) -> Iterator[None]:
     directory = requests_dir(home)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / ".lock").open("a+b") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        _lock_file(fh)
         try:
             yield
         finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            _unlock_file(fh)
 
 
 def _shred(path: Path) -> None:

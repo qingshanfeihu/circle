@@ -46,6 +46,8 @@ class CircleSettings:
     extensions: dict[str, dict[str, Any]] = field(default_factory=dict)
     # shell 命令点名这些文件（basename 通配）即拒绝执行；为空时用 circle.approvals 的默认表
     credential_files: list[str] = field(default_factory=list)
+    # 启动时每天问一次 GitHub 有没有新 Release，有就在转录里提示一行（circle/update.py）
+    update_check: bool = True
 
     def is_ready(self) -> bool:
         if not self.initialized:
@@ -103,6 +105,7 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         mcp_servers=mcp_servers,
         extensions=extensions,
         credential_files=credential_files,
+        update_check=bool(raw.get("update_check", True)),
     )
 
 

@@ -4,9 +4,11 @@ This page lists what does not work as you might expect in the current version, w
 
 ## Install and release
 
-- **The published binary is old and covers one platform.** The only release is `v0.1.0`. It is built for macOS on Apple silicon and predates much of the current code. `install.sh` on Linux or on an Intel Mac fails with a 404. Install [from source](quickstart.md#1-install) instead.
-- **`install.sh` does not check a checksum.** The release publishes `SHA256SUMS`, but the script never downloads it.
-- **A binary built from the current source may not start a session.** The build recipe does not include the prompt files that the agent reads at start. This has not been built to confirm.
+- **Upgrading from `v0.1.0` needs the installer once.** That version only shipped for macOS on Apple silicon and has no `circle update`. Close Circle and run the current installer to migrate to the versioned layout; use `circle update` afterwards.
+- **Windows console interaction still needs real-machine testing.** Automated tests exercise console modes, Unicode I/O and clipboard calls against stand-ins, command approvals, file locking, and the installer. Interactive drawing, keys, window resizing, `/copy` and user PATH changes still need checking in Windows Terminal, PowerShell and cmd. Windows ARM64 has no native build; running the x86_64 program under emulation is unverified.
+- **On Windows the model's commands run in `cmd.exe`**, not in bash, and the system prompt says so. The approval rules recognise the common Windows delete, format and elevation commands, but they were written for a POSIX shell and are less tested against `cmd.exe` and PowerShell syntax. Read each command on the card.
+- **On Windows `auto` theme cannot ask the console for its colours.** It falls back to `COLORFGBG`, then to dark. Set `/themes light` on a light terminal.
+- **A terminal that is not a Windows console cannot show the full-screen interface.** MobaXterm, and the mintty window of Git Bash, are not consoles. Circle reports that the terminal is unsupported; use `circle --line` for line mode. Use Windows Terminal, PowerShell or cmd.
 
 ## Sign-in
 

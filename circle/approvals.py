@@ -47,10 +47,17 @@ FILE_EDIT_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
 REJECTED_BY_USER = "The user rejected this tool call."
 
 _SEPARATORS = frozenset({";", "&&", "||", "|", "&", "|&", "(", ")", "{", "}"})
-_PRIV_ESC = frozenset({"sudo", "su", "doas", "pkexec"})
-_DELETE_CMDS = frozenset({"rm", "rmdir", "unlink", "shred", "srm", "trash", "trash-put"})
-_DISK_CMDS = frozenset({"dd", "truncate", "wipefs", "fdisk", "parted"})
+_PRIV_ESC = frozenset({"sudo", "su", "doas", "pkexec", "runas", "gsudo"})
+_DELETE_CMDS = frozenset({"rm", "rmdir", "unlink", "shred", "srm", "trash", "trash-put",
+                          "del", "erase", "rd", "remove-item", "ri"})
+_DISK_CMDS = frozenset({"dd", "truncate", "wipefs", "fdisk", "parted",
+                        "format", "diskpart", "cipher", "sdelete", "clear-disk", "format-volume"})
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
+# powershell flags that are followed by a value, so the value is not mistaken for the command
+_PS_VALUE_FLAGS = ("executionpolicy", "windowstyle", "workingdirectory", "version", "inputformat",
+                   "outputformat", "configurationname", "psconsolefile", "custompipename")
+_EXE_SUFFIXES = (".exe", ".com", ".cmd", ".bat")
+_WINDOWS = os.name == "nt"
 _PYTHONS = frozenset({"python", "python3"})
 _WRAPPERS = frozenset({"nohup", "time", "command", "builtin", "exec", "stdbuf", "caffeinate"})
 _WRAPPERS_WITH_VALUE = {"nice": {"-n"}, "timeout": set(), "ionice": {"-c", "-n"}}
@@ -79,10 +86,24 @@ class Review:
 # ── command classification ─────────────────────────────────────────────────
 
 
+def _command_name(token: str) -> str:
+    """The program a token names: no folder, and on Windows no .exe and no capitals."""
+    name = os.path.basename(token)
+    if _WINDOWS:
+        name = name.lower()
+        for suffix in _EXE_SUFFIXES:
+            if name.endswith(suffix):
+                return name[:-len(suffix)]
+    return name
+
+
 def _credential_match(token: str, patterns: Iterable[str]) -> str:
     for candidate in (token, token.split("=", 1)[-1] if "=" in token else ""):
         base = os.path.basename(candidate.strip().strip("'\"").rstrip("/"))
-        if base and any(fnmatch.fnmatchcase(base, p) for p in patterns):
+        if _WINDOWS:
+            if base and any(fnmatch.fnmatchcase(base.lower(), p.lower()) for p in patterns):
+                return base
+        elif base and any(fnmatch.fnmatchcase(base, p) for p in patterns):
             return base
     return ""
 
@@ -117,6 +138,8 @@ def _newlines_to_separators(command: str) -> str:
 
 
 def _tokens(command: str) -> list[str] | None:
+    if _WINDOWS:
+        command = command.replace("\\", "/")  # C:\proj\.env is one path, not escapes
     lexer = shlex.shlex(_newlines_to_separators(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
@@ -144,7 +167,7 @@ def _unwrap(seg: list[str]) -> list[str]:
     i = 0
     while i < len(seg):
         token = seg[i]
-        head = os.path.basename(token)
+        head = _command_name(token)
         if _ASSIGNMENT.match(token):
             i += 1
         elif head == "env":
@@ -233,6 +256,24 @@ def _worst(reviews: Iterable[Review | None]) -> Review | None:
     return best
 
 
+def _powershell_review(args: list[str], patterns: tuple[str, ...], depth: int) -> Review | None:
+    """Read the program text of a powershell / pwsh command line. Flags may be shortened to any
+    unique prefix (``-Comm``, ``-ec``), and the program may follow with no flag at all."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        name = args[i].lstrip("-").lower()
+        if name and (name == "ec" or "encodedcommand".startswith(name)):  # -ec is a documented alias
+            return Review("ASK_FORCED", "command could not be parsed")
+        if name and "command".startswith(name):
+            return classify_command(" ".join(args[i + 1:]), patterns, _depth=depth + 1)
+        if name and "file".startswith(name):
+            return None  # a script file: nothing here to read
+        i += 2 if any(flag.startswith(name) for flag in _PS_VALUE_FLAGS) and name else 1
+    if i < len(args):
+        return classify_command(" ".join(args[i:]), patterns, _depth=depth + 1)
+    return None
+
+
 def _segment_review(seg: list[str], patterns: tuple[str, ...], depth: int) -> Review | None:
     for token in seg:
         name = _credential_match(token, patterns)
@@ -241,7 +282,7 @@ def _segment_review(seg: list[str], patterns: tuple[str, ...], depth: int) -> Re
     seg = _unwrap(seg)
     if not seg:
         return None
-    head, args = os.path.basename(seg[0]), seg[1:]
+    head, args = _command_name(seg[0]), seg[1:]
     if head in _PRIV_ESC:
         return Review("DENY", "privilege escalation",
                       f"Denied by approval policy: '{head}' (running as another user) is not "
@@ -254,6 +295,16 @@ def _segment_review(seg: list[str], patterns: tuple[str, ...], depth: int) -> Re
             return classify_command(args[flag_at + 1], patterns, _depth=depth + 1)
         if head in _PYTHONS:
             return _python_review(args[flag_at + 1], patterns)
+    if head == "cmd":
+        for i, token in enumerate(args):
+            if token.lower()[:2] in ("/c", "/k", "/r"):
+                # cmd /c takes the rest of the line, even glued to the flag: cmd /c"del x"
+                program = ([token[2:]] if token[2:] else []) + args[i + 1:]
+                return classify_command(" ".join(program), patterns, _depth=depth + 1)
+    elif head in ("powershell", "pwsh"):
+        found = _powershell_review(args, patterns, depth)
+        if found is not None:
+            return found
     if head in _DELETE_CMDS:
         return Review("ASK_FORCED", "deletes files", warn_delete=True)
     if head in _DISK_CMDS or head.startswith("mkfs"):

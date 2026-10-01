@@ -152,7 +152,9 @@ def test_always_rules_survive_a_new_store(tmp_path):
     assert not again.needs_approval("execute", {"command": "make test"}, "t1")
     assert again.needs_approval("execute", {"command": "make test"}, "other-thread")
     files = list(root.iterdir())
-    assert files and stat.S_IMODE(os.stat(files[0]).st_mode) == 0o600
+    assert files
+    if os.name != "nt":  # Windows has no mode bits to read back
+        assert stat.S_IMODE(os.stat(files[0]).st_mode) == 0o600
     assert "make test" not in files[0].read_text(encoding="utf-8")  # only a hash of it
     assert again.store.revoke("t1", 0) is not None
     assert again.needs_approval("execute", {"command": "make test"}, "t1")

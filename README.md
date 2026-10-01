@@ -22,17 +22,29 @@ Circle reads and edits the code in a folder you choose, and runs commands there.
 
 ## Install
 
-Circle needs macOS or Linux and Python 3.11 or newer.
+Install a prebuilt release; no Python environment is needed.
+
+**macOS** (Apple silicon or Intel):
 
 ```bash
-git clone https://github.com/qingshanfeihu/circle
-cd circle
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
 ```
 
-There is also a prebuilt binary and an installer script. The only release is old and covers macOS on Apple silicon; see the [Quickstart](docs/quickstart.md#1-install) before you use it.
+**Linux** (x86_64 or arm64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
+```
+
+**Windows** (x86_64), in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
+```
+
+The installers download the latest release for your platform, verify its SHA-256 and add Circle to your user PATH. macOS and Linux need `bash`, `curl`, `tar`, and `sha256sum` or `shasum`; Linux builds require glibc 2.35 or newer. Windows needs Windows 10 (1809) or newer and PowerShell 5.1 or newer. There is no native Windows ARM64 build; x86_64 emulation has not been verified.
+
+Restart your terminal after installing, then run `circle`. Upgrade with `circle update`. If you have the old `v0.1.0` installation, close Circle and run the installer again once to switch to the new layout. See [Quickstart](docs/quickstart.md#1-install), [Releases](https://github.com/qingshanfeihu/circle/releases) and [Known issues](docs/known-issues.md#install-and-release). Windows console interaction still needs testing on a real machine.
 
 ## Run
 
@@ -42,6 +54,8 @@ circle
 ```
 
 The first time, Circle asks for a base URL, a key and a model, then asks you to trust the folder. After that, type a task and press `enter`. Type `/` to see the commands and `?` to see the keys.
+
+The terminal interface uses conversation cards, status lamps and an `auto` theme that follows terminal colours. Use `/themes dark` or `/themes light` when your terminal cannot report its colours. See [The interface](docs/interface.md) for the signals and limits.
 
 ## Learn more
 
@@ -56,10 +70,18 @@ The first time, Circle asks for a base URL, a key and a model, then asks you to 
 
 ## Development
 
+For a source or development installation, Python 3.11 or newer is required:
+
 ```bash
+git clone https://github.com/qingshanfeihu/circle
+cd circle
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -e '.[dev]'
 python -m pytest -q
 ```
+
+On Windows, use `py -3 -m venv .venv` and `.venv\Scripts\Activate.ps1` in PowerShell. Code pushes do not publish a new version automatically: the release workflow runs when a `v*` tag is pushed. See [Releasing](docs/development/releasing.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) for coding agents, and the [architecture](docs/development/architecture.md). Report security problems as described in [SECURITY.md](SECURITY.md).
 

@@ -489,6 +489,8 @@ def query_terminal_palette(
             return None
     except Exception:
         return None
+    if sys.platform == "win32":
+        return None  # the Windows console cannot be read with select; `auto` falls back
 
     try:
         import select
