@@ -39,7 +39,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
 
     # editor stubs
     from tests.editor_fixture import write_editor
-    editor = write_editor(tmp_path, "from-ed")
+    editor = write_editor(tmp_path, "e")
     monkeypatch.setenv("EDITOR", str(editor))
     app._app.suspend_for_external = lambda: None  # type: ignore[method-assign]
     app._app.resume_from_external = lambda: None  # type: ignore[method-assign]
@@ -154,9 +154,8 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
 
 def test_editor_does_not_stop_session(tmp_path: Path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
-    editor = tmp_path / "ed.sh"
-    editor.write_text("#!/bin/sh\nprintf 'from-ed\\n' > \"$1\"\n", encoding="utf-8")
-    editor.chmod(0o755)
+    from tests.editor_fixture import write_editor
+    editor = write_editor(tmp_path, "from-ed")
     monkeypatch.setenv("EDITOR", str(editor))
     calls: list[str] = []
     app._app._running = True
