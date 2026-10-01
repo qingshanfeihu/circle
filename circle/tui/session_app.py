@@ -1884,7 +1884,12 @@ class CircleSessionApp:
     def _cmd_models(self, args: str) -> None:
         name = args.strip()
         if not name:
-            models = self._list_models()
+            discovery = self._list_models()
+            models = discovery.models
+            if discovery.status == "failed":
+                self._fail(discovery.summary())
+            else:
+                self._toast(discovery.summary())
             current = self.settings.auth.model
             self._toast(f"Model: {current}")
             for m in models[:40]:
@@ -1898,8 +1903,8 @@ class CircleSessionApp:
             return
         self._switch_model(name)
 
-    def _list_models(self) -> list[str]:
-        from circle.probe import FALLBACK_MODELS, probe_endpoint
+    def _list_models(self):
+        from circle.probe import resolve_endpoint
 
         creds = load_credentials(self.home)
         key = (
@@ -1909,11 +1914,7 @@ class CircleSessionApp:
             or ""
         )
         base = self.settings.auth.base_url
-        if base and key:
-            hit = probe_endpoint(base, key)
-            if hit and hit.models:
-                return list(hit.models)
-        return list(FALLBACK_MODELS)
+        return resolve_endpoint(base, key, protocol=self.settings.auth.protocol)
 
     def _switch_model(self, name: str) -> None:
         self.settings.auth.model = name

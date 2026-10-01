@@ -10,9 +10,11 @@ The first time you run `circle`, setup asks for three things:
 2. Enter the base URL, then the key.
 3. Pick a model from the list.
 
-Circle finds the protocol by asking the endpoint. It tries `GET <url>/models` with a bearer token first (OpenAI style), then `GET <url>/v1/models` with an `x-api-key` header (Anthropic style), two and a half seconds each. The first one that answers with a model list decides the protocol and fills the model list.
+Circle asks the endpoint for its model list, with a two-and-a-half-second timeout per request. OpenAI discovery tries `<base>/models` with a bearer token, then `<base>/v1/models` if the supplied base has no version suffix. Anthropic discovery uses `<base>/v1/models` with `x-api-key`, without duplicating an existing `/v1`. A URL containing `anthropic` makes Anthropic the first protocol tried; otherwise OpenAI is first. The host and gateway prefix stay unchanged. Setup saves the working base URL for subsequent model requests.
 
-If neither answers, Circle guesses from the URL. A URL that contains `anthropic` is treated as Anthropic style. `openai`, `compatible-mode`, `openrouter`, `/v1/chat` or `azure` mean OpenAI style. Anything else is OpenAI style. In that case the model list is only the fallback `claude-sonnet-4-5`, `gpt-4.1`, `gpt-4o`, so type the id you actually want with `/models <name>` afterwards.
+Only valid server-provided model IDs appear in the list. Empty responses, failed requests and malformed responses never produce a built-in model list. Setup shows the outcome; if discovery fails, choose the protocol explicitly. You can enter a model ID manually whether or not discovery succeeds. A manually entered ID is not verified. If discovery failed, use the provider's documented API base URL: Circle cannot determine an unresponsive endpoint's path.
+
+For scripted setup, `complete_api_key_init` requires both `protocol` and `model` when discovery fails, or an explicit `model` when the endpoint returns an empty list. It raises an error before saving settings when these values are missing.
 
 The key is saved in `credentials.json` and the rest in `settings.json`. See [Settings](settings.md).
 
@@ -22,6 +24,8 @@ The key is saved in `credentials.json` and the rest in `settings.json`. See [Set
 /models              list what the endpoint offers (up to 40)
 /models qwen3.8-flash
 ```
+
+`/models` uses the saved protocol and reports empty lists or discovery failures without substituting model names.
 
 `/models <name>` saves the name and rebuilds the model. It does not check that the endpoint knows the name. The footer shows cost and context for the current model.
 

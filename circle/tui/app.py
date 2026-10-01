@@ -139,6 +139,7 @@ class CircleApp:
                 InitStep.AUTH_MODE,
                 InitStep.OAUTH_PROVIDER,
                 InitStep.PICK_MODEL,
+                InitStep.MANUAL_PROTOCOL,
             }:
                 self.init.confirm()
                 self._rebuild()
