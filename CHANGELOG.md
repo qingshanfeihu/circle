@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-01
+
 ### Added
 
 - **`circle update`.** Installs the newest release: it downloads the file for your system, checks its sha256, unpacks it beside the running version and moves the `current` link. `--check` only reports, `--version X.Y.Z` installs a given release or goes back. See [Updating](docs/cli.md#updating).
