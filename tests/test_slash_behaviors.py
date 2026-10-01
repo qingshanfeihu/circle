@@ -328,9 +328,8 @@ def test_exit(tmp_path: Path, monkeypatch):
 
 def test_editor(tmp_path: Path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
-    editor = tmp_path / "ed.sh"
-    editor.write_text("#!/bin/sh\nprintf 'edited\\n' > \"$1\"\n", encoding="utf-8")
-    editor.chmod(0o755)
+    from tests.editor_fixture import write_editor
+    editor = write_editor(tmp_path, "edited")
     monkeypatch.setenv("EDITOR", str(editor))
     app._app.suspend_for_external = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
     app._app.resume_from_external = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
