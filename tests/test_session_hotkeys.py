@@ -129,11 +129,13 @@ def test_ctrl_t_toggles_thinking_row(tmp_path: Path, monkeypatch):
 
     posted = []
     bus = EventBus(run_id="r")
-    bus.subscribe(TuiSink(post=posted.append))
+    sink = TuiSink(post=posted.append)
+    bus.subscribe(sink)
     app._open_turn_region()
     bus.emit("run_start")
     bus.emit("info", payload={"name": "thinking_block", "thinking": "secret thought\nsecond line",
                               "reasoning_duration_s": 1.5})
+    sink.flush()  # Snapshot delivery is coalesced on a timer; wait for the final state.
     app._on_snapshot(posted[-1])
     row = "\n".join(app._transcript.snapshot())
     assert "∴ Thought 1.5s" in row and "ctrl+t" in row, "the thought has a body, so the hint is there"
