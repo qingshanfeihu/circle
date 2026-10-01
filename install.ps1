@@ -91,6 +91,9 @@
     }
 
     $version = if ($env:CIRCLE_VERSION) { $env:CIRCLE_VERSION -replace '^v', '' } else { Get-LatestVersion }
+    if ($version -notmatch '\A\d+\.\d+\.\d+(?:[-+.]?[0-9A-Za-z][0-9A-Za-z.+-]*)?\z') {
+        Stop-Install "invalid version: $version (expected a version like 0.2.0)"
+    }
     $base = "https://github.com/$repo/releases/download/v$version"
     $versions = Join-Path $prefix 'versions'
     $dest = Join-Path $versions $version

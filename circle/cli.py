@@ -15,7 +15,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="circle",
         description="Circle — compile harness",
-        epilog="子命令: circle update  升级到最新 Release（circle update --help）",
+        epilog="update: install the latest release (circle update --help)",
     )
     parser.add_argument(
         "workspace",

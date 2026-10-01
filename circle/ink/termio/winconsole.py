@@ -168,6 +168,8 @@ class Console:
                 units = len(chunk.encode("utf-16-le", "surrogatepass")) // 2
                 if not self._k.WriteConsoleW(self._hout, chunk, units, ctypes.byref(written), None):
                     raise OSError("WriteConsoleW failed")
+                if written.value == 0:
+                    raise OSError("WriteConsoleW made no progress")
                 if written.value >= units:
                     break
                 chunk = chunk.encode("utf-16-le", "surrogatepass")[written.value * 2:].decode(

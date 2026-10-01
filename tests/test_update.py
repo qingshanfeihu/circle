@@ -348,6 +348,30 @@ def test_install_can_go_back_without_downloading(tmp_path: Path, monkeypatch):
     assert install.linked_version() == "0.1.0"
 
 
+def test_an_incomplete_installed_version_does_not_replace_current(tmp_path: Path, monkeypatch):
+    install = _installed(tmp_path, "0.1.0", current="0.1.0")
+    target = install.versions / "0.2.0"
+    target.mkdir()
+    marker = target / "marker"
+    marker.write_text("unfinished")
+    _serve(monkeypatch, {})
+    with pytest.raises(update.UpdateError, match="does not hold the circle program"):
+        update.install_version("0.2.0", install, repo=REPO)
+    assert install.linked_version() == "0.1.0"
+    assert marker.read_text() == "unfinished"
+    assert (install.versions / "0.1.0").is_dir()
+
+
+@pytest.mark.parametrize("version", ["../outside", "/tmp/outside", r"..\outside", "", "v0.2.0"])
+def test_install_refuses_invalid_version_paths(tmp_path: Path, monkeypatch, version):
+    install = _installed(tmp_path, "0.1.0", current="0.1.0")
+    _serve(monkeypatch, {})
+    with pytest.raises(update.UpdateError, match="is not a version"):
+        update.install_version(version, install, repo=REPO)
+    assert install.linked_version() == "0.1.0"
+    assert sorted(p.name for p in install.versions.iterdir()) == ["0.1.0"]
+
+
 def test_a_bad_checksum_installs_nothing(tmp_path: Path, monkeypatch):
     install = _installed(tmp_path, "0.1.0", current="0.1.0")
     _release(monkeypatch, "0.2.0", digest="0" * 64)

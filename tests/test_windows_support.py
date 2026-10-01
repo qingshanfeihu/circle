@@ -181,6 +181,18 @@ def test_write_continues_after_a_short_write():
     assert [t for t, _ in k.written][1:] == ["defg", "g"]
 
 
+def test_write_fails_when_the_console_stops_making_progress():
+    class Stalled(FakeKernel32):
+        def WriteConsoleW(self, handle, text, units, ptr, reserved):  # noqa: N802
+            assert not self.written, "a stalled console must not be retried forever"
+            self.written.append((text, units))
+            ptr._obj.value = 0
+            return 1
+
+    with pytest.raises(OSError, match="no progress"):
+        winconsole.Console(Stalled()).write("hello")
+
+
 def test_the_clipboard_gets_utf16_text_with_windows_line_breaks():
     class User32:
         def __init__(self):

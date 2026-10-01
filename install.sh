@@ -91,8 +91,14 @@ detect_asset() {
 }
 
 # 取最新 Release 的版本号：跟随 /releases/latest 的跳转，不走 API（没有匿名限流）。
+validate_version() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.]?[0-9A-Za-z][0-9A-Za-z.+-]*)?$ ]] \
+        || die "无效版本: $1（应为 0.2.0 这样的版本号）"
+}
+
 resolve_version() {
     if [[ -n "${CIRCLE_VERSION:-}" ]]; then
+        validate_version "${CIRCLE_VERSION#v}"
         printf '%s' "${CIRCLE_VERSION#v}"
         return
     fi
@@ -161,6 +167,7 @@ install_binary() {
     local version asset base tmp dest exe expected actual previous name keep
     asset="$(detect_asset)"          # 先判断系统，再联网
     version="$(resolve_version)"
+    validate_version "$version"
     base="https://github.com/${CIRCLE_REPO}/releases/download/v${version}"
     dest="$PREFIX/versions/${version}"
     mkdir -p "$PREFIX/versions" "$BIN_DIR" "$HOME_DIR"

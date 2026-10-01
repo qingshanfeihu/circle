@@ -28,7 +28,7 @@ $env:PROCESSOR_ARCHITECTURE = if ($env:FAKE_ARCH) { $env:FAKE_ARCH } else { 'AMD
 $env:PROCESSOR_ARCHITEW6432 = $null
 $env:CIRCLE_PREFIX = Join-Path $Root 'prefix'
 $env:CIRCLE_NO_PATH = '1'
-$env:CIRCLE_VERSION = 'v0.2.0'
+$env:CIRCLE_VERSION = if ($env:FAKE_VERSION) { $env:FAKE_VERSION } else { 'v0.2.0' }
 Add-Type -TypeDefinition @"
 public class FakeResponse { public int StatusCode { get { return 404; } } }
 public class Http404 : System.Exception {
@@ -140,6 +140,14 @@ def test_an_unsupported_processor_is_refused(tmp_path: Path):
     done = _run(tmp_path, FAKE_ARCH="x86")
     assert done.returncode != 0
     assert "unsupported processor" in done.stdout + done.stderr
+
+
+@pytest.mark.parametrize("version", ["../outside", r"..\outside", "C:\\outside", "banana", "0.2.0\n"])
+def test_invalid_version_is_refused_before_download_or_filesystem_changes(tmp_path: Path, version):
+    done = _run(tmp_path, FAKE_VERSION=version)
+    assert done.returncode != 0
+    assert "invalid version" in done.stdout + done.stderr
+    assert not (tmp_path / "prefix").exists()
 
 
 def test_a_release_without_a_windows_file_says_so(tmp_path: Path):

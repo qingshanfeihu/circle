@@ -379,7 +379,11 @@ def install_version(
 ) -> None:
     """Unpack ``version`` under ``versions/`` (unless it is already there), then point
     ``current`` at it and drop the versions that are no longer needed."""
+    if version != bare_version(version) or parse_version(version) is None:
+        raise UpdateError(f"{version!r} is not a version like 0.2.0")
     target = install.versions / version
+    if target.exists() and not _has_program(target):
+        raise UpdateError(f"{target} does not hold the circle program; nothing was changed")
     if not target.is_dir():
         asset = asset_name()
         base = f"https://github.com/{repo}/releases/download/v{version}"

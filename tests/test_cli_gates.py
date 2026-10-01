@@ -4,11 +4,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from circle import __version__
 from circle.cli import main
 from circle.init_flow import complete_api_key_init
 from circle.probe import ProbeResult
 from circle.trust import accept_trust
+
+
+def test_help_describes_update_in_english(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--help"])
+    assert exit_info.value.code == 0
+    assert "update: install the latest release (circle update --help)" in capsys.readouterr().out
 
 
 def test_version_and_print_home(tmp_path: Path, monkeypatch, capsys):

@@ -121,6 +121,16 @@ def test_pinned_version_skips_the_lookup(box: Box):
     assert (box.prefix / "versions" / "0.3.1" / "circle" / "circle").is_file()
 
 
+@pytest.mark.parametrize("version", ["../outside", "/tmp/outside", "..", "banana", "0.2.0\n"])
+def test_invalid_version_is_refused_before_download_or_filesystem_changes(box: Box, version):
+    done = box.run(CIRCLE_VERSION=version)
+    assert done.returncode != 0
+    assert "无效版本" in done.stderr
+    assert not box.log.exists()
+    assert not box.prefix.exists()
+    assert not box.bindir.exists()
+
+
 def test_keeps_the_newest_three_versions_and_the_previous_one(box: Box):
     for old in ("0.0.7", "0.0.8", "0.0.9", "0.1.0"):
         (box.prefix / "versions" / old).mkdir(parents=True)

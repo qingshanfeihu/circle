@@ -11,7 +11,7 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 | `CIRCLE_HOME` | Where Circle keeps settings, credentials, history and sessions. | `~/.circle` |
 | `CIRCLE_NO_TUI` | `1`, `true` or `yes` forces [line mode](cli.md#full-screen-and-line-mode). | unset |
 | `CIRCLE_NO_UPDATE_CHECK` | `1`, `true` or `yes` turns off the daily [update reminder](cli.md#the-reminder). | unset |
-| `VISUAL`, `EDITOR` | Used by `/editor`. Falls back to `nvim`, `vim`, `nano`. | unset |
+| `VISUAL`, `EDITOR` | Used by `/editor`. Falls back to `nvim`, `vim`, `nano`, then `notepad` on Windows. | unset |
 
 ## Model requests
 

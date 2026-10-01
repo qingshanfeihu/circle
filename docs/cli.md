@@ -31,7 +31,7 @@ circle update [--check] [--version X.Y.Z]
 | `--check` | Say whether a newer release exists. Install nothing. |
 | `--version X.Y.Z` | Install that release instead, including an older one, to go back. |
 
-`circle update` works on a copy that `install.sh` or `install.ps1` put in place. It finds the newest release on GitHub, downloads the file for your operating system and processor, checks its sha256 against the `.sha256` file published beside it, unpacks it next to the running version, and only then moves the `current` link. A session that is already open keeps running the old code until you restart it. The newest three versions stay on disk, so `circle update --version <old>` goes back without a download, and a session opened a few updates ago still finds its own files. Older ones are removed.
+`circle update` works on a copy that `install.sh` or `install.ps1` put in place. It finds the newest release on GitHub, downloads the file for your operating system and processor, checks its sha256 against the `.sha256` file published beside it, unpacks it next to the running version, and only then moves the `current` link. The newest three versions, the previously selected version, and the updating process's version stay on disk, so `circle update --version <old>` goes back without a download when that version is retained. Other versions are removed. Cleanup does not track every open session: close sessions from older versions before repeatedly updating (see [Known issues](known-issues.md#install-and-release)).
 
 A copy that runs from a git checkout, or that was installed with `pip`, is not changed. `circle update` prints what to run instead. To open a folder that is called `update`, write `./update`.
 
