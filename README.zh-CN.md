@@ -18,21 +18,27 @@
 
 Circle 在你指定的目录里读代码、改文件、跑命令。任何兼容 OpenAI 或 Anthropic 接口的服务或网关都能接。运行命令和改文件之前它会先问你，屏幕上一眼能看出它是在干活，还是在等你。
 
-**Circle 还很早（0.1.x）。** 没有操作系统级沙箱，OAuth 登录不可用，重启后不能恢复旧会话。把它用在重要的东西上之前，请先读[已知问题](docs/known-issues.md)和[安全使用](docs/security.md)。文档目前只有英文版。
+**Circle 还很早（0.2.0）。** 没有操作系统级沙箱，OAuth 登录不可用，重启后不能恢复旧会话。把它用在重要的东西上之前，请先读[已知问题](docs/known-issues.md)和[安全使用](docs/security.md)。文档目前只有英文版。
 
 ## 安装
 
-需要 macOS 或 Linux，以及 Python 3.11 或更新版本。
+预编译安装包无需安装 Python。按平台选择命令：
+
+**macOS — Apple 芯片（arm64）**
 
 ```bash
-git clone https://github.com/qingshanfeihu/circle
-cd circle
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.2.0/install.sh | CIRCLE_VERSION=0.2.0 bash
 ```
 
-也有预编译的二进制和安装脚本，但目前唯一的发布版本较旧，只有 macOS Apple 芯片的包。用之前请看[快速开始](docs/quickstart.md#1-install)。
+**Linux — x86_64（glibc，基于 Ubuntu 22.04 构建）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.2.0/install.sh | CIRCLE_VERSION=0.2.0 bash
+```
+
+0.2.0 提供以上两种安装包。本版不支持 Windows、Intel Mac、Linux ARM64 或 Alpine/musl。归档文件及校验和见 [Releases](https://github.com/qingshanfeihu/circle/releases/tag/v0.2.0)。
+
+安装器将 `circle` 放到 `~/.local/bin`，必要时将该目录加入 shell 配置。重新打开终端后运行 `circle --version` 验证。安装细节和限制见[快速开始](docs/quickstart.md#1-install)。
 
 ## 运行
 
@@ -56,8 +62,14 @@ circle
 
 ## 开发
 
+源码开发需要 Python 3.11 或更新版本。
+
 ```bash
-pip install -e '.[dev]'
+git clone https://github.com/qingshanfeihu/circle
+cd circle
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
 

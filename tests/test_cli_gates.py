@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from circle import __version__
 from circle.cli import main
 from circle.init_flow import complete_api_key_init
 from circle.probe import ProbeResult
@@ -13,7 +14,7 @@ from circle.trust import accept_trust
 def test_version_and_print_home(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setenv("CIRCLE_HOME", str(tmp_path))
     assert main(["--version"]) == 0
-    assert "0.1.0" in capsys.readouterr().out
+    assert capsys.readouterr().out.strip() == __version__
     assert main(["--print-home"]) == 0
     assert str(tmp_path.resolve()) in capsys.readouterr().out
 

@@ -4,9 +4,9 @@ This page lists what does not work as you might expect in the current version, w
 
 ## Install and release
 
-- **The published binary is old and covers one platform.** The only release is `v0.1.0`. It is built for macOS on Apple silicon and predates much of the current code. `install.sh` on Linux or on an Intel Mac fails with a 404. Install [from source](quickstart.md#1-install) instead.
+- **Only two binary targets are supported in 0.2.0:** macOS Apple silicon and Linux x86_64 with glibc. There are no Windows, Intel Mac or Linux ARM64 packages. No updater is included.
 - **`install.sh` does not check a checksum.** The release publishes `SHA256SUMS`, but the script never downloads it.
-- **A binary built from the current source may not start a session.** The build recipe does not include the prompt files that the agent reads at start. This has not been built to confirm.
+- **macOS packages are not notarized.** Follow your organization's policy for running downloaded software.
 
 ## Sign-in
 
@@ -14,6 +14,8 @@ This page lists what does not work as you might expect in the current version, w
 - **`circle --init` erases your settings**, including `mcp_servers` and `credential_files`. Keep a copy of `settings.json` first.
 
 ## Sessions
+
+- **Checkpoint writes are synchronous.** Circle waits for each step to be saved before starting the next one, avoiding an asynchronous checkpoint deadlock in the pinned LangGraph version. Slow storage can add latency.
 
 - **Restarting forgets the session list.** The conversation is still stored in `checkpoints.sqlite`, but nothing in the interface reopens it. See [Sessions](sessions.md#what-does-not-carry-over).
 - **`/fork` and `/clone` start the model with no history.** The earlier messages show on screen, but the model does not have them. Work around it by asking Circle to recap the state, or by starting a fresh session with `/import` of an export.

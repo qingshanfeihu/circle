@@ -4,26 +4,17 @@ Circle runs in your terminal and works on the files in a folder you choose. To u
 
 ## 1. Install
 
-Circle needs macOS or Linux. Windows is not supported.
+Version 0.2.0 provides prebuilt packages for **macOS Apple silicon** and **Linux x86_64 with glibc** (built on Ubuntu 22.04). Windows, Intel Mac, Linux ARM64 and Alpine/musl are not supported by this release. No Python installation is needed.
 
-**From source** works everywhere and is the way to get the current code. It needs Python 3.11 or newer:
-
-```bash
-git clone https://github.com/qingshanfeihu/circle
-cd circle
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
-```
-
-**Prebuilt binary** is faster, but check the [Releases page](https://github.com/qingshanfeihu/circle/releases) first: a release only helps if it has a file for your platform. At the time of writing that is macOS on Apple silicon only.
+On either supported platform:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.2.0/install.sh | CIRCLE_VERSION=0.2.0 bash
 ```
 
-The installer downloads the release for your OS and CPU, puts `circle` in `~/.local/bin`, and adds that folder to your shell's `PATH` if needed. It does not verify checksums. To pin a version, set `CIRCLE_VERSION`, for example `CIRCLE_VERSION=0.1.0`.
+The installer downloads the release for your OS and CPU, puts `circle` in `~/.local/bin`, and adds that folder to your shell's `PATH` if needed. Reopen the terminal or reload the shell configuration after installation. It does not verify checksums; archives and `SHA256SUMS` are available on the [Releases page](https://github.com/qingshanfeihu/circle/releases/tag/v0.2.0) for manual verification.
+
+For source development, see [Contributing](../CONTRIBUTING.md). Native Windows support and an updater are not included in this version.
 
 Verify:
 

@@ -18,21 +18,27 @@
 
 Circle reads and edits the code in a folder you choose, and runs commands there. It works with any service or gateway that speaks the OpenAI or Anthropic API. It asks before it runs a command or changes a file, and the screen shows at a glance whether it is working or waiting for you.
 
-**Circle is early software (0.1.x).** There is no operating-system sandbox, OAuth sign-in is not available, and sessions do not reopen after a restart. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
+**Circle is early software (0.2.0).** There is no operating-system sandbox, OAuth sign-in is not available, and sessions do not reopen after a restart. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
 
 ## Install
 
-Circle needs macOS or Linux and Python 3.11 or newer.
+Prebuilt packages need no Python installation. Choose your platform:
+
+**macOS — Apple silicon (arm64)**
 
 ```bash
-git clone https://github.com/qingshanfeihu/circle
-cd circle
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.2.0/install.sh | CIRCLE_VERSION=0.2.0 bash
 ```
 
-There is also a prebuilt binary and an installer script. The only release is old and covers macOS on Apple silicon; see the [Quickstart](docs/quickstart.md#1-install) before you use it.
+**Linux — x86_64 (glibc, built on Ubuntu 22.04)**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/v0.2.0/install.sh | CIRCLE_VERSION=0.2.0 bash
+```
+
+Version 0.2.0 provides these two packages. Windows, Intel Mac, Linux ARM64 and Alpine/musl are not supported by this release. See [Releases](https://github.com/qingshanfeihu/circle/releases/tag/v0.2.0) for the archives and checksums.
+
+The installer puts `circle` in `~/.local/bin` and adds that directory to your shell configuration when needed. Reopen your terminal, then run `circle --version`. See the [Quickstart](docs/quickstart.md#1-install) for installation details and limitations.
 
 ## Run
 
@@ -56,8 +62,14 @@ The first time, Circle asks for a base URL, a key and a model, then asks you to 
 
 ## Development
 
+Source development requires Python 3.11 or newer.
+
 ```bash
-pip install -e '.[dev]'
+git clone https://github.com/qingshanfeihu/circle
+cd circle
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
 

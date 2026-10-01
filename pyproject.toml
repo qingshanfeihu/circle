@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "circle"
-version = "0.1.0"
+version = "0.2.0"
 description = "A terminal coding agent for your own model endpoint"
 requires-python = ">=3.11"
 readme = "README.md"

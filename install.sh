@@ -84,7 +84,7 @@ install_binary() {
     asset="$(detect_asset)"
     url="https://github.com/${CIRCLE_REPO}/releases/download/v${version}/${asset}"
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
+    trap "rm -rf -- $(printf '%q' "$tmp")" EXIT
 
     log "下载 $url"
     curl -fsSL "$url" -o "$tmp/$asset"

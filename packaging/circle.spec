@@ -8,13 +8,18 @@ Asset name convention (install.sh):
   circle-<os>-<arch>.tar.gz  containing onedir folder ``circle/`` with binary ``circle``.
 """
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
+
+root = Path(SPECPATH).parent
 
 datas = []
 binaries = []
 hiddenimports = []
 
-for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith"):
+for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith",
+            "langchain_openai", "langchain_anthropic", "sqlite_vec"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -23,6 +28,9 @@ for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith
     except Exception:  # noqa: BLE001 — optional collect; build still proceeds
         hiddenimports += collect_submodules(pkg)
 
+datas += collect_data_files("circle", includes=["prompts/**/*.md"])
+datas += copy_metadata("circle")
+hiddenimports += collect_submodules("circle")
 hiddenimports += [
     "circle",
     "circle.cli",
@@ -49,8 +57,8 @@ hiddenimports += [
 ]
 
 a = Analysis(
-    ["../circle/__main__.py"],
-    pathex=[".."],
+    [str(root / "circle" / "__main__.py")],
+    pathex=[str(root)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
