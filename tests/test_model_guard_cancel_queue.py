@@ -82,3 +82,35 @@ def test_cancel_drains_steering_first_and_each_class_in_order(tmp_path, monkeypa
                 < transcript.index("FOLLOWUP-2-done"))
     finally:
         remove()
+
+
+
+def test_timer_snapshot_and_ui_reset_cannot_invert_locks(tmp_path, monkeypatch):
+    import threading
+    app = _app(tmp_path, monkeypatch)
+    sink = app._bridge._sink
+    held, callback_entered, reset_done, timer_done = (threading.Event() for _ in range(4))
+    original = sink._post
+    def post(snapshot):
+        if threading.current_thread().name == "test-snapshot-timer":
+            callback_entered.set()
+        original(snapshot)
+    sink._post = post
+    def reset_from_ui():
+        with app._app.lock:
+            held.set()
+            callback_entered.wait(0.1)
+            sink.reset()
+        reset_done.set()
+    def publish_from_timer():
+        held.wait(2)
+        sink.flush()
+        timer_done.set()
+    ui = threading.Thread(target=reset_from_ui, daemon=True)
+    timer = threading.Thread(target=publish_from_timer, name="test-snapshot-timer", daemon=True)
+    ui.start()
+    timer.start()
+    assert reset_done.wait(3), "UI reset blocked behind a timer that waits for the UI lock"
+    assert timer_done.wait(3), "timer remained blocked after UI reset"
+    ui.join(1)
+    timer.join(1)

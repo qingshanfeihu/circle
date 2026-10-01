@@ -95,6 +95,7 @@ class HarnessBridge:
         on_error: Callable[[BaseException], None],
         on_status: Callable[[str], None] | None = None,
         on_snapshot: Callable[[MessageSnapshot], None] | None = None,
+        snapshot_lock: Any = None,
     ) -> None:
         self._agent = agent
         self._thread_id = thread_id
@@ -105,7 +106,7 @@ class HarnessBridge:
         self._on_status = on_status or (lambda _s: None)
         self._on_snapshot = on_snapshot
         # 一个用户回合一个 sink：start 时重置，审批后 resume 沿用（工具行留在同一回合里）
-        self._sink = TuiSink(post=self._post_snapshot)
+        self._sink = TuiSink(post=self._post_snapshot, post_lock=snapshot_lock)
         self._worker: threading.Thread | None = None
         self._cancelled = False
         self._cancel_token: CancellationToken | None = None

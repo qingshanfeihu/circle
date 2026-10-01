@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from typing import Any
 
 from circle.events import CircleEvent
 from circle.tui.message_model import MessageSnapshot
@@ -16,10 +17,12 @@ _SNAPSHOT_INTERVAL = 0.04
 
 
 class TuiSink:
-    def __init__(self, *, post: Callable[[MessageSnapshot], None]) -> None:
+    def __init__(self, *, post: Callable[[MessageSnapshot], None], post_lock: Any = None) -> None:
         self._post = post
         self._reducer = MessageReducer()
-        self._post_lock = threading.Lock()
+        # UI callbacks also acquire the app lock. Sharing its reentrant lock avoids
+        # timer -> post -> UI versus UI -> reset -> post lock inversion.
+        self._post_lock = post_lock if post_lock is not None else threading.RLock()
         self._timer_lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._dirty = False

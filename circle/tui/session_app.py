@@ -514,6 +514,7 @@ class CircleSessionApp:
             on_error=self._on_error,
             on_status=self._on_status,
             on_snapshot=self._on_snapshot,
+            snapshot_lock=self._app.lock,
         )
         bridge.auto_approve = self._approvals.yolo_enabled(self._thread_id)
         self._footer.set_yolo(bridge.auto_approve)

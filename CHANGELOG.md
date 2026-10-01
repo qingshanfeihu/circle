@@ -36,6 +36,7 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 ### Fixed
 
 - Model discovery uses only valid IDs returned by the server, reports empty or failed responses, and supports explicit manual configuration. API paths no longer omit or duplicate `/v1`, and the original host is preserved.
+- Timer snapshots and UI actions share a lock, preventing a cancelled turn from deadlocking the next queued message.
 - Checkpoints finish writing between agent steps, preventing stalled multi-step turns.
 - Windows redirected output remains Unicode-safe in the prebuilt program.
 - Windows host drive paths and expanded home paths work with filesystem tools while traversal checks remain enforced. Non-console output uses default terminal dimensions.
