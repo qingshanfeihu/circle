@@ -28,8 +28,6 @@ jobs:
             asset_arch: arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    env:
-      CIRCLE_HOME: ${{ runner.temp }}/circle-home
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,6 +38,7 @@ jobs:
         env:
           EXPECTED_ARCH: ${{ matrix.asset_arch }}
         run: |
+          echo "CIRCLE_HOME=${RUNNER_TEMP}/circle-home" >> "$GITHUB_ENV"
           python - <<'PY'
           import os, platform, tomllib
           from pathlib import Path
