@@ -4,7 +4,6 @@ This page lists what does not work as you might expect in the current version, w
 
 ## Install and release
 
-- **The published release still covers only one platform.** As of 2026-10-01, GitHub's latest release is `v0.1.0`, with a macOS Apple silicon archive and its checksum. The five-platform workflow is prepared in the source, but its new assets have not been published. The installers return a missing-file error on Linux, Intel Macs and Windows until a release includes their assets; install [from source](quickstart.md#1-install) meanwhile.
 - **Very old sessions can lose their installed files after several updates.** Cleanup keeps the newest three versions and the previously selected one; `circle update` also keeps the version its own process runs from. It does not track every other open session. Close sessions from older versions before repeatedly updating or reinstalling.
 - **Upgrading from `v0.1.0` needs the installer once.** That version only shipped for macOS on Apple silicon and has no `circle update`. Close Circle and run the current installer to migrate to the versioned layout; use `circle update` afterwards.
 - **Windows console interaction still needs real-machine testing.** Automated tests exercise console modes, Unicode I/O and clipboard calls against stand-ins, command approvals, file locking, and the installer. Interactive drawing, keys, window resizing, `/copy` and user PATH changes still need checking in Windows Terminal, PowerShell and cmd. Windows ARM64 has no native build; running the x86_64 program under emulation is unverified.
@@ -18,6 +17,8 @@ This page lists what does not work as you might expect in the current version, w
 - **`circle --init` erases your settings**, including `mcp_servers` and `credential_files`. Keep a copy of `settings.json` first.
 
 ## Sessions
+
+- **Slow storage adds latency between agent steps.** Checkpoints finish writing synchronously to avoid stalled multi-step turns.
 
 - **Restarting forgets the session list.** The conversation is still stored in `checkpoints.sqlite`, but nothing in the interface reopens it. See [Sessions](sessions.md#what-does-not-carry-over).
 - **`/fork` and `/clone` start the model with no history.** The earlier messages show on screen, but the model does not have them. Work around it by asking Circle to recap the state, or by starting a fresh session with `/import` of an export.
@@ -69,5 +70,3 @@ Any file whose name is `plan.md` or `plan` can be written in any folder. `edit_f
 ## Slow failures
 
 If your endpoint is unreachable, a turn can take minutes to give up. Circle retries up to six times within about five minutes, and each try waits up to 45 seconds.
-
-- Checkpoint writes complete synchronously between agent steps to avoid stalled multi-step turns. Slow storage can increase latency between steps.
