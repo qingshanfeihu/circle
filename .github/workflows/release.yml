@@ -88,6 +88,12 @@ jobs:
       - name: Smoke the frozen program
         run: python scripts/smoke_frozen.py dist/circle
 
+      - name: Verify frozen terminal input handoff
+        if: matrix.os != 'windows'
+        env:
+          CIRCLE_TEST_BINARY: dist/circle/circle
+        run: python -m pytest tests/test_tui_handoff_pty.py -q
+
       - name: Pack and verify installed archive
         run: |
           python scripts/pack_release.py ${{ matrix.os }} ${{ matrix.arch }}

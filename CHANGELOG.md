@@ -4,6 +4,11 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Fixed
+
+- The first command after initialization or workspace trust now reaches the main interface. The previous screen finishes its input reader before the session takes over the terminal.
+- Ctrl+C cancels initialization, and cancellation restores the terminal and stops its input reader.
+
 ## 0.2.0 - 2026-10-01
 
 ### Added

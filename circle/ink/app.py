@@ -103,6 +103,7 @@ class InkApp:
         self._render_pending = False
         self._running = False
         self._input_thread: threading.Thread | None = None
+        self._input_stop = threading.Event()
 
     @property
     def width(self) -> int:
@@ -158,6 +159,9 @@ class InkApp:
         return self._prev_screen
 
     def start(self) -> None:
+        if self._input_thread is not None and self._input_thread.is_alive():
+            raise RuntimeError("the previous terminal input reader is still running")
+        self._input_stop = threading.Event()
         self._running = True
         self._terminal.set_raw_mode(True)
 
@@ -196,6 +200,16 @@ class InkApp:
     def stop(self) -> None:
         self._running = False
         self._suspended = False
+        self._input_stop.set()
+        reader = self._input_thread
+        if reader is not None and reader is not threading.current_thread():
+            deadline = time.monotonic() + 2
+            while reader.is_alive() and time.monotonic() < deadline:
+                if reader.native_id is not None:
+                    self._terminal.cancel_read(reader.native_id)
+                reader.join(0.05)
+            if reader.is_alive():
+                raise RuntimeError("terminal input reader did not stop")
 
         cleanup = SHOW_CURSOR + DBP + DFE + DCS_REPORTS
         if self._mouse:
@@ -358,18 +372,21 @@ class InkApp:
                 self._on_resize(0, None)
 
     def _read_input(self) -> None:
-        while self._running:
+        stop_event = self._input_stop
+        while self._running and not stop_event.is_set():
             if self._suspended:
                 time.sleep(0.05)
                 continue
             try:
-                text = self._terminal.read_input()
-                if not text:
+                text = self._terminal.read_input(stop_event)
+                if not text or stop_event.is_set():
                     break
                 events = self._input_parser.feed(text)
                 input_handler = self._on_input
                 mouse_handler = self._on_mouse
                 for event in events:
+                    if stop_event.is_set():
+                        break
                     if input_handler is not None:
                         input_handler(event)
                     if mouse_handler is not None and isinstance(event, MouseEvent):

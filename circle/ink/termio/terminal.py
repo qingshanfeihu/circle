@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from typing import TextIO
 
 if sys.platform != "win32":
@@ -81,13 +82,27 @@ class Terminal:
             self._console.leave_raw()
             self._raw = False
 
-    def read_input(self) -> str:
+    def read_input(self, stop_event: threading.Event | None = None) -> str:
         """Block until some input arrives and return it as text. An empty string means the
         terminal is gone."""
         if self._console is not None:
-            return self._console.read()
+            return self._console.read(stop_event) if stop_event is not None else self._console.read()
+        if stop_event is not None:
+            import select
+
+            while not stop_event.is_set():
+                if select.select([self.input_fd], [], [], 0.05)[0]:
+                    if stop_event.is_set():
+                        return ""
+                    break
+            else:
+                return ""
         data = os.read(self.input_fd, 4096)
         return data.decode("utf-8", errors="replace") if data else ""
+
+    def cancel_read(self, native_id: int) -> None:
+        if self._console is not None:
+            self._console.cancel_read(native_id)
 
     def write(self, data: str) -> None:
         if self._console is not None:

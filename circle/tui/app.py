@@ -129,7 +129,7 @@ class CircleApp:
         if key in {"down", "arrowdown"}:
             self._move(1)
             return
-        if key in {"escape"} or (event.ctrl and key == "c"):
+        if key in {"escape", "ctrl+c"} or (event.ctrl and key == "c"):
             self._ink._running = False  # noqa: SLF001
             return
 

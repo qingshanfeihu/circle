@@ -3385,8 +3385,7 @@ def _run_gates_then_session(
                             model_override=self.model_override,
                         ).run()
             finally:
-                if self._ink._running:
-                    self._ink.stop()
+                self._ink.stop()
             return 0
 
     return _GateThenSession(

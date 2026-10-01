@@ -38,6 +38,7 @@ The workflow then:
 2. runs the test suite on every platform;
 3. freezes the program with `packaging/circle.spec`;
 4. starts it and opens offline OpenAI and Anthropic sessions (`scripts/smoke_frozen.py`): the version matches, the prompt files are inside, `/help` and `/exit` work;
+   POSIX builds also run real PTY initialization with a local mock API: valid models, empty lists and failed discovery with manual Anthropic configuration, first-command delivery, repeated handoffs, cancellation, trust denial and exit. Windows input cancellation is exercised against kernel32 stand-ins; interactive Windows console testing remains a known limitation.
 5. packs `circle-<os>-<arch>.tar.gz` (`.zip` on Windows) and its `.sha256` (`scripts/pack_release.py`);
 6. installs each actual archive twice in a scratch prefix, verifies its checksum and starts the installed program (`scripts/smoke_install.py`);
 7. checks all five embedded build identities against the tag commit (`scripts/verify_release.py`), uploads assets to a draft and verifies the complete asset names and sizes before publishing the release with the assets, `install.sh`, `install.ps1`, `SHA256SUMS`, and the changelog section as the notes.

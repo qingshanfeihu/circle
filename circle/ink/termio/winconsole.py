@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ctypes
 import time
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,6 +66,10 @@ def _declare(k: Any) -> None:
         "SetConsoleMode": ([c_void, c_u32], c_int),
         "ReadConsoleW": ([c_void, c_void, c_u32, ctypes.POINTER(c_u32), c_void], c_int),
         "WriteConsoleW": ([c_void, ctypes.c_wchar_p, c_u32, ctypes.POINTER(c_u32), c_void], c_int),
+        "WaitForSingleObject": ([c_void, c_u32], c_u32),
+        "OpenThread": ([c_u32, c_int, c_u32], c_void),
+        "CancelSynchronousIo": ([c_void], c_int),
+        "CloseHandle": ([c_void], c_int),
         "GlobalAlloc": ([c_u32, ctypes.c_size_t], c_void),
         "GlobalLock": ([c_void], c_void),
         "GlobalUnlock": ([c_void], c_int),
@@ -107,6 +112,7 @@ class Console:
         self._hout = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
         self._saved: _Saved | None = None
         self._pending = ""
+        self._read_pending = threading.Event()
 
     def _mode(self, handle: Any) -> int | None:
         if handle is None or handle in _INVALID_HANDLE:
@@ -146,19 +152,50 @@ class Console:
         k.SetConsoleMode(self._hin, saved.input_mode)
         k.SetConsoleMode(self._hout, saved.output_mode)
 
-    def read(self) -> str:
+    def read(self, stop_event: threading.Event | None = None) -> str:
         """Block until some input arrives and return it. An empty string means the console is
         gone (the same as end of file on a pipe)."""
         buf = ctypes.create_unicode_buffer(_READ_UNITS)
         while True:
+            if stop_event is not None:
+                if stop_event.is_set():
+                    return ""
+                ready = self._k.WaitForSingleObject(self._hin, 50)
+                if ready == 258:  # WAIT_TIMEOUT
+                    continue
+                if ready != 0:
+                    return ""
+                if stop_event.is_set():
+                    return ""
             count = ctypes.c_uint32()
-            if not self._k.ReadConsoleW(self._hin, buf, _READ_UNITS - 1, ctypes.byref(count), None):
+            self._read_pending.set()
+            try:
+                if stop_event is not None and stop_event.is_set():
+                    return ""
+                read_ok = self._k.ReadConsoleW(
+                    self._hin, buf, _READ_UNITS - 1, ctypes.byref(count), None,
+                )
+            finally:
+                self._read_pending.clear()
+            if not read_ok:
                 return ""
             if count.value == 0:
                 return ""
             text, self._pending = join_utf16(self._pending, buf[:count.value])
             if text:
                 return text
+
+    def cancel_read(self, native_id: int) -> None:
+        # Console events can signal readiness without producing text. Cancel a
+        # pending ReadConsoleW before another screen takes ownership of input.
+        if not self._read_pending.is_set():
+            return
+        handle = self._k.OpenThread(0x0001, False, native_id)  # THREAD_TERMINATE
+        if handle:
+            try:
+                self._k.CancelSynchronousIo(handle)
+            finally:
+                self._k.CloseHandle(handle)
 
     def write(self, text: str) -> None:
         for start in range(0, len(text), _WRITE_CHARS):
