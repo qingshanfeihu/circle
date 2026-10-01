@@ -22,6 +22,7 @@ from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph._internal._constants import CONFIG_KEY_DURABILITY
 
 from circle.approvals import ApprovalPolicy, default_policy
 from circle.context_middleware import build_context_middleware
@@ -268,7 +269,13 @@ def create_harness(
     if store is not None:
         kwargs["store"] = store
 
-    agent = create_deep_agent(**kwargs)
+    # LangGraph 1.2.12 async delta-checkpoint workers can wait on one another
+    # during fast multi-step turns. Finish each checkpoint before the next step.
+    # with_config retains the compiled graph API and callers may still explicitly
+    # select another durability mode through invoke/stream.
+    agent = create_deep_agent(**kwargs).with_config(
+        {"configurable": {CONFIG_KEY_DURABILITY: "sync"}}
+    )
     try:
         compat.bind(agent.nodes["tools"].bound.tools_by_name.values())
     except Exception:
