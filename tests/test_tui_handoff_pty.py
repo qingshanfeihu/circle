@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX PTY; Windows read
 if os.name != "nt":
     import fcntl
     import pty
+    import termios
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMAND = [str(Path(os.environ["CIRCLE_TEST_BINARY"]).resolve())] if os.environ.get("CIRCLE_TEST_BINARY") else [sys.executable, "-m", "circle"]
@@ -38,7 +39,7 @@ class Terminal:
         if not self.pid:
             os.chdir(ROOT)
             os.execve(COMMAND[0], [*COMMAND, *args], env)
-        fcntl.ioctl(self.fd, 0x5414, struct.pack('HHHH',40,160,0,0))
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH',40,160,0,0))
         self.text=''; self.mark=0; self.ended=False
     def read(self, delay=.1):
         ready,_,_=select.select([self.fd],[],[],delay)
