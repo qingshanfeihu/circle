@@ -6,7 +6,7 @@ import getpass
 from pathlib import Path
 
 from circle.oauth import OAuthNotConfiguredError, start_oauth_login
-from circle.probe import fallback_model_list, resolve_endpoint
+from circle.probe import normalize_base_url, resolve_endpoint
 from circle.settings import (
     CircleSettings,
     ModelAuth,
@@ -34,6 +34,20 @@ def _pick(label: str, options: list[str]) -> str:
         print("无效序号，请重试。")
 
 
+def _pick_model(models: list[str]) -> str:
+    print("select a model or enter a model id (manual ids are unverified):")
+    for i, model in enumerate(models, 1):
+        print(f"  [{i}] {model}")
+    while True:
+        raw = input("model id: ").strip()
+        if raw.isdigit() and models:
+            if 1 <= int(raw) <= len(models):
+                return models[int(raw) - 1]
+        elif raw:
+            return raw
+        print("enter a model id or a valid selection")
+
+
 def run_init(*, home: Path | None = None) -> CircleSettings:
     """Interactive init. Returns saved settings."""
     print("Circle 初始化")
@@ -53,17 +67,15 @@ def _init_api_key(*, home: Path | None) -> CircleSettings:
     if not base_url or not api_key:
         raise SystemExit("URL 与 KEY 都是必填项")
 
+    base_url = normalize_base_url(base_url, "openai")
     print("正在探测协议…")
     probed = resolve_endpoint(base_url, api_key)
     protocol = probed.protocol
-    models = probed.models or fallback_model_list()
-    label = "OpenAI 兼容" if protocol == "openai" else "Anthropic Messages"
-    if probed.inferred:
-        print(f"探测未命中，按 URL 推断为 {label}，使用内置模型列表。")
-    else:
-        print(f"检测到 {label}，共 {len(models)} 个模型。")
-
-    model = _pick("选择主模型:", models)
+    print(probed.summary())
+    if probed.inferred or probed.status == "failed":
+        protocol = _pick("select protocol for manual configuration:", ["openai", "anthropic"])
+    base_url = normalize_base_url(probed.base_url or base_url, protocol)
+    model = _pick_model(probed.models)
     settings = CircleSettings(
         initialized=True,
         auth=ModelAuth(
@@ -88,8 +100,7 @@ def _init_oauth(*, home: Path | None) -> CircleSettings:
         print("回落到 API URL + KEY。")
         return _init_api_key(home=home)
 
-    models = fallback_model_list()
-    model = _pick("选择主模型:", models)
+    model = _pick_model(list(session.models))
     settings = CircleSettings(
         initialized=True,
         auth=ModelAuth(
@@ -119,17 +130,28 @@ def complete_api_key_init(
     api_key: str,
     model: str | None = None,
     home: Path | None = None,
-    probe=resolve_endpoint,
+    protocol: str | None = None,
+    probe=None,
 ) -> CircleSettings:
     """Non-interactive init used by tests and scripted installs."""
-    probed = probe(base_url, api_key)
-    if probed is None:
-        protocol = "openai"
-        models = fallback_model_list()
+    if not api_key.strip():
+        raise ValueError("API key is required")
+    base_url = normalize_base_url(base_url, protocol or "openai")
+    probed = resolve_endpoint(base_url, api_key, protocol=protocol) if probe is None else probe(base_url, api_key)
+    if probed is None or probed.inferred or probed.status == "failed":
+        if not protocol or not model or not model.strip():
+            raise ValueError("discovery failed; specify both protocol and model for manual configuration")
+        models = []
     else:
+        if protocol and probed.protocol != protocol:
+            raise ValueError("discovered protocol does not match requested protocol")
         protocol = probed.protocol
-        models = probed.models or fallback_model_list()
-    chosen = model or (models[0] if models else fallback_model_list()[0])
+        models = probed.models
+        base_url = probed.base_url or base_url
+    chosen = (model or "").strip() or (models[0] if models else "")
+    if not chosen:
+        raise ValueError("no models discovered; specify a model id for manual configuration")
+    base_url = normalize_base_url(base_url, protocol)
     settings = CircleSettings(
         initialized=True,
         auth=ModelAuth(

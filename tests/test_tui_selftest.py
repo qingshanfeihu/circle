@@ -52,7 +52,7 @@ def test_api_key_init_flow_renders_and_saves(tmp_path: Path, monkeypatch):
     ctl.submit_line("sk-live")
     assert ctl.step == InitStep.PICK_MODEL
     body = _snap(ctl.body_lines())
-    assert "检测到" in body
+    assert "discovered 2 models (openai)" in body
     assert "gpt-test-a" in body
     ctl.move(1)
     ctl.confirm()

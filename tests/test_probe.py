@@ -27,7 +27,7 @@ def test_probe_prefers_openai_when_models_ok(monkeypatch):
 
 def test_probe_falls_through_to_anthropic(monkeypatch):
     def fake_get(url: str, headers: dict, timeout: float):
-        if url.endswith("/v1/models"):
+        if url.endswith("/v1/models") and "x-api-key" in headers:
             assert headers.get("x-api-key") == "sk"
             body = json.dumps({"data": [{"id": "claude-test"}]}).encode()
             return 200, body
@@ -72,7 +72,8 @@ def test_resolve_endpoint_uses_url_hint_when_probe_misses(monkeypatch):
     )
     assert result.protocol == "anthropic"
     assert result.inferred is True
-    assert result.models == probe.FALLBACK_MODELS
+    assert result.models == []
+    assert result.status == "failed"
 
 
 def test_resolve_endpoint_defaults_openai_without_hint(monkeypatch):

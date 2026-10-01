@@ -271,9 +271,11 @@ def test_mcp_list_and_reload(tmp_path: Path, monkeypatch):
 
 
 def test_models_list(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("circle.probe._get", lambda *args: (200, b'{"data":[{"id":"server-model"}]}'))
     app = _app(tmp_path, monkeypatch)
     app._on_submit("/models")  # noqa: SLF001
-    assert "模型" in _snap(app) or "model" in _snap(app).lower()
+    assert "server-model" in _snap(app)
+    assert "discovered 1 models" in _snap(app)
 
 
 def test_trust_and_reload(tmp_path: Path, monkeypatch):

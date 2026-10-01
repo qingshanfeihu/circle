@@ -9,7 +9,7 @@ from typing import Callable
 
 from circle.oauth import OAuthNotConfiguredError, start_oauth_login
 from circle.paths import normalize_workspace
-from circle.probe import ProbeResult, fallback_model_list, resolve_endpoint
+from circle.probe import ProbeResult, normalize_base_url, resolve_endpoint
 from circle.settings import (
     CircleSettings,
     ModelAuth,
@@ -27,6 +27,7 @@ class InitStep(Enum):
     OAUTH_PROVIDER = auto()
     OAUTH_WAIT = auto()
     PROBING = auto()
+    MANUAL_PROTOCOL = auto()
     PICK_MODEL = auto()
     DONE = auto()
 
@@ -85,9 +86,14 @@ class InitController:
             lines.append(self.status or "等待授权回调")
         elif self.step == InitStep.PROBING:
             lines.append(self.status or "正在探测协议…")
+        elif self.step == InitStep.MANUAL_PROTOCOL:
+            lines.append(self.status)
+            lines.append("select protocol for manual configuration:")
+            for i, protocol in enumerate(("openai", "anthropic")):
+                lines.append(f"  {'▸' if i == self.model_focus else ' '} {protocol}")
         elif self.step == InitStep.PICK_MODEL:
-            label = "OpenAI 兼容" if self.protocol == "openai" else "Anthropic Messages"
-            lines.append(f"检测到 {label}。选择主模型:")
+            lines.append(self.status)
+            lines.append("select a model or enter a model id (manual ids are unverified):")
             for i, m in enumerate(self.models):
                 mark = "▸" if i == self.model_focus else " "
                 lines.append(f"  {mark} {m}")
@@ -103,12 +109,14 @@ class InitController:
             return "URL"
         if self.step == InitStep.API_KEY:
             return "KEY"
+        if self.step == InitStep.PICK_MODEL:
+            return "model id"
         return ""
 
     def move(self, delta: int) -> None:
         if self.step == InitStep.AUTH_MODE:
             self.model_focus = 0 if (self.model_focus + delta) % 2 == 0 else 1
-        elif self.step == InitStep.OAUTH_PROVIDER:
+        elif self.step in {InitStep.OAUTH_PROVIDER, InitStep.MANUAL_PROTOCOL}:
             self.model_focus = 0 if (self.model_focus + delta) % 2 == 0 else 1
         elif self.step == InitStep.PICK_MODEL and self.models:
             self.model_focus = (self.model_focus + delta) % len(self.models)
@@ -124,7 +132,11 @@ class InitController:
             if not text:
                 self.error = "URL 不能为空"
                 return
-            self.base_url = text.rstrip("/")
+            try:
+                self.base_url = normalize_base_url(text, "openai")
+            except ValueError as exc:
+                self.error = str(exc)
+                return
             self.step = InitStep.API_KEY
         elif self.step == InitStep.API_KEY:
             if not text:
@@ -139,9 +151,21 @@ class InitController:
                 elif text in {"2", "openai"}:
                     self.model_focus = 1
             self._confirm_oauth_provider()
+        elif self.step == InitStep.MANUAL_PROTOCOL:
+            if text in {"1", "openai", "2", "anthropic"}:
+                self.model_focus = 0 if text in {"1", "openai"} else 1
+                self._confirm_manual_protocol()
+            else:
+                self.error = "select openai or anthropic"
         elif self.step == InitStep.PICK_MODEL:
-            if text.isdigit() and 1 <= int(text) <= len(self.models):
+            if text.isdigit() and self.models:
+                if not 1 <= int(text) <= len(self.models):
+                    self.error = "invalid model selection"
+                    return
                 self.model_focus = int(text) - 1
+            elif text:
+                self.models = [text]
+                self.model_focus = 0
             self._confirm_model()
 
     def confirm(self) -> None:
@@ -151,6 +175,8 @@ class InitController:
             self._confirm_auth_mode()
         elif self.step == InitStep.OAUTH_PROVIDER:
             self._confirm_oauth_provider()
+        elif self.step == InitStep.MANUAL_PROTOCOL:
+            self._confirm_manual_protocol()
         elif self.step == InitStep.PICK_MODEL:
             self._confirm_model()
 
@@ -177,32 +203,38 @@ class InitController:
         self._oauth_token = getattr(session, "access_token", "") or ""
         self.base_url = getattr(session, "base_url", "") or ""
         self.protocol = "anthropic" if self.oauth_provider == "anthropic" else "openai"
-        self.models = list(getattr(session, "models", None) or fallback_model_list())
+        self.models = list(getattr(session, "models", None) or [])
         self.model_focus = 0
         self.step = InitStep.PICK_MODEL
         self.status = "OAuth 完成"
 
     def _start_probe(self) -> None:
         self.step = InitStep.PROBING
-        self.status = "正在探测 OpenAI /models → Anthropic /v1/models…"
+        self.status = "discovering models…"
         probed = self.probe(self.base_url, self.api_key)
         if probed is None:
-            self.protocol = "openai"
-            self.models = fallback_model_list()
-            self.status = "探测失败，按 OpenAI 兼容 + 内置列表"
+            probed = ProbeResult("openai", [], inferred=True, status="failed")
+        self.protocol = probed.protocol
+        self.models = list(probed.models)
+        self.base_url = probed.base_url or self.base_url
+        self.status = probed.summary()
+        self.model_focus = 0
+        if probed.inferred or probed.status == "failed":
+            self.model_focus = 1 if self.protocol == "anthropic" else 0
+            self.step = InitStep.MANUAL_PROTOCOL
         else:
-            self.protocol = probed.protocol
-            self.models = probed.models or fallback_model_list()
-            if getattr(probed, "inferred", False):
-                self.status = f"探测未命中，按 URL 推断: {self.protocol}"
-            else:
-                self.status = f"探测成功: {self.protocol}"
+            self.step = InitStep.PICK_MODEL
+
+    def _confirm_manual_protocol(self) -> None:
+        self.protocol = "openai" if self.model_focus == 0 else "anthropic"
+        self.base_url = normalize_base_url(self.base_url, self.protocol)
+        self.status = f"manual configuration ({self.protocol}); model is unverified"
         self.model_focus = 0
         self.step = InitStep.PICK_MODEL
 
     def _confirm_model(self) -> None:
         if not self.models:
-            self.error = "没有可选模型"
+            self.error = "enter a model id; no models were discovered"
             return
         model = self.models[self.model_focus]
         if self.mode == "oauth":
