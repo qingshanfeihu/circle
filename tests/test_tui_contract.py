@@ -353,11 +353,19 @@ class _FakeTimer:
 
 
 @pytest.fixture
-def timers(monkeypatch):
+def timers(monkeypatch, app):
     from circle.tui import session_app
 
     _FakeTimer.made = []
-    monkeypatch.setattr(session_app.threading, "Timer", _FakeTimer)
+    real_timer = session_app.threading.Timer
+    def card_timer(delay, fn, *args, **kwargs):
+        # Other sessions and snapshot/shimmer workers also create timers. Mock only
+        # this app's typing-idle callback, so timers[0] really is its deferred card.
+        if (getattr(fn, "__qualname__", "") == "CircleSessionApp._defer_card_while_typing.<locals>.later"
+                and any(cell.cell_contents is app for cell in (fn.__closure__ or ()))):
+            return _FakeTimer(delay, fn)
+        return real_timer(delay, fn, *args, **kwargs)
+    monkeypatch.setattr(session_app.threading, "Timer", card_timer)
     return _FakeTimer.made
 
 
