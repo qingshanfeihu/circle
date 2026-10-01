@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-01
+
 ### Fixed
 
 - The first command after initialization or workspace trust now reaches the main interface. The previous screen finishes its input reader before the session takes over the terminal.
