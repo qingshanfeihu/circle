@@ -520,3 +520,26 @@ def test_non_console_terminal_dimensions_use_defaults(monkeypatch, error):
     terminal = Terminal()
     assert terminal.columns == 80
     assert terminal.rows == 24
+
+
+
+def test_windows_redirected_cli_uses_utf8_even_without_python_flags(monkeypatch):
+    import io
+    from circle import cli
+    output, error = io.BytesIO(), io.BytesIO()
+    streams = [io.TextIOWrapper(io.BytesIO(), encoding="cp1252"),
+               io.TextIOWrapper(output, encoding="cp1252"),
+               io.TextIOWrapper(error, encoding="cp1252")]
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    for name, stream in zip(("stdin", "stdout", "stderr"), streams):
+        monkeypatch.setattr(cli.sys, name, stream)
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["--help"])
+    assert stopped.value.code == 0
+    streams[1].flush()
+    assert "工作区目录" in output.getvalue().decode("utf-8")
+    for stream in streams:
+        assert stream.encoding == "utf-8"
+    streams[2].write("模型测试")
+    streams[2].flush()
+    assert error.getvalue().decode("utf-8") == "模型测试"

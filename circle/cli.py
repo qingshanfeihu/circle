@@ -42,7 +42,18 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_windows_stdio() -> None:
+    """Frozen Python ignores PYTHONUTF8; redirected Windows streams still need Unicode."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_windows_stdio()
     raw = sys.argv[1:] if argv is None else list(argv)
     if raw[:1] == ["update"]:  # a folder named "update" is opened as ./update
         from circle.update import update_main

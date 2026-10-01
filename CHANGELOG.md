@@ -37,6 +37,7 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 - Model discovery uses only valid IDs returned by the server, reports empty or failed responses, and supports explicit manual configuration. API paths no longer omit or duplicate `/v1`, and the original host is preserved.
 - Checkpoints finish writing between agent steps, preventing stalled multi-step turns.
+- Windows redirected output remains Unicode-safe in the prebuilt program.
 - Windows host drive paths and expanded home paths work with filesystem tools while traversal checks remain enforced. Non-console output uses default terminal dimensions.
 - Frozen builds include both provider integrations and package metadata. Native archives are installed and started offline before publication; all five archives must match the release commit and pass checksum verification.
 
