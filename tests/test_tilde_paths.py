@@ -44,3 +44,32 @@ def test_plain_parent_is_still_traversal():
 
     with pytest.raises(ValueError, match="traversal"):
         filesystem.validate_path("../etc/passwd")
+
+
+@pytest.mark.parametrize("path", [r"C:\Users\me\file.txt", "D:/work/file.txt"])
+def test_windows_drive_paths_keep_their_drive(path, monkeypatch):
+    import circle.host_paths as host_paths
+    monkeypatch.setattr(host_paths.sys, "platform", "win32")
+    install_tilde_expansion()
+    import deepagents.middleware.filesystem as filesystem
+    assert filesystem.validate_path(path) == path.replace("\\", "/")
+
+
+@pytest.mark.parametrize("path", [r"C:\work\..\secret", "D:/work/../secret"])
+def test_windows_drive_paths_still_reject_traversal(path, monkeypatch):
+    import circle.host_paths as host_paths
+    monkeypatch.setattr(host_paths.sys, "platform", "win32")
+    install_tilde_expansion()
+    import deepagents.middleware.filesystem as filesystem
+    with pytest.raises(ValueError, match="traversal"):
+        filesystem.validate_path(path)
+
+
+def test_windows_drive_paths_enforce_allowed_prefixes(monkeypatch):
+    import circle.host_paths as host_paths
+    monkeypatch.setattr(host_paths.sys, "platform", "win32")
+    install_tilde_expansion()
+    import deepagents.middleware.filesystem as filesystem
+    assert filesystem.validate_path("C:/work/file.txt", allowed_prefixes=["C:/work/"]) == "C:/work/file.txt"
+    with pytest.raises(ValueError, match="start with"):
+        filesystem.validate_path("C:/other/file.txt", allowed_prefixes=["C:/work/"])

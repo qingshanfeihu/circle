@@ -37,7 +37,7 @@ class Terminal:
         try:
             size = os.get_terminal_size(self.fd)
             return size.columns
-        except OSError:
+        except (OSError, ValueError):
             return 80
 
     @property
@@ -45,7 +45,7 @@ class Terminal:
         try:
             size = os.get_terminal_size(self.fd)
             return size.lines
-        except OSError:
+        except (OSError, ValueError):
             return 24
 
     def set_raw_mode(self, enable: bool) -> None:

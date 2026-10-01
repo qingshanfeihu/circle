@@ -8,8 +8,16 @@ on:
     branches: [main, "release/**"]
   pull_request:
 
+env:
+  PIP_DEFAULT_TIMEOUT: "60"
+  PIP_RETRIES: "5"
+
 permissions:
   contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:

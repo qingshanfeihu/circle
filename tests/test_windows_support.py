@@ -509,3 +509,14 @@ def test_the_model_is_told_the_shell_on_windows(monkeypatch, tmp_path: Path):
     assert "Shell: cmd.exe" in block and "no bash" in block
     monkeypatch.setattr(system_prompt, "sys", SimpleNamespace(platform="linux"))
     assert "Shell:" not in system_prompt.format_env_block(cwd=tmp_path)
+
+
+@pytest.mark.parametrize("error", [OSError("not a terminal"), ValueError("bad file descriptor")])
+def test_non_console_terminal_dimensions_use_defaults(monkeypatch, error):
+    from circle.ink.termio.terminal import Terminal
+    def unavailable(_fd):
+        raise error
+    monkeypatch.setattr(os, "get_terminal_size", unavailable)
+    terminal = Terminal()
+    assert terminal.columns == 80
+    assert terminal.rows == 24

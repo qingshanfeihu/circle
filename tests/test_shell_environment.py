@@ -8,6 +8,12 @@ out of model-run commands is still the point, so secret-looking names are remove
 
 from __future__ import annotations
 
+import json
+import os
+import shlex
+import subprocess
+import sys
+
 from circle.harness import sandbox_backend
 from circle.sandbox import shell_environment
 
@@ -28,9 +34,16 @@ def test_secret_looking_names_are_removed_and_the_rest_kept():
 def test_execute_sees_path_home_and_trust_but_no_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("SSL_CERT_FILE", "/ca/bundle.pem")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
-    monkeypatch.setenv("PATH", "/opt/venv/bin:/usr/bin:/bin")
-    out = sandbox_backend(tmp_path).execute(
-        'printf "%s|%s|%s|%s" "$HOME" "$SSL_CERT_FILE" "$PATH" "$ANTHROPIC_API_KEY"')
-    home, cert, path, key = str(getattr(out, "output", out)).strip().split("|")
-    assert home and cert == "/ca/bundle.pem" and path.startswith("/opt/venv/bin")
+    expected_path = str(tmp_path / "venv-bin") + os.pathsep + os.environ["PATH"]
+    monkeypatch.setenv("PATH", expected_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    script = tmp_path / "inspect_environment.py"
+    script.write_text('import json, os; print(json.dumps([os.environ.get(k, "") for k in '
+                      '["HOME", "SSL_CERT_FILE", "PATH", "ANTHROPIC_API_KEY"]]))')
+    argv = [sys.executable, str(script)]
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    out = sandbox_backend(tmp_path).execute(command)
+    assert out.exit_code == 0, out.output
+    home, cert, path, key = json.loads(out.output.strip())
+    assert home == str(tmp_path / "home") and cert == "/ca/bundle.pem" and path == expected_path
     assert key == ""
