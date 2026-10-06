@@ -3,6 +3,8 @@ message; ``!!command`` keeps it to you; esc stops it."""
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 
 import pytest
@@ -45,15 +47,16 @@ def _history(app) -> list:
 
 def test_bang_runs_the_command_and_shares_the_output(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
-    (app.workspace / "notes.txt").write_text("alpha\nbeta\n")
-    _type(app, "!wc -l notes.txt")
+    (app.workspace / "notes.txt").write_text("alpha-line\n")
+    command = "type notes.txt" if os.name == "nt" else "cat notes.txt"  # runs in the workspace
+    _type(app, f"!{command}")
     _idle(app)
     shown = "\n".join(plain(row) for row in app._transcript.snapshot())  # noqa: SLF001
-    assert " › !wc -l notes.txt" in shown and "Bash(wc -l notes.txt)" in shown
-    assert "2 notes.txt" in shown
+    assert f" › !{command}" in shown and f"Bash({command})" in shown
+    assert "alpha-line" in shown
     [message] = _history(app)
-    assert isinstance(message, HumanMessage) and "2 notes.txt" in message.content
-    assert message.additional_kwargs["circle_shell"]["command"] == "wc -l notes.txt"
+    assert isinstance(message, HumanMessage) and "alpha-line" in message.content
+    assert message.additional_kwargs["circle_shell"]["command"] == command
 
 
 def test_double_bang_keeps_the_output_to_you(tmp_path, monkeypatch):
@@ -64,6 +67,12 @@ def test_double_bang_keeps_the_output_to_you(tmp_path, monkeypatch):
     assert _history(app) == []
 
 
+# esc ends a running command only where commands run in their own process group
+_POSIX_STOP = pytest.mark.skipif(sys.platform == "win32",
+                                 reason="commands cannot be stopped on Windows yet")
+
+
+@_POSIX_STOP
 @pytest.mark.parametrize("key", [KeyPress(key="escape"), KeyPress(key="ctrl+c", ctrl=True, char="c")])
 def test_esc_and_ctrl_c_stop_a_bang_command(tmp_path, monkeypatch, key):
     app = _app(tmp_path, monkeypatch)
@@ -104,6 +113,7 @@ def test_a_session_that_starts_with_a_command_is_named_after_it(tmp_path, monkey
     assert session_index.latest(app.home, app.workspace).title == "!echo hi"
 
 
+@_POSIX_STOP
 def test_a_turn_opened_after_esc_keeps_its_place_when_the_command_row_grows(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     _type(app, "!sleep 30")

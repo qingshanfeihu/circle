@@ -584,18 +584,50 @@ def _read_piped(wait_s: float | None) -> str:
     """
     if sys.stdin.isatty():
         return ""
-    if wait_s is not None:
-        import select
-
-        try:
-            ready, _, _ = select.select([sys.stdin], [], [], wait_s)
-        except (OSError, ValueError):
-            ready = [sys.stdin]
-        if not ready:
-            print(f"circle: nothing arrived on stdin within {wait_s:.0f}s; going on "
-                  "without it (use </dev/null to skip the wait)", file=sys.stderr)
-            return ""
+    if wait_s is not None and not _input_waiting(wait_s):
+        print(f"circle: nothing arrived on stdin within {wait_s:.0f}s; going on "
+              "without it (use </dev/null to skip the wait)", file=sys.stderr)
+        return ""
     return sys.stdin.read()
+
+
+def _input_waiting(wait_s: float) -> bool:
+    """Whether standard input has something to read, or has ended, within ``wait_s``."""
+    if os.name == "nt":
+        return _windows_input_waiting(wait_s)
+    import select
+
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], wait_s)
+    except (OSError, ValueError):
+        return True
+    return bool(ready)
+
+
+def _windows_input_waiting(wait_s: float) -> bool:
+    """``select`` takes only sockets on Windows, so ask the pipe how much it holds. A file,
+    or a pipe whose writer has gone, can be read without waiting."""
+    import ctypes
+    import msvcrt
+    import time
+    from ctypes import wintypes
+
+    try:
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+    except (OSError, ValueError, AttributeError):
+        return True
+    peek = ctypes.WinDLL("kernel32", use_last_error=True).PeekNamedPipe  # type: ignore[attr-defined]
+    peek.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, wintypes.LPDWORD,
+                     wintypes.LPDWORD, wintypes.LPDWORD]
+    peek.restype = wintypes.BOOL
+    deadline = time.monotonic() + wait_s
+    while True:
+        waiting = wintypes.DWORD(0)
+        if not peek(handle, None, 0, None, ctypes.byref(waiting), None):
+            return True  # not a pipe, or its writer has closed it: reading does not block
+        if waiting.value or time.monotonic() >= deadline:
+            return bool(waiting.value)
+        time.sleep(0.05)
 
 
 def _print_mode(args: argparse.Namespace, home: Path, workspace: Path) -> int:

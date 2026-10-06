@@ -33,7 +33,7 @@ What each approval option does is explained in [Security](security.md#approvals)
 
 ## Interrupt
 
-Press `esc` to stop a turn. Circle marks it `✖ Interrupted` and puts back any message you were typing. A shell command that is running is ended, with everything it started, within a fraction of a second. `ctrl+c` also stops a turn. When Circle is idle, `ctrl+c` clears what you typed, and on an empty box twice exits. `ctrl+z` suspends Circle; `fg` in the shell brings it back.
+Press `esc` to stop a turn. Circle marks it `✖ Interrupted` and puts back any message you were typing. A shell command that is running is ended, with everything it started, within a fraction of a second (not on Windows yet: there it keeps going until it finishes or times out). `ctrl+c` also stops a turn. When Circle is idle, `ctrl+c` clears what you typed, and on an empty box twice exits. `ctrl+z` suspends Circle; `fg` in the shell brings it back.
 
 ## Steer a running turn
 

@@ -356,15 +356,23 @@ def test_init_starts_agent_turn(tmp_path: Path, monkeypatch):
 
 
 def test_editor_with_arguments_gets_the_whole_draft(tmp_path: Path, monkeypatch):
+    import os
+
     from circle.ink.parse_keypress import KeyPress, PasteEvent
 
     app = _app(tmp_path, monkeypatch)
     seen = tmp_path / "seen.txt"
-    editor = tmp_path / "ed.sh"
     # Like "code -w": the editor command has an argument before the file name.
-    editor.write_text(f"#!/bin/sh\n[ \"$1\" = -w ] || exit 9\ncp \"$2\" {seen}\n"
-                      "printf 'line one\\nline two\\n' > \"$2\"\n", encoding="utf-8")
-    editor.chmod(0o755)
+    if os.name == "nt":
+        editor = tmp_path / "ed.cmd"
+        editor.write_text('@echo off\nif not "%~1"=="-w" exit /b 9\n'
+                          f'copy /y "%~2" "{seen}" >nul\n'
+                          '(echo line one& echo line two)> "%~2"\n', encoding="utf-8")
+    else:
+        editor = tmp_path / "ed.sh"
+        editor.write_text(f"#!/bin/sh\n[ \"$1\" = -w ] || exit 9\ncp \"$2\" {seen}\n"
+                          "printf 'line one\\nline two\\n' > \"$2\"\n", encoding="utf-8")
+        editor.chmod(0o755)
     monkeypatch.setenv("EDITOR", f"{editor} -w")
     monkeypatch.delenv("VISUAL", raising=False)
     app._app.suspend_for_external = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
@@ -376,6 +384,25 @@ def test_editor_with_arguments_gets_the_whole_draft(tmp_path: Path, monkeypatch)
     app._handle_key(KeyPress(key="ctrl+g", ctrl=True, char="g"))  # noqa: SLF001
     assert seen.read_text() == "\n".join(f"row {i}" for i in range(20)) + "\nfix it"
     assert app._prompt.value == "line one↵line two"  # noqa: SLF001
+
+
+def test_the_editor_setting_is_a_program_or_a_command_line(tmp_path: Path):
+    """A program that exists as written stays one word (a path with a space, or a Windows
+    path, whose backslashes a POSIX split would eat); otherwise it is split like a shell."""
+    from circle.tui.session_app import _editor_command
+
+    program = tmp_path / "my editor.cmd"
+    program.write_text("", encoding="utf-8")
+    assert _editor_command(str(program)) == [str(program)]
+    assert _editor_command("code -w") == ["code", "-w"]
+    assert _editor_command('"C:\\Program Files\\ed.exe" -w') == ["C:\\Program Files\\ed.exe", "-w"]
+
+
+def test_the_resume_hint_quotes_a_folder_for_this_shell():
+    from circle.tui.session_app import _shell_word
+
+    assert _shell_word("/tmp/plain") == "/tmp/plain"
+    assert _shell_word("/tmp/with space") in ("'/tmp/with space'", '"/tmp/with space"')
 
 
 def test_effort_sets_the_thinking_depth_for_the_run(tmp_path: Path, monkeypatch):

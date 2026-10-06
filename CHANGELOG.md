@@ -36,7 +36,7 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 - **The API key was shown in clear text** while you typed it during setup. It is shown as dots.
 - **Endpoints that repeat the running usage total on every streamed chunk** (StepFun and other OpenAI-compatible gateways) were counted once per chunk. The footer showed millions of tokens and a summary started on almost every step. Each answer is now counted once.
 - **A summary made during a turn could appear as the answer**, with its words run together, when the model's own reply was empty. The answer is now only the model's last message, and a summary's text never reaches the screen.
-- `esc` now stops a running shell command at once, with everything it started.
+- `esc` now stops a running shell command at once, with everything it started. Not on Windows yet.
 - `esc` on a setup screen leaves setup, as `ctrl+c` does. A lone `esc` used to be held, waiting for the rest of an escape sequence.
 - A long paste reaches the model as the pasted text, not as its placeholder.
 - `/fork` and `/clone` give the model the earlier messages, `/tree` goes back for the model as well as on screen, and sessions are listed again after a restart.

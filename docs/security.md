@@ -92,7 +92,7 @@ Auto mode applies to the current conversation only and is not saved. `/new`, `/f
 
 ## The shell environment
 
-Commands run with your user rights, in the workspace folder, with no input. Standard output and error are joined. A command has 120 seconds by default; the model can ask for up to an hour. Output is cut at 100,000 characters. Each command runs in its own process group: when it times out, or you press `esc`, the command and every process it started are ended.
+Commands run with your user rights, in the workspace folder, with no input. Standard output and error are joined. A command has 120 seconds by default; the model can ask for up to an hour. Output is cut at 100,000 characters. Each command runs in its own process group: when it times out, or you press `esc`, the command and every process it started are ended. On Windows `esc` does not stop a command yet; it runs until it finishes or times out (see [Known issues](known-issues.md#install-and-release)).
 
 Circle removes secrets from the command's environment: any variable whose name has a word such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` in it. The API key Circle uses for the model is not passed on. `OPENAI_BASE_URL` and `CIRCLE_MODEL` are.
 

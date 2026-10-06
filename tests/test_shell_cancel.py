@@ -3,8 +3,10 @@ everything it started, is ended rather than left to finish or time out."""
 
 from __future__ import annotations
 
+import sys
 import time
 
+import pytest
 from langchain_core.messages import AIMessage
 
 from circle.approvals import default_policy
@@ -12,6 +14,12 @@ from circle.harness import create_harness
 from circle.sandbox import STOPPED_OUTPUT, CircleSandboxBackend
 from circle.testing import ScriptedModel
 from circle.tui.harness_bridge import HarnessBridge
+
+# Circle runs commands in their own process group and ends the group on esc or a timeout. On
+# Windows commands go through deepagents' own backend, which cannot be stopped (Known issues),
+# and these commands are POSIX shell.
+pytestmark = pytest.mark.skipif(sys.platform == "win32",
+                                reason="POSIX shell and process groups; not on Windows yet")
 
 
 def _wait_until(predicate, timeout: float) -> bool:

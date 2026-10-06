@@ -33,10 +33,15 @@ def _say(app, text: str) -> None:
 
 
 def _wait_idle(app) -> None:
-    """Until the turn and everything queued after it have finished."""
+    """Until the turn and everything queued after it have finished. Read under the app's
+    lock, as the session changes this state: a queued message is taken from the queue and
+    its turn marked busy while the lock is held, and a read without it can fall in between
+    (on a slow machine it did) and see nothing left to do."""
     deadline = time.monotonic() + 10
-    while ((app._bridge.is_running or app._is_loading or app._msg_queue)  # noqa: SLF001
-           and time.monotonic() < deadline):
+    while time.monotonic() < deadline:
+        with app._app.lock:  # noqa: SLF001
+            if not (app._bridge.is_running or app._is_loading or app._msg_queue):  # noqa: SLF001
+                break
         time.sleep(0.02)
     assert not app._is_loading  # noqa: SLF001
 

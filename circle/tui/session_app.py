@@ -607,15 +607,13 @@ class CircleSessionApp:
             return ""
         if saved is None or saved.thread_id != self._thread_id:
             return ""
-        import shlex
-
         command = f"circle --session {self._thread_id}"
         try:
             here = Path.cwd().resolve()
         except OSError:
             here = None
         if here != self.workspace:
-            command += " " + shlex.quote(str(self.workspace))
+            command += " " + _shell_word(str(self.workspace))
         return f"To resume this session: {command}"
 
     def _send_initial_messages(self) -> None:
@@ -3879,7 +3877,6 @@ class CircleSessionApp:
 
     def _cmd_editor(self, _args: str) -> None:
         import os
-        import shlex
         import shutil
         import subprocess
         import tempfile
@@ -3895,10 +3892,7 @@ class CircleSessionApp:
         if not editor:
             self._fail("No $VISUAL / $EDITOR set, and no nvim, vim or nano found")
             return
-        try:
-            command = shlex.split(editor)  # $EDITOR may carry arguments, e.g. "code -w"
-        except ValueError:
-            command = [editor]
+        command = _editor_command(editor)
         # The editor gets the draft in full: real line breaks, pastes written out
         initial = self._prompt.model_text(self._prompt.value)
         with tempfile.NamedTemporaryFile(
@@ -4618,6 +4612,36 @@ class CircleSessionApp:
                 self._app.render()
             return True
         return session.handle_key(kp.key, kp.char)
+
+
+def _shell_word(text: str) -> str:
+    """``text`` as one word of a command typed into your shell: cmd or PowerShell on
+    Windows, a POSIX shell elsewhere."""
+    if os.name == "nt":
+        import subprocess
+
+        return subprocess.list2cmdline([text])
+    import shlex
+
+    return shlex.quote(text)
+
+
+def _editor_command(editor: str) -> list[str]:
+    """$VISUAL / $EDITOR as a command. A program that exists as written is one word (a
+    path with spaces, or a Windows path with backslashes); otherwise the words are split
+    like a shell's, so ``code -w`` works."""
+    import shlex
+    import shutil
+
+    if shutil.which(editor) or os.path.isfile(editor):
+        return [editor]
+    try:
+        if os.name == "nt":  # posix rules would eat the backslashes of C:\path
+            return [part[1:-1] if len(part) > 1 and part[0] == part[-1] == '"' else part
+                    for part in shlex.split(editor, posix=False)]
+        return shlex.split(editor)
+    except ValueError:
+        return [editor]
 
 
 def _faint(text: str) -> str:
