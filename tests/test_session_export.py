@@ -82,11 +82,15 @@ def test_files_that_cannot_be_read_or_written_are_errors_not_crashes(tmp_path, m
     odd.write_text('{"type": "ai", "data": [1]}\n', encoding="utf-8")
     app._dispatch_slash("import", str(blob))  # noqa: SLF001
     app._dispatch_slash("import", str(odd))  # noqa: SLF001
-    app._dispatch_slash("export", "/no_such_root_here/x.md")  # noqa: SLF001
+    # A folder that is a file cannot be written into, by any account on any system (a path at
+    # the root of a drive can be, on a Windows runner)
+    (app.workspace / "a-file").write_text("not a folder", encoding="utf-8")
+    app._dispatch_slash("export", "a-file/x.md")  # noqa: SLF001
     shown = "\n".join(plain(r) for r in app._transcript.snapshot())  # noqa: SLF001
     assert "blob.bin is not a text file" in shown
     assert "odd.jsonl is not a Circle JSONL export" in shown
-    assert "Could not write /no_such_root_here/x.md" in shown
+    failure = f"Could not write {app.workspace / 'a-file' / 'x.md'}"
+    assert "".join(failure.split()) in "".join(shown.split())  # the long path may wrap
 
 
 def test_a_command_that_raises_is_reported_and_the_session_goes_on(tmp_path, monkeypatch):
