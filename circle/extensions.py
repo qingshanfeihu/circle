@@ -280,7 +280,7 @@ class ExtensionHost:
                 missing = [n for n in names if n not in by_name]
                 if missing:
                     # 只跳过这一个子代理；扩展的其他注册照常生效
-                    note = f"子代理 {spec.get('name')} 引用了不存在的工具 {missing}，已跳过"
+                    note = f"subagent {spec.get('name')} names tools that do not exist {missing}; skipped"
                     logger.warning("extension %s: %s", ext.name, note)
                     if note not in ext.warnings:
                         ext.warnings.append(note)
@@ -320,15 +320,18 @@ class ExtensionHost:
             where = [str(self.home / "extensions")]
             if self.trusted:
                 where.append(str(self.workspace / ".circle" / "extensions"))
-            return ["没有扩展。放置位置：" + "、".join(where) + "（每个扩展一个目录，内含 extension.py）"]
+            return ["No extensions. Put each in its own folder with an extension.py, in "
+                    + " or ".join(where)]
         lines = []
         for ext in self.extensions:
             if not ext.enabled:
-                state = "已关闭"
+                state = "off"
             elif ext.error:
-                state = f"加载失败：{ext.error}"
+                state = f"failed to load: {ext.error}"
             else:
-                state = f"工具 {len(ext.tools)} · 命令 {len(ext.commands)}"
-            lines.append(f"{ext.name}（{'项目' if ext.source == 'project' else '用户'}）— {state}")
+                tools, commands = len(ext.tools), len(ext.commands)
+                state = (f"{tools} tool{'' if tools == 1 else 's'} · "
+                         f"{commands} command{'' if commands == 1 else 's'}")
+            lines.append(f"{ext.name} ({'project' if ext.source == 'project' else 'user'}) · {state}")
             lines.extend(f"  ⚠ {note}" for note in ext.warnings)
         return lines

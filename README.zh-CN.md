@@ -18,7 +18,7 @@
 
 Circle 在你指定的目录里读代码、改文件、跑命令。任何兼容 OpenAI 或 Anthropic 接口的服务或网关都能接。运行命令和改文件之前它会先问你，屏幕上一眼能看出它是在干活，还是在等你。
 
-**Circle 还很早（0.2.1）。** 没有操作系统级沙箱，OAuth 登录不可用，重启后不能恢复旧会话。把它用在重要的东西上之前，请先读[已知问题](docs/known-issues.md)和[安全使用](docs/security.md)。文档目前只有英文版。
+**Circle 还很早（0.3.0）。** 没有操作系统级沙箱，OAuth 登录不可用。把它用在重要的东西上之前，请先读[已知问题](docs/known-issues.md)和[安全使用](docs/security.md)。文档目前只有英文版。
 
 ## 安装
 
@@ -55,6 +55,16 @@ circle
 
 第一次会让你填 base URL、key 和模型，然后确认信任这个目录。之后输入任务按 `enter` 即可。输入 `/` 看命令，输入 `?` 看快捷键。
 
+```bash
+circle "修好失败的测试"                   # 带着第一句话启动
+circle -c                                # 接着这个目录里上一次的对话
+circle -r                                # 从列表里挑一个对话
+circle -p "总结 README.md"               # 一次提问，答案写到 stdout
+git diff | circle -p "审一下这个改动"
+```
+
+Circle 工作时可以继续打字：`enter` 会插话给正在进行的回合。空输入框连按两次 `esc` 回到对话里更早的位置，`ctrl+l` 换模型，`ctrl+f` 在对话里查找。[CLI](docs/cli.md) 还有给脚本和编辑器用的 JSON 事件流和 RPC 模式。
+
 终端界面使用对话卡片、状态灯，以及跟随终端颜色的 `auto` 主题。如果终端不能报告颜色，可用 `/themes dark` 或 `/themes light` 手动指定。各信号的含义和限制见[界面说明](docs/interface.md)。
 
 ## 了解更多
@@ -70,7 +80,7 @@ circle
 
 ## 开发
 
-从源码安装或参与开发时才需要 Python 3.11 或更新版本：
+从源码安装或参与开发时才需要 Python 3.11 或更新版本（先用 `python3 --version` 查看；macOS 自带的是 3.9，要先装新版）：
 
 ```bash
 git clone https://github.com/qingshanfeihu/circle

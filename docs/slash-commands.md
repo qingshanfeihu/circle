@@ -1,8 +1,8 @@
 # Slash commands
 
-Type `/` at the start of the input box to run a command. `tab` completes the name of a built-in command. `/help` lists everything, including [custom commands](custom-commands.md) and [extension](extensions.md) commands.
+Type `/` at the start of the input box to run a command. The commands it can become are listed above the box as you type: built-in, custom, extension, and `skill:<name>`, each with its description. `↑` `↓` move, `tab` takes the marked command, `enter` takes it and runs it, `esc` closes the list. With the list closed, `tab` completes what the matches share and lists them in the footer. `/help` lists everything, including [custom commands](custom-commands.md) and [extension](extensions.md) commands.
 
-A message that starts with `/` but matches no command is **sent to the model as plain text**. Circle does not tell you the command was not found, so check the spelling if nothing seems to happen.
+A message that looks like a command but is not one, such as `/modles`, is **not sent**. The footer says `Unknown command /modles · did you mean /models?` and the text stays in the box to fix. A path such as `/usr/bin/env is missing` goes to the model as a message, and so does anything that starts with a space.
 
 ## While Circle is working
 
@@ -17,13 +17,13 @@ A [custom command](custom-commands.md) also works: it is queued like any message
 | Command | Aliases | What it does |
 |---|---|---|
 | `/new` | `/clear` | Start a new session. |
-| `/resume [n\|id]` | `/sessions` | List the sessions from this run, or switch to one. |
+| `/resume [n\|id]` | `/sessions` | Choose a session from a list, or open one by number or id. The list can show every folder's sessions, rename and delete. |
 | `/continue` | | Switch back to the previous session. |
 | `/name [title]` | | Set the session title, or show it. |
 | `/session` | | Show the session id, title, model and sizes. |
-| `/tree [id]` | | Show the message tree, or move to a message. |
-| `/fork [id]` | | Start a new session from a message. |
-| `/clone` | | Start a new session from the current branch. |
+| `/tree [words]` | | List every message of the session, all branches, and go back to one. The next message starts a branch from there. `esc` twice on an empty input box does the same. |
+| `/fork [words]` | | Choose one of your messages; a new session starts with everything before it. |
+| `/clone` | | Start a new session with the history of the current one. |
 | `/undo` | | Undo the last turn on screen. |
 | `/redo` | | Bring it back. |
 | `/compact [hint]` | `/summarize` | Summarize older messages now. |
@@ -35,12 +35,13 @@ What these do and do not do is on [Sessions](sessions.md). Several have limits i
 | Command | What it does |
 |---|---|
 | `/copy` | Copy the last answer to the clipboard. |
-| `/export [path]` | Write the conversation as Markdown. |
-| `/import <path>` | Start a new session from an exported file. |
+| `/export [html\|jsonl\|path]` | Write the conversation as Markdown (the default), HTML or JSONL; a file name's ending picks the format. |
+| `/import <path>` | Start a new session from an exported file. A JSONL export comes back exactly. |
 | `/share` | Write a Markdown copy under `shares/` and copy its path. Nothing is uploaded. |
 | `/unshare` | Delete that copy. |
-| `/editor` | Edit the draft in `$VISUAL` or `$EDITOR`. The result is put back in the input box, not sent. |
-| `/thinking` | Hide or show the model's thinking rows. |
+| `/editor` | Edit the draft in `$VISUAL` or `$EDITOR`, which may include arguments such as `code -w`. The result is put back in the input box, not sent. `ctrl+g` does the same. |
+| `/thinking [level]` | Hide or show the model's thinking rows. With a level, the same as `/effort <level>`. |
+| `/effort [level]` | Choose how hard the model thinks from a list, or set it: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Applies for the rest of this run; `ctrl+s` in the list also saves it. See [Choose a model](models.md#thinking-depth). |
 | `/details` | Expand or collapse tool output, the same as `ctrl+o`. |
 
 ## Safety and mode
@@ -50,7 +51,7 @@ What these do and do not do is on [Sessions](sessions.md). Several have limits i
 | `/plan [on\|off]` | `/plan-mode` | Turn `read-only` mode on or off. With no argument it switches. |
 | `/yolo [off]` | `/auto` | Stop asking before commands and file changes in this session. `/yolo off` asks again. Anything else, including no argument, turns it on. |
 | `/approvals [revoke N]` | | Show the "always allow" rules and the last decisions. `revoke N` removes rule N. |
-| `/trust` | | Trust this folder. Creates `.agent/` in it. Does not load the folder's extensions until you `/reload`. |
+| `/trust` | | Trust this folder. Nothing is written into it. Does not load the folder's extensions until you `/reload`. |
 
 See [Security](security.md).
 
@@ -58,10 +59,10 @@ See [Security](security.md).
 
 | Command | Aliases | What it does |
 |---|---|---|
-| `/models [name]` | `/model` | List the models the endpoint offers, or switch to one and rebuild the agent. |
+| `/models [name]` | `/model` | Choose a model from what the endpoint offers, or use one by its id, for this session. `ctrl+s` in the list also saves it as the default. |
 | `/login anthropic\|openai` | `/connect` | Sign in with OAuth. **Not available in this version:** it fails unless `CIRCLE_OAUTH_MOCK=1`. Set up an API URL and key instead. |
 | `/logout` | | Clear the saved credentials and mark Circle as not set up. |
-| `/settings` | | Show the current model, endpoint, trusted-folder count, MCP count and data folder. |
+| `/settings` | | A list of the settings: theme, whether thinking is shown, what `esc` `esc` opens, and the model, thinking depth, endpoint, trusted folders, MCP servers and data folder. `enter` changes the marked one and saves it at once; the model and depth rows open their own lists. |
 | `/themes [auto\|dark\|light]` | | Show or set the theme. It applies at once and is saved. `auto` follows your terminal live; `dark` or `light` overrides it. |
 
 See [Choose a model](models.md).
@@ -86,7 +87,7 @@ See [Choose a model](models.md).
 
 ## Line mode
 
-Line mode understands only `/help` and `/exit`. Everything else is sent to the model as text. See [CLI](cli.md#full-screen-and-line-mode).
+Line mode understands only `/help` and `/exit`. Other commands are not sent to the model; standard error says so. See [CLI](cli.md#full-screen-and-line-mode).
 
 ## Name clashes
 

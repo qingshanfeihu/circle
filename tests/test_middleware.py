@@ -390,3 +390,26 @@ def test_pruning_keeps_small_sessions_json_and_protected_tools(monkeypatch):
     out = prune_messages(msgs, pruned_ids=set(decision["_circle_pruned_tool_ids"]))
     assert out[0].content == doc and out[1].content == big
     assert "pruned to free context" in out[2].content and out[4].content == big
+
+
+def test_empty_results_count_only_in_a_row():
+    found = ("grep", {"pattern": "hit"}, "a.py:1: hit")
+    msgs = _turn(*[("grep", {"pattern": f"p{i}"}, "No matches found") for i in range(3)],
+                 found, ("grep", {"pattern": "p9"}, "No matches found"))
+    assert _reminder(msgs) is None
+
+
+def test_parallel_lookups_that_find_nothing_count_once():
+    # The model looks for three config files at once; none exists. That is one move.
+    msgs: list = [HumanMessage(content="run the tests")]
+    names = ("pyproject.toml", "requirements.txt", "setup.py")
+    msgs.append(AIMessage(content="", tool_calls=[
+        {"name": "glob", "args": {"pattern": f"**/{n}"}, "id": f"g{i}", "type": "tool_call"}
+        for i, n in enumerate(names)]))
+    msgs.extend(ToolMessage(content="No files found", name="glob", tool_call_id=f"g{i}")
+                for i in range(3))
+    msgs += _turn(("glob", {"pattern": "**/*spec*.py"}, "No files found"))[1:]
+    assert _reminder(msgs) is None
+    more = msgs + _turn(*[("grep", {"pattern": f"q{i}"}, "No matches found")
+                          for i in range(2)])[1:]
+    assert "came back empty" in (_reminder(more) or "")

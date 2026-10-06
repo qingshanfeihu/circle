@@ -88,6 +88,11 @@ class InputHistory:
         self._cursor = None
         self._draft = ""
 
+    @property
+    def browsing(self) -> bool:
+        """↑ has brought back an earlier message and ↓ has not returned to the draft yet."""
+        return self._cursor is not None
+
     def can_go_up(self) -> bool:
         """还能往更旧翻吗——空输入框翻尽时 ↑ 改滚转录。"""
         return bool(self._items) and (self._cursor is None or self._cursor > 0)

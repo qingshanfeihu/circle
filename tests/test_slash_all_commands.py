@@ -64,6 +64,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         "session": "/session",
         "models": "/models",
         "thinking": "/thinking",
+        "effort": "/effort",
         "details": "/details",
         "copy": "/copy",
         "export": f"/export {tmp_path / 'out.md'}",
@@ -214,7 +215,7 @@ def test_trust_on_untrusted_workspace(tmp_path: Path, monkeypatch):
     assert not is_folder_trusted(app2.settings, other)
     app2._on_submit("/trust")
     assert is_folder_trusted(app2.settings, other)
-    assert (other / ".agent").is_dir()
+    assert list(other.iterdir()) == []  # nothing of Circle's in the project
 
 
 def test_aliases_roundtrip():

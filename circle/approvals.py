@@ -10,13 +10,18 @@ Three verdicts for a tool call:
   ``find -delete``, the ``delete`` tool, a patch that deletes a file), destructive git
   (``reset --hard``, ``clean -f``, force push, ``branch -D``, discarding changes), disk
   tools (``dd``, ``mkfs``, ``shred``, ``truncate``), and commands that cannot be parsed.
-- ``ASK``: asks unless an "always" rule of this thread covers it.
+- ``ASK``: asks unless an "always" rule of this thread covers it. A command that only
+  reads (``ls``, ``cat``, ``rg``, ``git status``, ``git diff`` … in any pipeline of them, with
+  no redirection, substitution or option that writes or runs something) offers "always"
+  for read-only commands as a group instead of for the exact text.
 
 "Always" rules are kept per thread under ``$CIRCLE_HOME/approvals/`` so they survive a
-restart and a resumed session: for ``execute`` the rule is the exact command text (a
-hash of it is stored, not the text); for file edits it covers files inside the
-workspace (edits to paths outside it keep asking); for other tools, every call to that
-tool. ``/approvals`` lists and revokes them.
+restart and a resumed session: for ``execute`` the rule is either the exact command text
+(a hash of it is stored, not the text) or the words a command starts with
+(``python3 -m pytest``), offered for a command that is one program with its arguments; a
+``cd`` into the workspace in front of a command is left out of both. For file edits a rule
+covers files inside the workspace (edits to paths outside it keep asking); for other
+tools, every call to that tool. ``/approvals`` lists and revokes them.
 
 Command classification is a static reading of the text: it catches the usual shapes,
 not a determined attempt to hide a command.
@@ -77,10 +82,22 @@ class Review:
     pattern: str = ""        # the "always" key; empty = no always for this call
     scope: str = ""          # what an "always" answer would cover, for the panel
     warn_delete: bool = False
+    # execute: the words a "commands starting with" rule would keep (empty = not offered),
+    # and the keys of the rules that would cover this command
+    prefix: tuple[str, ...] = ()
+    covered_by: tuple[str, ...] = ()
 
     @property
     def allow_always(self) -> bool:
         return self.verdict == "ASK" and bool(self.pattern)
+
+    @property
+    def prefix_pattern(self) -> str:
+        return _prefix_key(self.prefix) if self.verdict == "ASK" and self.prefix else ""
+
+    @property
+    def prefix_scope(self) -> str:
+        return f'"{" ".join(self.prefix)} …"' if self.prefix_pattern else ""
 
 
 # ── command classification ─────────────────────────────────────────────────
@@ -324,6 +341,66 @@ def _segment_review(seg: list[str], patterns: tuple[str, ...], depth: int) -> Re
     return None
 
 
+# Commands that only read, whatever their arguments (``uniq``, ``sort``, ``sed``, ``awk``,
+# ``tee`` and interpreters are left out: they can write files or run code).
+_READ_ONLY_CMDS = frozenset({
+    "ls", "cat", "head", "tail", "wc", "pwd", "which", "whoami", "date", "uname",
+    "file", "stat", "du", "df", "tree", "basename", "dirname", "realpath", "readlink",
+    "true", "diff", "cmp", "nl", "cut", "grep", "egrep", "fgrep", "rg", "find", "cd",
+    "test", "jq", "git",
+})
+_READ_ONLY_GIT = frozenset({
+    "status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "describe",
+    "shortlog", "grep", "ls-tree", "cat-file", "branch",
+})
+_GIT_BRANCH_LISTING = frozenset({"-a", "-r", "-v", "-vv", "--list", "--all", "--remotes",
+                                 "--show-current", "--no-color"})
+_FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint",
+                           "-fprint0", "-fprintf", "-fls"})
+_SHELL_OPERATORS = frozenset({";", "&&", "||", "|"})
+# Options with which an otherwise reading command writes a file or changes something
+_WRITING_OPTIONS = {"tree": ("-o",), "file": ("-C",), "date": ("-s", "--set")}
+
+
+def _reads_only(tokens: list[str], text: str) -> bool:
+    """Every part of the command is a known reader with nothing that writes or runs."""
+    if "$(" in text or "`" in text or "<(" in text or ">(" in text:
+        return False
+    for token in tokens:
+        # shlex leaves operators as their own tokens; a quoted ">" stays inside a word
+        if set(token) <= set(";&|<>(){}") and token not in _SHELL_OPERATORS:
+            return False
+    segments = _segments(tokens)
+    if not segments:
+        return False
+    for raw in segments:
+        # A variable set in front can make a reader run a program (GIT_EXTERNAL_DIFF,
+        # PAGER, LD_PRELOAD, RIPGREP_CONFIG_PATH …), so none is allowed, nor ``env``
+        if any(_ASSIGNMENT.match(t) or os.path.basename(t) == "env" for t in raw):
+            return False
+        seg = _unwrap(raw)
+        if not seg:
+            return False
+        head, args = os.path.basename(seg[0]), seg[1:]
+        if head not in _READ_ONLY_CMDS or seg[0] != head:
+            return False  # also refuses ./ls and /tmp/cat, which could be anything
+        if head == "find" and any(a in _FIND_ACTIONS for a in args):
+            return False
+        if head == "rg" and any(a.startswith("--pre") for a in args):
+            return False  # --pre runs a program on every file
+        if any(a.startswith(_WRITING_OPTIONS.get(head, ("\0",))) for a in args):
+            return False
+        if head == "git":
+            if not args or args[0] not in _READ_ONLY_GIT:
+                return False  # also refuses git -c …, which can run programs
+            if any(a.startswith(("--output", "--ext-diff", "--open-files-in-pager"))
+                   or (args[0] == "grep" and a.startswith("-O")) for a in args[1:]):
+                return False
+            if args[0] == "branch" and any(a not in _GIT_BRANCH_LISTING for a in args[1:]):
+                return False
+    return True
+
+
 def classify_command(command: str, credential_files: Iterable[str] | None = None, *,
                      _depth: int = 0) -> Review:
     patterns = tuple(credential_files if credential_files is not None
@@ -341,7 +418,111 @@ def classify_command(command: str, credential_files: Iterable[str] | None = None
     worst = _worst(found)
     if worst is not None and worst.verdict != "ASK":
         return worst
+    if _depth == 0 and _reads_only(tokens, text):
+        return Review("ASK", "only reads", pattern="read-only",
+                      scope="read-only commands (ls, cat, rg, git status, git diff …)")
     return Review("ASK", "runs a shell command")
+
+
+# ── "commands starting with …" ─────────────────────────────────────────────
+
+# ``cd <dir> &&`` or ``cd <dir> ;`` at the start of a command
+_CD_IN_FRONT = re.compile(r"""\A\s*cd\s+(?:--\s+)?("[^"$`]*"|'[^']*'|[^\s;&|<>()$`'"]+)\s*(?:&&|;)\s*""")
+_SUBCOMMAND = re.compile(r"[A-Za-z][A-Za-z0-9_:-]*\Z")
+_PYTHON = re.compile(r"python(?:\d+(?:\.\d+)*)?\Z")
+_SCRIPT_RUNNERS = frozenset({"node", "ruby", "perl", "php", "bash", "sh", "zsh", "dash", "ksh",
+                             "fish", "pwsh", "powershell"})
+# Tools whose next word names what they do (``git add``, ``npm test``)
+_SUBCOMMAND_TOOLS = frozenset({
+    "git", "npm", "pnpm", "yarn", "bun", "deno", "npx", "pnpx", "bunx", "uv", "uvx", "pip",
+    "pip3", "pipx", "poetry", "pdm", "hatch", "pipenv", "conda", "mamba", "cargo", "rustup",
+    "go", "make", "just", "task", "docker", "podman", "kubectl", "helm", "terraform", "gh",
+    "gradle", "gradlew", "mvn", "dotnet", "swift", "rake", "bundle", "gem", "brew", "mix",
+    "flutter", "dart", "tox", "nox", "zig", "stack", "cabal", "composer", "sbt", "lein",
+})
+# ... and whose word after that does too (``npm run build``, ``uv run pytest``)
+_RUNNER_SUBCOMMANDS = frozenset({"run", "exec", "compose", "x", "dlx", "tool", "mod", "workspace"})
+# Programs for which "every call starting with this" would allow nearly anything
+_NO_PREFIX = frozenset({
+    "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
+    "chmod", "chown", "chgrp", "kill", "pkill", "killall", "mv", "cp", "ln", "install", "open",
+    "xdg-open", "osascript", "crontab", "launchctl", "systemctl", "eval", "source", ".",
+    "watch", "parallel", "sed", "awk", "tee",
+})
+
+
+def without_workspace_cd(command: str, root: Path | None) -> str:
+    """``command`` without a leading ``cd <root> &&``: commands already run in the
+    workspace, so that ``cd`` changes nothing and should not make a rule miss."""
+    if root is None:
+        return command
+    text = command
+    for _ in range(3):
+        match = _CD_IN_FRONT.match(text)
+        if match is None:
+            break
+        raw = match.group(1)
+        if raw[:1] in "\"'":
+            raw = raw[1:-1]
+        try:
+            target = Path(os.path.expanduser(raw))
+            if (target if target.is_absolute() else root / target).resolve() != root:
+                break
+        except (OSError, ValueError, RuntimeError):
+            break
+        text = text[match.end():]
+    return text if text.strip() else command
+
+
+def _simple_words(command: str) -> list[str] | None:
+    """The words of a command that is one program and its arguments: no pipes, lists,
+    redirections, substitutions, variables or wrappers in front."""
+    if any(mark in command for mark in ("$(", "`", "<(", ">(", "\n")):
+        return None
+    tokens = _tokens(command)
+    if not tokens or any(set(t) <= set(";&|<>(){}") for t in tokens):
+        return None
+    if _unwrap(tokens) != tokens or _command_name(tokens[0]) in _PRIV_ESC | {"env"}:
+        return None
+    return tokens
+
+
+def command_prefix(command: str) -> tuple[str, ...]:
+    """The words a "commands starting with" rule keeps for ``command``: the program, and
+    its script, module or subcommand (``python3 -m pytest``, ``npm run build``,
+    ``git add``). Empty when the command is not one simple program call, or when the rule
+    would allow an interpreter or a program that can do nearly anything."""
+    words = _simple_words(command)
+    if not words:
+        return ()
+    head, rest = _command_name(words[0]), words[1:]
+    if head in _NO_PREFIX:
+        return ()
+    if _PYTHON.match(head):
+        if rest[:1] == ["-m"] and len(rest) > 1 and _SUBCOMMAND.match(rest[1]):
+            return tuple(words[:3])
+        return tuple(words[:2]) if rest and not rest[0].startswith("-") else ()
+    if head in _SCRIPT_RUNNERS:
+        return tuple(words[:2]) if rest and not rest[0].startswith("-") else ()
+    if head in _SUBCOMMAND_TOOLS:
+        if not rest or not _SUBCOMMAND.match(rest[0]):
+            return ()  # git -c …: the rule would cover every git command
+        if rest[0] in _RUNNER_SUBCOMMANDS and len(rest) > 1 and _SUBCOMMAND.match(rest[1]):
+            return tuple(words[:3])
+        return tuple(words[:2])
+    if head in _READ_ONLY_CMDS:
+        return ()  # a reader that got here writes or runs something (find -exec, tree -o)
+    return (words[0],)
+
+
+def _prefix_key(words: Iterable[str]) -> str:
+    return "prefix:" + json.dumps(list(words), ensure_ascii=False)
+
+
+def _prefix_keys(command: str) -> tuple[str, ...]:
+    """The keys of every prefix rule that covers ``command``: one per word count."""
+    words = _simple_words(command)
+    return tuple(_prefix_key(words[:n]) for n in range(1, len(words) + 1)) if words else ()
 
 
 # ── per-thread "always" rules ──────────────────────────────────────────────
@@ -389,9 +570,13 @@ class ApprovalStore:
             return self._load(thread_id)["log"]
 
     def matches(self, thread_id: str, tool: str, pattern: str) -> bool:
-        if not thread_id or not pattern:
+        return self.matches_any(thread_id, tool, (pattern,))
+
+    def matches_any(self, thread_id: str, tool: str, patterns: Iterable[str]) -> bool:
+        wanted = {p for p in patterns if p}
+        if not thread_id or not wanted:
             return False
-        return any(r.get("tool") == tool and r.get("pattern") == pattern
+        return any(r.get("tool") == tool and r.get("pattern") in wanted
                    for r in self.rules(thread_id))
 
     def record(self, thread_id: str, kind: str, tool: str, pattern: str = "",
@@ -451,6 +636,7 @@ class ApprovalPolicy:
         self.store = store
         self.credential_files = tuple(credential_files or DEFAULT_CREDENTIAL_FILES)
         self._inside: Callable[[str], bool] = lambda _path: False
+        self._root: Path | None = None
         self._yolo_threads: set[str] = set()
         self._yolo_lock = threading.RLock()
         # HITL re-enters the same tool call on resume. Remember that call's
@@ -482,6 +668,7 @@ class ApprovalPolicy:
     def bind_workspace(self, resolve: Callable[[str], Path], root: Path) -> None:
         """How the backend maps a tool path to disk, so rules can stay inside ``root``."""
         root = Path(root).resolve()
+        self._root = root
 
         def inside(raw: str) -> bool:
             try:
@@ -496,11 +683,13 @@ class ApprovalPolicy:
         if tool == "execute":
             command = str(args.get("command") or "")
             found = classify_command(command, self.credential_files)
-            if found.verdict != "ASK":
+            if found.verdict != "ASK" or found.pattern == "read-only":
                 return found
-            digest = hashlib.sha256(command.encode("utf-8")).hexdigest()
+            core = without_workspace_cd(command, self._root)
+            digest = hashlib.sha256(core.encode("utf-8")).hexdigest()
             return Review("ASK", found.reason, pattern=f"sha256:{digest}",
-                          scope="this exact command")
+                          scope="this exact command", prefix=command_prefix(core),
+                          covered_by=_prefix_keys(core))
         if tool == "delete":
             return Review("ASK_FORCED", "deletes a file or directory", warn_delete=True)
         if tool in FILE_EDIT_TOOLS:
@@ -519,12 +708,14 @@ class ApprovalPolicy:
     def remember(self, thread_id: str, tool: str, args: Any, decision: str) -> bool:
         """Log a panel decision; ``always`` adds a rule when this call allows one."""
         review = self.review(tool, args)
-        if decision == "always":
-            if not review.allow_always:
+        if decision in ("always", "prefix"):
+            pattern, scope = ((review.pattern, review.scope) if decision == "always"
+                              else (review.prefix_pattern, review.prefix_scope))
+            if not (review.allow_always and pattern):
                 self.store.record(thread_id, "reject", tool, review.pattern,
                                   "always is not offered for this call")
                 return False
-            self.store.record(thread_id, "always", tool, review.pattern, review.scope)
+            self.store.record(thread_id, "always", tool, pattern, scope)
             return True
         self.store.record(thread_id, "once" if decision == "approve" else "reject", tool,
                           review.pattern, review.scope)
@@ -539,7 +730,7 @@ class ApprovalPolicy:
             return False  # policy skips the interrupt; command_guard still enforces DENY
         if review.verdict == "ASK_FORCED":
             return True
-        return not self.store.matches(thread_id, tool, review.pattern)
+        return not self.store.matches_any(thread_id, tool, (review.pattern, *review.covered_by))
 
     def interrupt_on(self, gated: Iterable[str]) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}

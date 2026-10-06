@@ -12,8 +12,9 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from circle.context_middleware import thread_config
+from circle.context_middleware import append_messages, thread_config
 from circle.oauth import start_oauth_login
+from circle.ink.parse_keypress import KeyPress
 from circle.settings import is_folder_trusted, load_credentials, load_settings
 from circle.testing import ScriptedModel
 from circle.tui.controllers import InitController, TrustController
@@ -80,6 +81,7 @@ def test_builtin_slash_inventory_complete():
         "undo",
         "redo",
         "thinking",
+        "effort",
         "details",
         "copy",
         "export",
@@ -117,8 +119,9 @@ def test_session_lifecycle_new_resume_continue(tmp_path: Path, monkeypatch):
     assert tid2 != tid1
     assert "hello-alpha" not in _snap(app)
 
-    app._on_submit("/resume")  # noqa: SLF001
-    assert "会话" in _snap(app) or tid1 in _snap(app) or "alpha" in _snap(app)
+    app._on_submit("/resume")  # noqa: SLF001 — the sessions are listed in a picker
+    assert "alpha" in "\n".join(app._picker.render_lines(100))  # noqa: SLF001
+    app._handle_key(KeyPress(key="escape"))  # noqa: SLF001
 
     app._on_submit(f"/resume {tid1}")  # noqa: SLF001
     assert app._thread_id == tid1  # noqa: SLF001
@@ -139,8 +142,11 @@ def test_name_session_settings_themes(tmp_path: Path, monkeypatch):
     assert app._thread_id in snap  # noqa: SLF001
     assert "live-title" in snap
 
+    # /settings is a list to change things in, as pi's; the model and endpoint are on it
     app._on_submit("/settings")  # noqa: SLF001
-    assert "model=" in _snap(app) or "protocol=" in _snap(app)
+    listed = "\n".join(app._picker.render_lines(100))  # noqa: SLF001
+    assert app.settings.auth.model in listed and app.settings.auth.protocol in listed
+    app._handle_key(KeyPress(key="escape"))  # noqa: SLF001
 
     app._on_submit("/themes")  # noqa: SLF001
     assert "主题" in _snap(app) or "theme" in _snap(app).lower()
@@ -201,13 +207,17 @@ def test_skill_list_and_load_into_checkpointer(tmp_path: Path, monkeypatch):
 
 def test_tree_fork_clone(tmp_path: Path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
+    # The tree is read from the model's saved messages
+    append_messages(app._agent, thread_config(app._thread_id),  # noqa: SLF001
+                    [HumanMessage(content="u1"), AIMessage(content="a1")])
     app._session_tree.add("user", "u1")  # noqa: SLF001
     app._session_tree.add("assistant", "a1")  # noqa: SLF001
     tip = app._session_tree.active_id  # noqa: SLF001
     assert tip
 
     app._on_submit("/tree")  # noqa: SLF001
-    assert tip in _snap(app) or "u1" in _snap(app)
+    assert "u1" in "\n".join(app._picker.render_lines(100))  # noqa: SLF001
+    app._handle_key(KeyPress(key="escape"))  # noqa: SLF001
 
     tid_before = app._thread_id  # noqa: SLF001
     app._on_submit("/clone")  # noqa: SLF001
@@ -274,8 +284,8 @@ def test_models_list(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("circle.probe._get", lambda *args: (200, b'{"data":[{"id":"server-model"}]}'))
     app = _app(tmp_path, monkeypatch)
     app._on_submit("/models")  # noqa: SLF001
-    assert "server-model" in _snap(app)
-    assert "discovered 1 models" in _snap(app)
+    shown = "\n".join(app._picker.render_lines(80))  # noqa: SLF001 — listed in the picker
+    assert "Model" in shown and "server-model" in shown
 
 
 def test_trust_and_reload(tmp_path: Path, monkeypatch):
@@ -343,3 +353,68 @@ def test_init_starts_agent_turn(tmp_path: Path, monkeypatch):
     # initialize template is submitted as a user turn
     assert "AGENTS.md" in _snap(app)
     _wait_idle(app)
+
+
+def test_editor_with_arguments_gets_the_whole_draft(tmp_path: Path, monkeypatch):
+    from circle.ink.parse_keypress import KeyPress, PasteEvent
+
+    app = _app(tmp_path, monkeypatch)
+    seen = tmp_path / "seen.txt"
+    editor = tmp_path / "ed.sh"
+    # Like "code -w": the editor command has an argument before the file name.
+    editor.write_text(f"#!/bin/sh\n[ \"$1\" = -w ] || exit 9\ncp \"$2\" {seen}\n"
+                      "printf 'line one\\nline two\\n' > \"$2\"\n", encoding="utf-8")
+    editor.chmod(0o755)
+    monkeypatch.setenv("EDITOR", f"{editor} -w")
+    monkeypatch.delenv("VISUAL", raising=False)
+    app._app.suspend_for_external = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
+    app._app.resume_from_external = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
+    app._handle_input(PasteEvent(text="\n".join(f"row {i}" for i in range(20))))  # noqa: SLF001
+    app._handle_key(KeyPress(key="shift+enter"))  # noqa: SLF001
+    for ch in "fix it":
+        app._handle_key(KeyPress(key=ch, char=ch))  # noqa: SLF001
+    app._handle_key(KeyPress(key="ctrl+g", ctrl=True, char="g"))  # noqa: SLF001
+    assert seen.read_text() == "\n".join(f"row {i}" for i in range(20)) + "\nfix it"
+    assert app._prompt.value == "line one↵line two"  # noqa: SLF001
+
+
+def test_effort_sets_the_thinking_depth_for_the_run(tmp_path: Path, monkeypatch):
+    import os
+
+    app = _app(tmp_path, monkeypatch)
+    monkeypatch.delenv("CIRCLE_REASONING_EFFORT", raising=False)
+    built: list[str] = []
+
+    def fake_build(*_a, **_k):
+        built.append(os.environ.get("CIRCLE_REASONING_EFFORT", ""))
+        return ScriptedModel(responses=[AIMessage(content="ok")])
+
+    monkeypatch.setattr("circle.tui.session_app.build_chat_model", fake_build)
+    app._on_submit("/effort turbo")  # noqa: SLF001
+    assert "Unknown depth 'turbo'" in _snap(app) and built == []
+    app._on_submit("/effort low")  # noqa: SLF001
+    assert built == ["low"] and "Thinking depth → low" in _snap(app)
+
+
+def test_tab_completes_every_kind_of_command(tmp_path: Path, monkeypatch):
+    from circle.ink.parse_keypress import KeyPress
+
+    app = _app(tmp_path, monkeypatch)
+    skill = app.workspace / ".circle" / "skills" / "changelog"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: changelog\ndescription: Write entries.\n---\nx\n")
+    commands = app.workspace / ".circle" / "commands"
+    commands.mkdir(parents=True)
+    (commands / "review-staged.md").write_text("Review it.\n")
+    app._rebuild_agent(model=ScriptedModel(responses=[AIMessage(content="ok")]))  # noqa: SLF001
+
+    def tab(text: str) -> str:
+        app._prompt.set_value(text)  # noqa: SLF001
+        app._handle_key(KeyPress(key="tab", char="\t"))  # noqa: SLF001
+        return app._prompt.value  # noqa: SLF001
+
+    assert tab("/review-") == "/review-staged "
+    assert tab("/skill:ch") == "/skill:changelog "
+    assert tab("/mo") == "/models "
+    assert tab("/re") == "/re", "several match: they are listed, the text stays"
+    assert "/resume" in app._footer._toast_text  # noqa: SLF001

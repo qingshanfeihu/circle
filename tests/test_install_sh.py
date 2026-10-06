@@ -66,8 +66,9 @@ class Box:
             path.write_text(body)
             path.chmod(0o755)
 
-    def publish(self, version: str, asset: str = "circle-linux-x86_64.tar.gz", *, sha: str | None = None):
-        program = f"#!/bin/sh\necho {version}\n".encode()
+    def publish(self, version: str, asset: str = "circle-linux-x86_64.tar.gz", *, sha: str | None = None,
+                program: str | None = None):
+        program = (program or f"#!/bin/sh\necho {version}\n").encode()
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
             info = tarfile.TarInfo("circle/circle")
@@ -107,7 +108,7 @@ def test_installs_the_latest_release(box: Box):
     assert os.readlink(box.prefix / "current") == "versions/0.2.0"
     program = subprocess.run([str(box.bindir / "circle")], capture_output=True, text=True)
     assert program.stdout.strip() == "0.2.0"
-    assert "sha256 校验通过" in done.stderr
+    assert "sha256 ok" in done.stderr
     assert "unbound" not in done.stderr  # the EXIT trap must not read a function's local
     assert "circle update" in done.stderr
     assert "api.github.com" not in box.log.read_text()  # no API call, so no rate limit
@@ -125,7 +126,7 @@ def test_pinned_version_skips_the_lookup(box: Box):
 def test_invalid_version_is_refused_before_download_or_filesystem_changes(box: Box, version):
     done = box.run(CIRCLE_VERSION=version)
     assert done.returncode != 0
-    assert "无效版本" in done.stderr
+    assert "invalid version" in done.stderr
     assert not box.log.exists()
     assert not box.prefix.exists()
     assert not box.bindir.exists()
@@ -151,9 +152,34 @@ def test_installing_a_version_that_is_already_there_leaves_it_alone(box: Box):
     done = box.run()  # nothing is published: a download would fail
     assert done.returncode == 0, done.stderr
     assert (here / "marker").read_text() == "in use"
-    assert "已在" in done.stderr
+    assert "already in" in done.stderr
     assert os.readlink(box.prefix / "current") == "versions/0.2.0"
     assert not box.log.exists() or "download" not in box.log.read_text()
+
+
+def test_the_new_version_is_started_once_before_it_is_switched_to(box: Box):
+    """The slow first start of a new program happens in the installer, not on the first circle."""
+    started = box.root / "started"
+    box.publish("0.2.0", program=f'#!/bin/sh\necho "$@" >> "{started}"\necho 0.2.0\n')
+    done = box.run()
+    assert done.returncode == 0, done.stderr
+    assert started.read_text().split() == ["--version"]
+    assert "starting it once" in done.stderr
+
+
+def test_a_version_that_does_not_start_leaves_the_previous_install_alone(box: Box):
+    old = box.prefix / "versions" / "0.1.0" / "circle"
+    old.mkdir(parents=True)
+    (old / "circle").write_text("#!/bin/sh\necho 0.1.0\n")
+    (old / "circle").chmod(0o755)
+    os.symlink("versions/0.1.0", box.prefix / "current")
+    box.publish("0.2.0", program="#!/bin/sh\necho 'cannot load library' >&2\nexit 3\n")
+    done = box.run()
+    assert done.returncode != 0
+    assert "does not start" in done.stderr
+    assert "cannot load library" in done.stderr
+    assert os.readlink(box.prefix / "current") == "versions/0.1.0"
+    assert not (box.prefix / "versions" / "0.2.0").exists()  # the next run downloads it again
 
 
 def test_leftovers_of_an_interrupted_install_are_cleaned_up(box: Box):
@@ -176,7 +202,7 @@ def test_a_bad_checksum_installs_nothing(box: Box):
     box.publish("0.2.0", sha="0" * 64)
     done = box.run()
     assert done.returncode != 0
-    assert "sha256 不符" in done.stderr
+    assert "sha256 mismatch" in done.stderr
     assert not (box.prefix / "current").exists()
     assert not (box.bindir / "circle").exists()
 
@@ -185,7 +211,7 @@ def test_tls_failure_says_what_to_do(box: Box):
     done = box.run(FAKE_CURL_EXIT="60")
     assert done.returncode != 0
     assert "CURL_CA_BUNDLE" in done.stderr
-    assert "证书" in done.stderr
+    assert "certificate" in done.stderr
 
 
 def test_a_missing_file_points_at_the_releases_page(box: Box):
@@ -197,7 +223,7 @@ def test_a_missing_file_points_at_the_releases_page(box: Box):
 def test_no_release_yet(box: Box):
     done = box.run(FAKE_LATEST_URL="https://github.com/o/r/releases")
     assert done.returncode != 0
-    assert "还没有发布 Release" in done.stderr
+    assert "has not published a release" in done.stderr
 
 
 def test_unsupported_machine_is_refused_before_any_download(box: Box):

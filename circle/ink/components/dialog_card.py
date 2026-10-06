@@ -29,7 +29,7 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 @dataclass
 class CardLine:
     text: str
-    tone: str = "text"  # em | text | dim | warn | err
+    tone: str = "text"  # em | text | dim | warn | err | added | removed | faint
 
 
 @dataclass
@@ -123,7 +123,8 @@ def _compose(width: int, segs: list[tuple[str, str]], bg: str = "") -> str:
 
 
 def _tone(pal, tone: str) -> str:
-    return {"em": pal.em, "dim": pal.dim, "warn": pal.yellow, "err": pal.red}.get(tone, pal.text)
+    return {"em": pal.em, "dim": pal.dim, "warn": pal.yellow, "err": pal.red,
+            "added": pal.green, "removed": pal.red, "faint": pal.faint}.get(tone, pal.text)
 
 
 def card_rows(spec: CardSpec, width: int, max_rows: int | None = None) -> list[str]:
@@ -195,17 +196,34 @@ def popup_rows(title: str, items: list[PopupItem], focus: int, width: int,
     for text in info:
         for part in wrap(text, width - 4):
             rows.append(_compose(width, [("   ", ""), (part, pal.dim)], pal.panel_bg))
-    name_w = max((string_width(item.label) for item in items), default=0) + 3
-    for i, item in enumerate(items):
-        tag = " · current" if item.current else ""
-        pad = " " * max(0, name_w - string_width(item.label))
+    tags = [item.meta + (" · current" if item.current else "") for item in items]
+    # a long label is cut, not the row: the column on the right (here, default, 3/9) stays
+    room = max(8, width - 6 - max((string_width(tag) for tag in tags), default=0))
+    labels = [_fit(item.label, room) for item in items]
+    name_w = max((string_width(label) for label in labels), default=0) + 3
+    for i, (label, tag) in enumerate(zip(labels, tags)):
+        pad = " " * max(0, name_w - string_width(label))
         if i == focus:
-            rows.append(_compose(width, [(f"   {item.label}{pad}{item.meta}{tag}", sgr_join(pal.sel_bg, pal.em))],
+            rows.append(_compose(width, [(f"   {label}{pad}{tag}", sgr_join(pal.sel_bg, pal.em))],
                                  pal.sel_bg))
         else:
-            rows.append(_compose(width, [("   ", ""), (item.label + pad, pal.text), (item.meta + tag, pal.dim)],
+            rows.append(_compose(width, [("   ", ""), (label + pad, pal.text), (tag, pal.dim)],
                                  pal.panel_bg))
     return rows
+
+
+def _fit(text: str, cols: int) -> str:
+    """``text`` in at most ``cols`` columns, ending in "…" when it was cut."""
+    if string_width(text) <= cols:
+        return text
+    kept: list[str] = []
+    used = 0
+    for ch in text:
+        if used + char_width(ch) > cols - 1:
+            break
+        kept.append(ch)
+        used += char_width(ch)
+    return "".join(kept) + "…"
 
 
 __all__ = ["CardLine", "CardOption", "CardSpec", "PopupItem", "card_rows", "popup_rows", "visible_width", "wrap"]

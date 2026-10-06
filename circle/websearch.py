@@ -98,7 +98,9 @@ def web_search(query: str, *, num_results: int = 5) -> str:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            from circle.net import tls_context
+
+            with urllib.request.urlopen(req, timeout=20, context=tls_context()) as resp:
                 raw = resp.read(500_000).decode("utf-8", errors="replace")
             if raw and ("result" in raw.lower() or "http" in raw.lower() or "<a " in raw):
                 break

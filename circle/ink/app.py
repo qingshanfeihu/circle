@@ -158,6 +158,13 @@ class InkApp:
     def visible_screen(self) -> Screen:
         return self._prev_screen
 
+    def set_title(self, title: str) -> None:
+        """The terminal window's title (OSC 0), written now if the screen is ours."""
+        clean = "".join(ch for ch in title if ch.isprintable())[:120]
+        self._title = clean
+        if self.active:
+            self.write_passthrough(f"\x1b]0;{clean}\x07")
+
     def start(self) -> None:
         if self._input_thread is not None and self._input_thread.is_alive():
             raise RuntimeError("the previous terminal input reader is still running")
@@ -165,7 +172,10 @@ class InkApp:
         self._running = True
         self._terminal.set_raw_mode(True)
 
-        init_seq = ""
+        # The terminal keeps the title it had, to give back on stop (xterm's title stack)
+        init_seq = "\x1b[22;0t"
+        if getattr(self, "_title", ""):
+            init_seq += f"\x1b]0;{self._title}\x07"
         if self._alt_screen:
             init_seq += ENTER_ALT_SCREEN
         init_seq += HIDE_CURSOR + EBP + EFE
@@ -216,6 +226,7 @@ class InkApp:
             cleanup += DISABLE_MOUSE_TRACKING
         if self._alt_screen:
             cleanup += EXIT_ALT_SCREEN
+        cleanup += "\x1b[23;0t"  # the title from before start
         self._terminal.write(cleanup)
         self._terminal.restore()
 
@@ -227,13 +238,16 @@ class InkApp:
             cleanup += DISABLE_MOUSE_TRACKING
         if self._alt_screen:
             cleanup += EXIT_ALT_SCREEN
+        cleanup += "\x1b[23;0t"  # the shell's (or editor's) title while it has the screen
         self._terminal.write(cleanup)
         self._terminal.set_raw_mode(False)
 
     def resume_from_external(self) -> None:
         """Take the TTY back after an external editor exits."""
         self._terminal.set_raw_mode(True)
-        init_seq = ""
+        init_seq = "\x1b[22;0t"
+        if getattr(self, "_title", ""):
+            init_seq += f"\x1b]0;{self._title}\x07"  # Circle's title back
         if self._alt_screen:
             init_seq += ENTER_ALT_SCREEN
         init_seq += HIDE_CURSOR + EBP + EFE
@@ -387,9 +401,12 @@ class InkApp:
                 for event in events:
                     if stop_event.is_set():
                         break
-                    if input_handler is not None:
-                        input_handler(event)
-                    if mouse_handler is not None and isinstance(event, MouseEvent):
-                        mouse_handler(event)
+                    try:
+                        if input_handler is not None:
+                            input_handler(event)
+                        if mouse_handler is not None and isinstance(event, MouseEvent):
+                            mouse_handler(event)
+                    except Exception:  # noqa: BLE001 - one bad key must not leave Circle deaf
+                        logger.exception("input handler failed for %r", event)
             except OSError:
                 break

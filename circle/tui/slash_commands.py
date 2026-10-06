@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -22,7 +23,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     ),
     SlashCommand("logout", "Clear saved credentials"),
     SlashCommand("init", "Analyze repo and write AGENTS.md"),
-    SlashCommand("trust", "Trust this workspace and create .agent/"),
+    SlashCommand("trust", "Trust this workspace"),
     SlashCommand("settings", "Show current settings"),
     SlashCommand("themes", "Show or set the theme: /themes [auto|dark|light]"),
     SlashCommand("mcp", "List / reload MCP servers and tools"),
@@ -31,13 +32,13 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("new", "Start a new session", aliases=("clear",)),
     SlashCommand(
         "resume",
-        "List or switch sessions: /resume [n|id]",
+        "Choose a session to open: /resume [n|id]",
         aliases=("sessions",),
     ),
     SlashCommand("continue", "Resume the previous session"),
     SlashCommand("name", "Set session display name: /name <title>"),
-    SlashCommand("session", "Show session id, title, model, size"),
-    SlashCommand("models", "List or switch model: /models [name]", aliases=("model",)),
+    SlashCommand("session", "Show the session: id, title, messages, tokens"),
+    SlashCommand("models", "Choose a model: /models [name]", aliases=("model",)),
     SlashCommand("compact", "Summarize context to free the window", aliases=("summarize",)),
     SlashCommand(
         "plan",
@@ -49,16 +50,17 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
         "List or load a skill: /skill [name] [args] or /skill:name [args]",
         aliases=("skills",),
     ),
-    SlashCommand("tree", "Show or jump session branch: /tree [id]"),
-    SlashCommand("fork", "Fork session from a node: /fork [id]"),
+    SlashCommand("tree", "Go back to an earlier point of the session: /tree [words]"),
+    SlashCommand("fork", "New session from before one of your messages: /fork [words]"),
     SlashCommand("clone", "Clone the active branch into a new session"),
     SlashCommand("undo", "Revert last user turn (conversation)"),
     SlashCommand("redo", "Restore after /undo"),
-    SlashCommand("thinking", "Toggle thinking-block visibility"),
+    SlashCommand("thinking", "Hide or show thinking; /thinking <level> sets the depth"),
+    SlashCommand("effort", "Choose the thinking depth: /effort [minimal|low|medium|high|xhigh|max]"),
     SlashCommand("details", "Toggle tool-detail verbosity in footer"),
     SlashCommand("copy", "Copy last assistant message to clipboard"),
-    SlashCommand("export", "Export transcript to Markdown: /export [path]"),
-    SlashCommand("import", "Import a prior Markdown export: /import <path>"),
+    SlashCommand("export", "Write the conversation to a file: /export [html|jsonl|path]"),
+    SlashCommand("import", "Start a session from an export: /import <file.jsonl|file.md>"),
     SlashCommand("share", "Write a shareable Markdown copy under ~/.circle/shares/"),
     SlashCommand("unshare", "Delete the active local share file"),
     SlashCommand("editor", "Compose next message in $EDITOR / $VISUAL"),
@@ -78,6 +80,16 @@ def _alias_map() -> dict[str, str]:
 
 
 ALIAS_TO_CANONICAL = _alias_map()
+
+
+# ``/name`` or ``/name args``: a command, known or not. ``/usr/bin/x`` is a path, not this.
+_COMMAND_WORD_RE = re.compile(r"^/([A-Za-z][\w:-]*)(?:\s|$)")
+
+
+def command_word(text: str) -> str:
+    """The command name a message starts with, or "" when it is not shaped like one."""
+    match = _COMMAND_WORD_RE.match(text or "")
+    return match.group(1).lower() if match else ""
 
 
 @dataclass(frozen=True)
@@ -137,15 +149,28 @@ def hotkeys_text() -> str:
     return "\n".join(
         [
             "Keyboard shortcuts:",
-            "  enter           send (queues steering message while busy)",
-            "  alt+enter       queue follow-up (delivered when idle)",
+            "  enter           send; while busy, the model reads it after its current step",
+            "  ctrl+q          queue a follow-up: sent when the turn ends (also alt+enter)",
+            "  alt+up          take back messages the model has not read yet",
             "  esc             cancel turn / clear prompt",
-            "  ctrl+c          abort turn; twice to exit",
-            "  ctrl+d          exit",
+            "  esc esc         the session tree (/tree), with an empty prompt",
+            "  ctrl+c          abort turn; clear the prompt; on an empty prompt twice to exit",
+            "  ctrl+d          exit (with an empty prompt; otherwise delete forward)",
+            "  ctrl+z          suspend to the shell; fg comes back",
+            "  \\ enter         line break (also shift+enter, ctrl+j)",
             "  ctrl+t          expand/collapse thinking",
             "  ctrl+o          expand/collapse tool output",
             "  ctrl+r          reverse-i-search history",
-            "  ctrl+l          redraw screen",
+            "  ctrl+l          choose a model (/models); also redraws the screen",
+            "  ctrl+p          next model, for this session",
+            "  shift+tab       next thinking depth, for this session",
+            "  ctrl+g          edit the draft in $VISUAL / $EDITOR (/editor)",
+            "  ctrl+x          copy the last answer (/copy)",
+            "  ctrl+f          find in the conversation; enter next, esc closes",
+            "  alt+left/right  move by word (also ctrl+left/right, alt+b / alt+f)",
+            "  ctrl+w          delete the word before the cursor (also alt+backspace)",
+            "  alt+d           delete the word after the cursor",
+            "  ctrl+k / ctrl+u delete to the end / the whole line; ctrl+y puts back the last cut",
             "  up/down         prompt history; with an empty prompt and no more history,",
             "                  scroll the transcript",
             "  down (empty)    select a running subagent; up/down move, enter opens it",
@@ -153,7 +178,7 @@ def hotkeys_text() -> str:
             "  pageup/pagedown scroll transcript (or the detail page) when the prompt is empty",
             "  home/end        top / bottom of the transcript when the prompt is empty",
             "  mouse drag      select and copy; dragging to the top or bottom edge scrolls",
-            "  tab             slash-command complete",
+            "  tab             complete a /command or an @path",
             "  ?               this list (with an empty prompt)",
             "  /               slash commands (/help)",
             "  1-9, up/down    answer a permission or question card; enter confirms, esc rejects,",

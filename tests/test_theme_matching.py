@@ -156,9 +156,12 @@ def test_switching_live_paints_the_same_screen_as_starting_in_that_theme(tmp_pat
         # What is stamped with a colour when it is created: a card cannot be open while you type
         # /themes, so these are always created under the palette that is current.
         app._begin_exec_approval({  # noqa: SLF001
-            "tool": "execute", "title": "execute", "body": "$ pytest -q", "policy": "runs a command",
-            "allow_always": True, "scope": "this exact command", "more": 0,
-            "tint": tool_type_bg_sgr("execute")})
+            "tool": "edit_file", "title": "edit_file", "body": "/todo.py",
+            "preview": [{"text": "+1 -1", "tone": ""}, {"text": "-  1  a = 1", "tone": "removed"},
+                        {"text": "+  1  a = 2", "tone": "added"}],
+            "policy": "changes files in the workspace", "allow_always": True,
+            "scope": "file changes inside the workspace", "more": 0,
+            "tint": tool_type_bg_sgr("edit_file")})
 
     monkeypatch.setenv("COLORFGBG", "0;15")  # a light terminal that cannot be asked
     theme.reset_palette()

@@ -128,11 +128,11 @@ def create_request(
     """工具侧：创建待答请求。key 是写入目标文件时使用的 ENV 键名。"""
     key = (key or "").strip()
     if not _ENV_KEY_RE.match(key):
-        raise SecretPromptError(f"非法 ENV 键名: {key!r}（仅限大写字母/数字/下划线）")
+        raise SecretPromptError(f"invalid variable name {key!r}: use capital letters, digits and _")
     if not (question or "").strip():
-        raise SecretPromptError("机密提问文本不能为空")
+        raise SecretPromptError("the question is empty")
     if not (target_file or "").strip():
-        raise SecretPromptError("机密提问必须指定 target_file（写入目标）")
+        raise SecretPromptError("the request names no target_file to write to")
     rid = uuid.uuid4().hex
     directory = requests_dir(home)
     directory.mkdir(parents=True, exist_ok=True)
@@ -176,12 +176,12 @@ def submit_answer(home: Path | str, request_id: str, value: str) -> None:
     """
     with _locked(home):
         if not _request_path(home, request_id).is_file():
-            raise SecretPromptError("机密请求已失效（可能已超时或被取消）")
+            raise SecretPromptError("the request is gone (it timed out or was cancelled)")
         raw = value.encode("utf-8")
         if not raw:
-            raise SecretPromptError("机密值不能为空")
+            raise SecretPromptError("the value is empty")
         if len(raw) > _MAX_SECRET_BYTES:
-            raise SecretPromptError("机密值超长")
+            raise SecretPromptError("the value is too long")
         path = _answer_path(home, request_id)
         path.write_bytes(raw)
         os.chmod(path, 0o600)
@@ -215,17 +215,18 @@ def poll_answer(
             raw = _consume_answer_locked(home, request_id, path)
             if raw is not None:
                 if not raw:
-                    raise SecretPromptError("答案文件为空，已清理")
+                    raise SecretPromptError("the answer file was empty and has been removed")
                 return raw.decode("utf-8", errors="strict")
             if not _request_path(home, request_id).is_file():
                 # TUI 侧取消或已清理
-                raise SecretPromptError("机密提问已取消")
+                raise SecretPromptError("the request was cancelled")
         time.sleep(_POLL_INTERVAL_S)
     with _locked(home):
         _shred(path)
         _request_path(home, request_id).unlink(missing_ok=True)
     raise SecretPromptTimeout(
-        f"等待机密输入超时（{int(timeout_s)}s），请求已清理；如需继续请重新提问"
+        f"no value was entered within {int(timeout_s)}s; the request was removed. "
+        "Ask again if it is still needed."
     )
 
 
@@ -273,5 +274,6 @@ def collect(home: Path | str, questions: list[dict[str, Any]], *, timeout_s: flo
         )
         value = poll_answer(home, request["id"], timeout_s=timeout_s)
         target = apply_to_target(request, value)
-        results.append(f"  - {request['key']} → 已收集并写入 {target}（值未进入对话）")
+        results.append(f"  - {request['key']} → collected and written to {target} "
+                       "(the value is not in the conversation)")
     return results

@@ -18,7 +18,7 @@
 
 Circle reads and edits the code in a folder you choose, and runs commands there. It works with any service or gateway that speaks the OpenAI or Anthropic API. It asks before it runs a command or changes a file, and the screen shows at a glance whether it is working or waiting for you.
 
-**Circle is early software (0.2.1).** There is no operating-system sandbox, OAuth sign-in is not available, and sessions do not reopen after a restart. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
+**Circle is early software (0.3.0).** There is no operating-system sandbox and OAuth sign-in is not available. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
 
 ## Install
 
@@ -55,6 +55,16 @@ circle
 
 The first time, Circle asks for a base URL, a key and a model, then asks you to trust the folder. After that, type a task and press `enter`. Type `/` to see the commands and `?` to see the keys.
 
+```bash
+circle "fix the failing test"            # start with a message
+circle -c                                # go on with the last conversation here
+circle -r                                # pick a conversation from a list
+circle -p "summarize README.md"          # one prompt, answer on stdout
+git diff | circle -p "review this change"
+```
+
+While Circle works you can keep typing: `enter` steers the running turn. `esc` twice goes back to an earlier point of the conversation, `ctrl+l` switches models and `ctrl+f` finds text. The [CLI](docs/cli.md) also has a JSON event stream and an RPC mode for scripts and editors.
+
 The terminal interface uses conversation cards, status lamps and an `auto` theme that follows terminal colours. Use `/themes dark` or `/themes light` when your terminal cannot report its colours. See [The interface](docs/interface.md) for the signals and limits.
 
 ## Learn more
@@ -70,7 +80,7 @@ The terminal interface uses conversation cards, status lamps and an `auto` theme
 
 ## Development
 
-For a source or development installation, Python 3.11 or newer is required:
+For a source or development installation, Python 3.11 or newer is required (`python3 --version`; macOS ships 3.9, so install a newer one first):
 
 ```bash
 git clone https://github.com/qingshanfeihu/circle

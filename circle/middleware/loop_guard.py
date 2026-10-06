@@ -108,8 +108,12 @@ def analyze(messages: list, *, window: int) -> dict[str, Any]:
     fingerprints: list[str] = []
     labels: dict[str, str] = {}
     loose: list[tuple[str | None, int]] = []
-    empty: list[bool] = []
+    # One entry per reply that called tools: did every result come back empty? Calls
+    # made together are one move, so three parallel lookups that find nothing count once.
+    rounds: list[list[bool]] = []
     for msg in messages[_last_user_index(messages):]:
+        if getattr(msg, "tool_calls", None):
+            rounds.append([])
         for tc in getattr(msg, "tool_calls", None) or ():
             name = str(tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", ""))
             args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
@@ -128,8 +132,8 @@ def analyze(messages: list, *, window: int) -> dict[str, Any]:
                 labels[lfp] = labels[fp]
             else:
                 loose.append((None, 0))
-        if getattr(msg, "type", "") == "tool":
-            empty.append(_is_empty_result(_text(getattr(msg, "content", ""))))
+        if getattr(msg, "type", "") == "tool" and rounds:
+            rounds[-1].append(_is_empty_result(_text(getattr(msg, "content", ""))))
 
     dup_count, dup_label = 0, ""
     recent = fingerprints[-window:]
@@ -151,8 +155,16 @@ def analyze(messages: list, *, window: int) -> dict[str, Any]:
         if len(offsets) > loose_count:
             loose_count, loose_label = len(offsets), labels.get(lfp, "")
 
+    empty_rounds = 0
+    for results in reversed(rounds):
+        if not results:
+            continue  # still waiting for its results
+        if not all(results):
+            break
+        empty_rounds += 1
+
     return {"tool_calls": len(fingerprints), "dup_count": dup_count, "dup_label": dup_label,
-            "empty_count": sum(1 for flag in empty[-window:] if flag),
+            "empty_count": empty_rounds,
             "loose_count": loose_count, "loose_label": loose_label}
 
 
@@ -164,8 +176,8 @@ def build_reminder(stats: dict[str, Any], *, dup_threshold: int, empty_threshold
         found.append(f"the last {stats['dup_count']} calls include the same tool call with "
                      f"the same arguments{where}; it will return the same result again.")
     if stats["empty_count"] >= empty_threshold:
-        found.append(f"{stats['empty_count']} recent calls came back empty (no matches / not "
-                     "found).")
+        found.append(f"the last {stats['empty_count']} rounds of calls came back empty (no "
+                     "matches / not found).")
     if stats["loose_count"] >= _LOOSE_THRESHOLD:
         where = f" ({stats['loose_label']})" if stats["loose_label"] else ""
         found.append(f"{stats['loose_count']} recent calls read the same target{where} with "

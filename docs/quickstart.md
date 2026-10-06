@@ -20,7 +20,7 @@ On Windows, in PowerShell:
 irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
 ```
 
-The installer downloads the release for your OS and CPU, checks its sha256, unpacks it under `~/.local/share/circle/versions/<version>` (`%LOCALAPPDATA%\circle` on Windows), points `current` at it, puts `circle` on your `PATH`, and adds that folder to your shell's startup file if needed. To pin a version, set `CIRCLE_VERSION`, for example `CIRCLE_VERSION=0.2.0`.
+The installer downloads the release for your OS and CPU, checks its sha256, unpacks it under `~/.local/share/circle/versions/<version>` (`%LOCALAPPDATA%\circle` on Windows), points `current` at it, puts `circle` on your `PATH`, and adds that folder to your shell's startup file if needed. On macOS and Linux it starts the new program once before that, which takes a few seconds the first time; if it does not start, your previous install is left as it was. To pin a version, set `CIRCLE_VERSION`, for example `CIRCLE_VERSION=0.2.0`.
 
 If `install.sh` runs in a Windows shell (Git Bash, MobaXterm, Cygwin), it hands over to PowerShell and installs the Windows program. Run `circle` in Windows Terminal, PowerShell or cmd: a terminal window that is not a Windows console cannot show the full-screen interface, use `circle --line` for [line mode](cli.md#full-screen-and-line-mode) there.
 
@@ -28,7 +28,13 @@ If the installer stops with a certificate error, your network is replacing HTTPS
 
 To upgrade later, run `circle update`. See [Updating](cli.md#updating).
 
-**From source** works everywhere and is the way to get the current code. It needs Python 3.11 or newer:
+**From source** works everywhere and is the way to get the current code. It needs Python 3.11 or newer. Check first:
+
+```bash
+python3 --version
+```
+
+macOS comes with Python 3.9 as `python3`, which is too old. With it the install fails with messages that do not mention the version, such as `No matching distribution found for deepagents==…`. Install a newer Python first (for example `brew install python@3.12`) and use `python3.12` in place of `python3` below.
 
 ```bash
 git clone https://github.com/qingshanfeihu/circle
@@ -56,9 +62,9 @@ circle
 
 The first time, Circle walks you through two steps.
 
-**Connect a model.** Choose **API URL + KEY**, paste the base URL and the key, then pick a model from the list Circle fetches. See [Choose a model](models.md). The OAuth choice is not available yet.
+**Connect a model.** Choose **API URL + KEY**, paste the base URL and the key (it shows as dots), then pick a model from the list Circle fetches, or type its id. If Circle cannot list the endpoint's models, it says why, asks whether the API is OpenAI-style or Anthropic-style, and you type the model id your provider documents. See [Choose a model](models.md). The OAuth choice is not available yet.
 
-**Trust the folder.** Circle asks before it works in a folder for the first time. Trusting records the folder in your settings and creates a small `.agent/` folder inside it. Choose `y` to continue.
+**Trust the folder.** Circle asks before it works in a folder for the first time. Trusting records the folder in your settings; nothing is written into the folder. Choose `y` to continue.
 
 After that, `circle` goes straight to the session.
 
@@ -72,10 +78,11 @@ Circle shows each file read, search, command and edit it performs. **Before it r
 
 1 Allow once
 2 Allow this exact command for this session
-3 Reject and explain
+3 Allow "pytest …" for this session
+4 Reject and explain
 ```
 
-Press `1` to allow it once, `2` to stop being asked for the same thing in this session, or `3` to reject and tell Circle what to do instead. `esc` rejects. See [Security](security.md) for exactly what is checked and what is not.
+Press `1` to allow it once, `2` to stop being asked for the same command in this session, `3` to stop being asked for every `pytest` command, or `4` to reject and tell Circle what to do instead. `esc` rejects. See [Security](security.md) for exactly what is checked and what is not.
 
 Try a task that matches your work:
 
@@ -97,7 +104,9 @@ Press `esc` to stop a turn. You can type the next message while Circle is workin
 
 Everything you type is kept in your prompt history: press `↑` in an empty prompt to bring back earlier messages, or `ctrl+r` to search.
 
-Inside a session, `/new` starts a fresh conversation, `/export` writes the transcript to a Markdown file, and `/exit` (or `ctrl+d`) leaves. Circle keeps each conversation's history in its data folder, but the current build can only reopen a conversation from earlier in the same run. See [Sessions](sessions.md).
+Inside a session, `/new` starts a fresh conversation, `/export` writes the transcript to a Markdown file, and `/exit` (or `ctrl+d`) leaves. Circle keeps each conversation in its data folder: `circle -c` goes on with the last one in this folder, and `/resume` lists the others. See [Sessions](sessions.md).
+
+To use Circle from a script, run one prompt with `circle -p "…"`; the answer is printed. See [CLI](cli.md#print-mode).
 
 ## Where to go next
 

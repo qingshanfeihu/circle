@@ -64,9 +64,10 @@ def test_cancel_drains_steering_first_and_each_class_in_order(tmp_path, monkeypa
         app._on_submit("STEERING-1", kind="steering")
         app._on_submit("FOLLOWUP-2", kind="followup")
         app._on_submit("STEERING-2", kind="steering")
-        assert [text for _kind, text in app._msg_queue] == [
-            "FOLLOWUP-1", "STEERING-1", "FOLLOWUP-2", "STEERING-2",
-        ]
+        # Steering waits in the running turn's inbox for the next model call; follow-ups
+        # wait for the turn to end.
+        assert [text for _kind, text in app._msg_queue] == ["FOLLOWUP-1", "FOLLOWUP-2"]
+        assert len(app._bridge.inbox) == 2
         start = time.monotonic()
         app._handle_key(KeyPress(key="escape"))
         _wait_for(lambda: app._last_assistant_plain == "FOLLOWUP-2-done"

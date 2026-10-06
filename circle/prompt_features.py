@@ -119,7 +119,11 @@ class _NoPrivateRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_FETCH_OPENER = urllib.request.build_opener(_NoPrivateRedirect)
+def _fetch_opener() -> urllib.request.OpenerDirector:
+    from circle.net import tls_context
+
+    return urllib.request.build_opener(_NoPrivateRedirect,
+                                       urllib.request.HTTPSHandler(context=tls_context()))
 
 
 def _fetch_url(url: str, fmt: str = "markdown") -> str:
@@ -143,7 +147,7 @@ def _fetch_url(url: str, fmt: str = "markdown") -> str:
         method="GET",
     )
     try:
-        with _FETCH_OPENER.open(req, timeout=30) as resp:  # noqa: S310
+        with _fetch_opener().open(req, timeout=30) as resp:  # noqa: S310
             data = resp.read(_MAX_FETCH_BYTES + 1)
             content_type = (resp.headers.get("Content-Type") or "").lower()
             final_url = resp.geturl()
@@ -302,7 +306,7 @@ def build_question_tool(home: Path | None = None, *, interactive: bool = False) 
                 try:
                     collected = secret_prompt.collect(home, secret_questions)
                 except secret_prompt.SecretPromptError as exc:
-                    collected = [f"  - 机密收集失败：{exc}"]
+                    collected = [f"  - the secret was not collected: {exc}"]
                 lines.append(
                     "SECRET_QUESTIONS — collected via masked input, values "
                     "never entered this conversation:"

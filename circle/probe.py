@@ -32,8 +32,10 @@ class ProbeResult:
 
 
 def _get(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+    from circle.net import tls_context
+
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=tls_context()) as resp:
         return int(resp.status), resp.read()
 
 
@@ -91,8 +93,12 @@ def _discover(base_url: str, api_key: str, timeout: float, protocol: str | None)
             except urllib.error.HTTPError as exc:
                 failures.append(f"http {exc.code}")
                 continue
-            except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-                failures.append("connection failed")
+            except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+                from circle.net import is_certificate_error
+
+                failures.append("the TLS certificate could not be verified; if your network "
+                                "inspects HTTPS, set SSL_CERT_FILE to its CA bundle"
+                                if is_certificate_error(exc) else "connection failed")
                 continue
             if status != 200:
                 failures.append(f"http {status}")

@@ -211,7 +211,8 @@ def test_models_command_reports_result_in_both_themes(monkeypatch, tmp_path, sta
         app = _app(tmp_path, monkeypatch)
         monkeypatch.setattr(probe, '_get', lambda *a: (status, body))
         app._cmd_models('')
-        shown = _snap(app)
+        # The result is the title of the model list, and a failure is also a red line
+        shown = _snap(app) + '\n'.join(app._picker.render_lines(100)) if app._picker else _snap(app)
         assert expected in shown
         assert 'gpt-4.1' not in shown and 'claude-sonnet-4-5' not in shown
         if status == 200 and b'server-model' in body:

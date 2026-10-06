@@ -14,22 +14,26 @@ Circle asks the endpoint for its model list, with a two-and-a-half-second timeou
 
 Only valid server-provided model IDs appear in the list. Empty responses, failed requests and malformed responses never produce a built-in model list. Setup shows the outcome; if discovery fails, choose the protocol explicitly. You can enter a model ID manually whether or not discovery succeeds. A manually entered ID is not verified. If discovery failed, use the provider's documented API base URL: Circle cannot determine an unresponsive endpoint's path.
 
-For scripted setup, `complete_api_key_init` requires both `protocol` and `model` when discovery fails, or an explicit `model` when the endpoint returns an empty list. It raises an error before saving settings when these values are missing.
+For scripted setup, `complete_api_key_init` requires both `protocol` and `model` when discovery fails, or an explicit `model` when the endpoint returns an empty list. It raises an error before saving settings when these values are missing. `circle -m <name>` tries a model for one run without saving it.
 
 The key is saved in `credentials.json` and the rest in `settings.json`. See [Settings](settings.md).
 
 ## Switch models
 
 ```text
-/models              list what the endpoint offers (up to 40)
-/models qwen3.8-flash
+/models                 choose from what the endpoint offers
+/models qwen3.8-flash   use this id
 ```
 
-`/models` uses the saved protocol and reports empty lists or discovery failures without substituting model names.
+`/models` (or `ctrl+l`) lists the models the endpoint offers, asking it with the saved protocol; when it cannot be asked, a red line says why and no names are made up. Type to search. `enter` uses the model for this session; `ctrl+s` uses it and saves it as the default for new sessions. The list marks the saved one `default`.
 
-`/models <name>` saves the name and rebuilds the model. It does not check that the endpoint knows the name. The footer shows cost and context for the current model.
+`/models <name>` uses the id for this session without checking that the endpoint knows it. To keep it, open `/models` and press `ctrl+s` on it.
 
-To change the endpoint or the key, run `circle --init`. That also resets your other settings, so read [CLI](cli.md#setting-up-again) first.
+`ctrl+p` switches to the next model for this session. It goes through the models in `enabled_models` in `settings.json`, for example `["step-3.7-flash", "step-5-*"]`, where a pattern is matched against what the endpoint lists. With no `enabled_models` it goes through every listed model. Rows in the scope are marked `in ctrl+p` in `/models`, and `tab` there adds the marked model to the scope or takes it out; the list is saved as `enabled_models` (for this run only when Circle was started with `--models`).
+
+The footer shows cost and context for the current model.
+
+To change the endpoint or the key, run `circle --init`. It keeps your other settings; `enter` on an empty line keeps the saved URL or key. See [CLI](cli.md#setting-up-again).
 
 ## OAuth
 
@@ -37,7 +41,14 @@ The setup screen offers **OAuth login**, and `/login` exists, but no real OAuth 
 
 ## Thinking depth
 
-Circle always asks models for extended thinking when they support it. Set `CIRCLE_REASONING_EFFORT` to `minimal`, `low`, `medium`, `high`, `xhigh` or `max` to change how much.
+Circle always asks models for extended thinking when they support it. The depth is one of `minimal`, `low`, `medium`, `high`, `xhigh` or `max`.
+
+- `/effort` lists the depths. `enter` uses one for the rest of this run; `ctrl+s` also saves it as `default_thinking` in `settings.json`.
+- `/effort <level>` and `/thinking <level>` set it for the rest of this run.
+- `shift+tab` switches to the next depth.
+- `CIRCLE_REASONING_EFFORT` sets it for a run and wins over `default_thinking`.
+
+A change applies from the next message. When the model has a depth, the header shows it after the model name, such as `step-3.7-flash • high`.
 
 - **Anthropic protocol**: the default is `xhigh`. Circle picks the highest level the model supports at or below your choice. For Claude models that use a thinking budget, the budgets are 1,024 for `minimal`, 2,048 for `low`, 8,192 for `medium`, 16,000 for `high` and `xhigh`, and 31,999 for `max`.
 - **OpenAI protocol**: nothing is sent unless you set the variable, and only for models that accept it.
@@ -68,6 +79,8 @@ Three more guards protect a turn:
 ## Cost and context in the footer
 
 The footer shows tokens used, an estimated cost, the cache hit rate, and how full the context is.
+
+Endpoints report the usage of a streamed answer in different ways: once at the end, split between the first and last chunk, or (some OpenAI-compatible gateways) as the running total on every chunk. Circle counts each answer once whichever way it comes, so the footer, the cost and the point at which a long conversation is compacted are the same for all of them.
 
 Cost uses a built-in list of reference prices per million tokens. It is an estimate, not a bill. Models that are not in the list show `—`.
 

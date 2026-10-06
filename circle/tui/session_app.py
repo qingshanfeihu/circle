@@ -8,6 +8,7 @@ Streaming + exec approval via HarnessBridge.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import re
@@ -16,26 +17,25 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from deepagents.backends.protocol import ExecuteResponse
 from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 
-from circle import __version__, secret_prompt, update
+from circle import __version__, secret_prompt, session_index, update
 from circle.approvals import REJECTED_BY_USER, default_policy
-from circle.checkpoint_store import (
-    copy_thread_if_possible,
-    make_checkpointer,
-    make_store,
-)
+from circle.checkpoint_store import make_checkpointer, make_store
 from circle.commands import (
     CustomCommand,
     discover_custom_commands,
     expand_command_template,
 )
 from circle.context_middleware import (
+    append_messages,
     compact_prompt,
     inject_thread_message,
     plan_boundary_message,
@@ -47,22 +47,23 @@ from circle.harness import BUILTIN_TOOL_NAMES, create_harness
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
 from circle.ink.components.ask_user_view import AskUserSession
-from circle.ink.components.dialog_card import card_rows
+from circle.ink.components.dialog_card import PopupItem, card_rows, popup_rows
 from circle.ink.components.dialog_frame import build_loop_frame
 from circle.ink.components.exec_approval_view import (
     ExecApprovalSession,
     SessionApprovalsSession,
 )
 from circle.ink.components.footer import FooterPane
+from circle.ink.components.picker import Picker, PickerItem
 from circle.ink.components.plan_panel import PlanPanel
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
 from circle.ink.dom import NodeType, create_element, create_text
+from circle.ink.escape_input import StandaloneEscapeInputParser as _StandaloneEscapeInputParser
 from circle.ink.parse_keypress import (
     ColorReportEvent,
     ColorSchemeEvent,
     InputEvent,
-    InputParser,
     KeyPress,
     MouseEvent,
     PasteEvent,
@@ -78,21 +79,26 @@ from circle.ink.theme import (
 )
 from circle.ink.theme_watch import ThemeWatcher
 from circle.mcp_loader import format_mcp_status
-from circle.model import build_chat_model, reasoning_effort_of
+from circle.mentions import attach_files, complete
+from circle.middleware.cancellation import CancellationToken
+from circle.model import EFFORT_LEVELS, build_chat_model, reasoning_effort_of
 from circle.model_guard import add_retry_listener
 from circle.paths import circle_home, ensure_home, normalize_workspace
 from circle.pricing import context_window_for
+from circle.run_options import RunOptions
 from circle.session_tree import SessionTree
 from circle.settings import (
     CircleSettings,
     ModelAuth,
     apply_auth_to_environ,
+    apply_project_settings,
     clear_credentials,
     is_folder_trusted,
     load_credentials,
     load_settings,
     save_credentials,
     save_settings,
+    without_project_settings,
 )
 from circle.tui.agent_detail import render_detail_band, render_detail_rows
 from circle.tui.agent_strip import (
@@ -105,17 +111,27 @@ from circle.tui.agent_strip import (
     strip_window,
 )
 from circle.tui.content_blocks import assistant_block
+from circle.tui.conversation_tree import row_text
 from circle.tui.controllers import InitController, TrustController
 from circle.tui.harness_bridge import NO_OUTPUT, HarnessBridge, StreamUpdate
 from circle.tui.input_history import InputHistory
-from circle.tui.message_model import MessageSnapshot
+from circle.tui.message_model import (
+    MessageSnapshot,
+    make_assistant_message,
+    make_tool_result_block,
+    make_tool_use_block,
+)
 from circle.tui.slash_commands import (
     BUILTIN_SLASH,
     help_text,
     hotkeys_text,
+    command_word,
     known_slash_names,
     parse_slash,
 )
+from circle.tui.progress_handler import extract_message_usage
+from circle.tui.replay import draft_of, first_turns, is_user_message, saved_turns, write_history
+from circle.tui.tool_display import approval_preview
 from circle.tui.transcript_view import (
     ViewOptions,
     final_text,
@@ -123,6 +139,7 @@ from circle.tui.transcript_view import (
     render_turn_rows,
     tool_type_bg_sgr,
     turn_had_output,
+    user_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,57 +160,6 @@ class _SessionRecord:
     title: str
     lines: list[str] = field(default_factory=list)
     bgs: list[str | None] = field(default_factory=list)  # 每行的类型底色，与 lines 等长
-
-
-class _StandaloneEscapeInputParser:
-    """A lone ESC is the Esc key (InfoTest ``ist_app._StandaloneEscapeInputParser``).
-
-    Terminals send the Esc key as a bare ``\x1b``, which is also how every escape
-    sequence starts, so the tokenizer holds it waiting for more. If nothing follows
-    within ``_DELAY_S`` it is emitted as ``escape``. A sequence tail that still turns up
-    shortly after (a split read on a slow link) gets its ESC back instead of being
-    typed into the prompt."""
-
-    _DELAY_S = 0.25
-    _STRAY_WINDOW_S = 1.0
-    _STRAY_TAIL_RE = re.compile(r"^\[(?:<\d+;\d+;\d+[Mm]|[0-9;?]*[A-Za-z~])$")
-
-    def __init__(self, delegate: InputParser, emit: Callable[[InputEvent], None]) -> None:
-        self._delegate = delegate
-        self._emit = emit
-        self._lock = threading.Lock()
-        self._timer: threading.Timer | None = None
-        self._stray_escape_at: float | None = None
-
-    def feed(self, text: str) -> list[InputEvent]:
-        with self._lock:
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
-            stray_at, self._stray_escape_at = self._stray_escape_at, None
-            if (stray_at is not None and time.monotonic() - stray_at <= self._STRAY_WINDOW_S
-                    and self._STRAY_TAIL_RE.match(text)):
-                text = "\x1b" + text
-            events = self._delegate.feed(text)
-            tokenizer = getattr(self._delegate, "_tokenizer", None)
-            if tokenizer is not None and tokenizer.buffer == "\x1b":
-                timer = threading.Timer(self._DELAY_S, self._emit_pending_escape)
-                timer.daemon = True
-                self._timer = timer
-                timer.start()
-            return events
-
-    def _emit_pending_escape(self) -> None:
-        should_emit = False
-        with self._lock:
-            tokenizer = getattr(self._delegate, "_tokenizer", None)
-            if tokenizer is not None and tokenizer.buffer == "\x1b":
-                tokenizer.reset()
-                should_emit = True
-                self._stray_escape_at = time.monotonic()
-            self._timer = None
-        if should_emit:
-            self._emit(KeyPress(key="escape"))
 
 
 def _format_llm_error(exc: BaseException) -> str:
@@ -227,10 +193,35 @@ class CircleSessionApp:
         *,
         home: Path | None = None,
         model_override: Any | None = None,
+        resume: str | None = None,
+        pick_session: bool = False,
+        run_options: RunOptions | None = None,
+        thread_id: str | None = None,
+        fork: str | None = None,
+        initial: list[tuple[str, str]] | None = None,
     ) -> None:
         self.settings = settings
+        self._resume_at_start = resume
+        self._pick_session_at_start = pick_session
+        # From the command line: --tools, --system-prompt, --name, --no-session, --models …
+        self._run_options = run_options or RunOptions()
+        self._fork_at_start = fork
+        # Messages given on the command line, as (text for the model, text shown)
+        self._initial_messages = list(initial or [])
         self.workspace = normalize_workspace(workspace)
         self.home = home or circle_home()
+        # The project's .circle/settings.json over yours, in memory only
+        self._project_settings, self._settings_problems = apply_project_settings(
+            settings, self.workspace)
+        # ``circle --model`` (or the project's model): this run uses it, settings.json
+        # keeps the saved one
+        self._saved_model: str | None = (self._project_settings["model"][0]
+                                         if "model" in self._project_settings else None)
+        if isinstance(model_override, str) and model_override:
+            if self._saved_model is None:
+                self._saved_model = settings.auth.model
+            settings.auth.model = model_override
+            model_override = None
         self.model_override = model_override
 
         apply_auth_to_environ(settings, self.home)
@@ -290,6 +281,8 @@ class CircleSessionApp:
         dialog_right.style.width = 1
         dialog_right.style.height = 1
         dialog_right.append_child(self._dialog_right_text)
+        # the side edges grow with the input rows
+        self._dialog_sides = (dialog_left, dialog_right)
         dialog_bottom = create_element(NodeType.BOX)
         dialog_bottom.style.height = 1
         dialog_bottom.append_child(self._dialog_bottom_text)
@@ -346,6 +339,11 @@ class CircleSessionApp:
         self._plan_width = 0
         self._composer_gap = create_element(NodeType.BOX)
         self._composer_gap.style.height = 0
+        # What you typed while Circle works and it has not read yet, above the input box
+        self._pending_box = create_element(NodeType.BOX)
+        self._pending_box.style.height = 0
+        self._pending_text = create_text("")
+        self._pending_box.append_child(self._pending_text)
         # 本回合耗时：不含停下等用户审批/作答的时间
         self._turn_started_at = 0.0
         self._turn_elapsed = 0.0
@@ -357,6 +355,7 @@ class CircleSessionApp:
         root.append_child(self._agent_detail.node)
         root.append_child(self._composer_gap)
         root.append_child(self._plan_panel.node)
+        root.append_child(self._pending_box)
         root.append_child(self._ask_panel.node)
         root.append_child(self._dialog)
         root.append_child(self._footer.node)
@@ -366,7 +365,7 @@ class CircleSessionApp:
 
         self._is_loading = False
         self._thinking_expanded = False
-        self._show_thinking = True
+        self._show_thinking = not settings.hide_thinking
         self._tool_outputs_expanded = False
         self._show_details = False  # alias of tool_outputs_expanded (InfoTest verbose)
         # 本回合在转录里占的区域：从 _turn_base 起的 _turn_entries 条（正文, 底色），由快照
@@ -396,17 +395,36 @@ class CircleSessionApp:
         self._ask_replies: list[tuple[str | None, dict[str, Any]]] = []
         # /approvals 管理页
         self._approvals_page: SessionApprovalsSession | None = None
+        self._picker: Picker | None = None
+        # The list of /commands or @files under what is being typed, and the text it was
+        # closed for with esc (it stays closed until the text changes)
+        self._completion: dict[str, Any] | None = None
+        # ctrl+f: what is being looked for in the conversation, and where
+        self._find: dict[str, Any] | None = None
+        # keybindings.json: pressed key → the key whose action it does
+        from circle.keybindings import load_remap
+
+        self._key_remap, self._keybinding_problems = load_remap(self.home)
+        self._completion_dismissed: str | None = None
+        self._skill_descriptions: dict[str, str] | None = None
+        # /tree took the conversation back here; the next message branches from it
+        self._leaf_checkpoint: str | None = None
+        self._last_esc_at = 0.0
+        self._model_list: list[str] | None = None  # what the endpoint offers, asked once
         self._ask_saved_prompt = ""
         self._ask_saved_pastes: dict[int, str] = {}
         self._draft_parked = False
         self._last_ctrl_c = 0.0
-        self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        self._requested_thread_id = thread_id
+        self._thread_id = thread_id or f"circle-{uuid.uuid4().hex[:8]}"
         ensure_home(self.home)
-        self._checkpointer = make_checkpointer(self.home)
+        # --no-session: the conversation lives in memory and is not listed
+        self._checkpointer = (MemorySaver() if self._run_options.no_session
+                              else make_checkpointer(self.home))
         self._store = make_store()
         self._archive: list[_SessionRecord] = []
         self._previous_thread_id: str | None = None
-        self._session_title = "new"
+        self._session_title = self._run_options.session_name or "new"
         self._undo_stack: list[_SessionRecord] = []
         self._redo_stack: list[_SessionRecord] = []
         self._share_path: Path | None = None
@@ -414,6 +432,9 @@ class CircleSessionApp:
         self._plan_mode = False
         self._session_tree = SessionTree()
         self._msg_queue: list[tuple[str, str]] = []  # (steering|followup, text)
+        self._shell_stop: CancellationToken | None = None  # a running !command
+        # a sent message → (how it is shown, the pastes it names), when that differs
+        self._shown_as: dict[str, tuple[str, dict[int, str]]] = {}
         self._custom_commands: dict[str, CustomCommand] = {
             c.name: c
             for c in discover_custom_commands(self.workspace, self.home)
@@ -445,9 +466,25 @@ class CircleSessionApp:
             extensions=self._extensions,
             approvals=self._approvals,
             ask_user=True,
+            run_options=self._run_options,
         )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
+
+    def _save_settings(self, *changed: str) -> None:
+        """Save your settings after you changed ``changed``: what you chose now is yours,
+        even where the project's settings had set it for this folder."""
+        for key in changed:
+            getattr(self, "_project_settings", {}).pop(key, None)
+        save_settings(self._settings_to_save(), self.home)
+
+    def _settings_to_save(self) -> CircleSettings:
+        """The settings as they belong in settings.json: without a ``--model`` override,
+        and without what the project's own settings put over yours."""
+        base = self.settings
+        if self._saved_model is not None:
+            base = replace(self.settings, auth=replace(self.settings.auth, model=self._saved_model))
+        return without_project_settings(base, getattr(self, "_project_settings", {}))
 
     def _rebuild_agent(self, *, model: Any | None = None) -> None:
         """Rebuild harness with current settings / plan mode."""
@@ -460,6 +497,7 @@ class CircleSessionApp:
             c.name: c
             for c in discover_custom_commands(self.workspace, self.home)
         }
+        self._skill_descriptions = None  # read again for the completion list
         self._chat_model = chat
         self._agent = create_harness(
             chat,
@@ -474,6 +512,7 @@ class CircleSessionApp:
             extensions=self._extensions,
             approvals=self._approvals,
             ask_user=True,
+            run_options=self._run_options,
         )
         self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
@@ -526,7 +565,19 @@ class CircleSessionApp:
         remove_listener = add_retry_listener(self._on_model_retry)
         try:
             self._show_welcome()
+            for problem in [*self._keybinding_problems, *self._settings_problems]:
+                self._fail(problem)
             self._start_update_check()
+            if self._resume_at_start:
+                self._open_saved(self._resume_at_start)
+            elif self._fork_at_start:
+                found = session_index.find(self.home, self._fork_at_start)
+                if found is not None:
+                    # --session-id with --fork names the new conversation
+                    self._fork_from_elsewhere(found, into=self._requested_thread_id)
+            elif self._pick_session_at_start:
+                self._open_session_picker()
+            self._send_initial_messages()
             while self._app._running:
                 self._maybe_update_secret_hint()
                 time.sleep(0.05)
@@ -541,7 +592,46 @@ class CircleSessionApp:
             self._theme_watch.stop()
             self._bridge.cancel()
             self._app.stop()
+        hint = self._resume_hint()
+        if hint:
+            print(hint, flush=True)
         return 0
+
+    def _resume_hint(self) -> str:
+        """After the screen is gone: the command that opens this conversation again."""
+        if self._run_options.no_session:
+            return ""
+        try:
+            saved = session_index.find(self.home, self._thread_id)
+        except Exception:  # noqa: BLE001 - only a hint
+            return ""
+        if saved is None or saved.thread_id != self._thread_id:
+            return ""
+        import shlex
+
+        command = f"circle --session {self._thread_id}"
+        try:
+            here = Path.cwd().resolve()
+        except OSError:
+            here = None
+        if here != self.workspace:
+            command += " " + shlex.quote(str(self.workspace))
+        return f"To resume this session: {command}"
+
+    def _send_initial_messages(self) -> None:
+        """``circle "message" @file``: the first message is sent at once, the others
+        follow it, one turn each."""
+        if not self._initial_messages:
+            return
+        messages, self._initial_messages = self._initial_messages, []
+        with self._app.lock:
+            for full, shown in messages:
+                if full != shown:
+                    self._shown_as[full] = (shown, {})
+                self._input_history.add(shown)
+            first, *rest = messages
+            self._msg_queue.extend(("followup", full) for full, _shown in rest)
+            self._start_user_turn(first[0])
 
     def _on_model_retry(self, event: dict[str, Any]) -> None:
         """模型层重试与参数降级如实上屏：用户能看到在等什么、丢了什么。"""
@@ -609,17 +699,45 @@ class CircleSessionApp:
             return "auto", pal.yellow
         return "", ""
 
+    def _branch(self) -> str:
+        """The git branch, read again at most every two seconds."""
+        now = time.monotonic()
+        cached = getattr(self, "_branch_cache", None)
+        if cached is None or now - cached[0] > 2.0:
+            from circle.git_info import current_branch
+
+            cached = (now, current_branch(self.workspace))
+            self._branch_cache = cached
+        return cached[1]
+
+    def _sync_title(self) -> None:
+        """The terminal window's title, as pi sets it: ``circle - <title> - <folder>``."""
+        title = self._session_title if self._session_title not in ("", "new") else ""
+        text = " - ".join(part for part in ("circle", title[:40], self.workspace.name) if part)
+        if text != getattr(self, "_terminal_title", None):
+            self._terminal_title = text
+            setter = getattr(self._app, "set_title", None)
+            if callable(setter):
+                setter(text)
+
     def _sync_header(self, width: int) -> None:
-        """One row: ``circle <version> · <model> · <directory>`` and, when it fits, the one key
-        hint on the right. What gives way first: the hint, then the directory (cut from the left,
-        the tail is what identifies it), then the model name."""
+        """One row: ``circle <version> · <model> · <directory> (<branch>)`` and, when it
+        fits, the one key hint on the right. What gives way first: the hint, then the
+        directory (cut from the left, the tail is what identifies it), then the model name."""
         pal = palette()
+        self._sync_title()
         model = self.settings.auth.model
+        depth = reasoning_effort_of(getattr(self, "_chat_model", None))
+        if depth and depth in EFFORT_LEVELS:
+            model = f"{model} • {depth}"
         head = f" circle {__version__} · "
         path = str(self.workspace)
         home = str(Path.home())
         if path == home or path.startswith(home + os.sep):
             path = "~" + path[len(home):]
+        branch = self._branch()
+        if branch:
+            path = f"{path} ({branch})"
         hint = "? for shortcuts"
         room = width - 1
         show_hint = width >= 60 and string_width(head + model) + 12 + string_width(hint) + 2 <= width
@@ -669,14 +787,22 @@ class CircleSessionApp:
                 width, elapsed=elapsed, label=self._dialog_label,
                 bottom_label=self._footer.obs_warning, mode=mode, mode_sgr=mode_sgr)
             show_prompt = True
+        # The input box grows with the draft, up to 30% of the screen (at least 5 rows)
+        self._prompt.max_rows = max(5, int((self._app.height or 24) * 0.3))
+        self._prompt.set_width(width - 2)
+        prompt_rows = max(1, self._prompt.rows_shown) if show_prompt else 0
         self._dialog_top_text.set_value(top)
-        self._dialog_left_text.set_value(left)
-        self._dialog_right_text.set_value(right)
+        self._dialog_left_text.set_value("\n".join([left] * max(1, prompt_rows)))
+        self._dialog_right_text.set_value("\n".join([right] * max(1, prompt_rows)))
         self._dialog_bottom_text.set_value(bottom)
         self._dialog_body_text.set_value("\n".join(rows))
         self._dialog_body.style.height = len(rows)
         self._set_view_visible(self._dialog_mid, show_prompt)
-        self._dialog.style.height = 2 + len(rows) + (1 if show_prompt else 0)
+        if show_prompt:
+            self._dialog_mid.style.height = prompt_rows
+            for side in getattr(self, "_dialog_sides", ()):
+                side.style.height = prompt_rows
+        self._dialog.style.height = 2 + len(rows) + prompt_rows
         if show_prompt != self._prompt_shown:
             self._prompt_shown = show_prompt
             if show_prompt:
@@ -685,13 +811,33 @@ class CircleSessionApp:
             # every frame, not only on the change: clearing the parked draft re-declares the cursor
             self._app.cursor.clear(self._prompt.node)
         self._plan_panel.set_suppressed(card is not None)
+        if card is not None and getattr(self, "_completion", None) is not None:
+            self._completion = None  # the card takes the frame; the list goes with the draft
+            self._ask_panel.clear()
         self._plan_panel.tick()
         self._tick_agents()
         self._render_agent_detail()
         self._sync_agent_strip()
         self._sync_plan_panel()
+        self._sync_pending(width)
         active_view = self._agent_detail if self._detail_active else self._transcript
         self._composer_gap.style.height = int(active_view.message_count() > 0)
+
+    def _sync_pending(self, width: int) -> None:
+        """One faint row per message waiting: ``steering:`` for the running turn's next
+        step, ``follow-up:`` for after it."""
+        box = getattr(self, "_pending_box", None)
+        if box is None:
+            return
+        inbox = getattr(getattr(self, "_bridge", None), "inbox", None)
+        rows = [("steering", shown) for shown in (inbox.waiting() if inbox is not None else [])]
+        shown_as = getattr(self, "_shown_as", {})
+        rows += [("follow-up", shown_as.get(full, (full, {}))[0])
+                 for _kind, full in getattr(self, "_msg_queue", [])]
+        lines = [" " + _faint(_cut_end(f"{label}: {' '.join(text.split())}", max(8, width - 2)))
+                 for label, text in rows]
+        self._pending_text.set_value("\n".join(lines))
+        box.style.height = len(lines)
 
     # ── subagents: strip, selection, detail page ───────────────────────────
 
@@ -911,6 +1057,7 @@ class CircleSessionApp:
             if card is not None and not card.input_row:
                 return  # the prompt row is hidden behind the card: a paste has nowhere to go
             self._prompt.handle_paste(event.text)
+            self._update_completion()
             self._app.render()
             return
         if isinstance(event, MouseEvent):
@@ -918,6 +1065,12 @@ class CircleSessionApp:
             return
         if not isinstance(event, KeyPress):
             return
+        target = getattr(self, "_key_remap", {}).get(event.key)
+        if target:
+            # keybindings.json: this key does the action of another
+            event = KeyPress(key=target, char=target[-1] if target.startswith("ctrl+") else "",
+                             ctrl=target.startswith("ctrl+"), alt=target.startswith("alt+"),
+                             shift=target.startswith("shift+"))
         self._handle_key(event)
 
     def _handle_key(self, kp: KeyPress) -> None:
@@ -930,6 +1083,13 @@ class CircleSessionApp:
             return
 
         if self._approvals_page is not None and self._approvals_page.handle_key(kp.key, kp.char):
+            return
+
+        picker = getattr(self, "_picker", None)
+        if picker is not None and picker.handle_key(kp.key, kp.char):
+            return
+
+        if getattr(self, "_find", None) is not None and self._handle_find_key(kp):
             return
 
         if self._input_history.in_search_mode and self._handle_search_key(kp):
@@ -959,11 +1119,23 @@ class CircleSessionApp:
         if self._handle_agent_view_key(kp):
             return
 
+        typed = getattr(getattr(self, "_prompt", None), "value", "")
+        if kp.key == "ctrl+c" and typed and not self._is_loading:
+            # As in pi: the first ctrl+c clears what you typed, the next ones exit
+            self._input_history.add(self._prompt.value)
+            self._prompt.clear()
+            self._last_ctrl_c = 0.0
+            self._update_completion()
+            self._app.render()
+            return
+
         if kp.key == "ctrl+c":
             now = time.time()
             if self._is_loading:
                 with self._app.lock:
+                    self._stop_shell_command()
                     self._bridge.cancel()
+                    self._settle_inbox()
                     self._dismiss_user_panels()
                     self._notice([_stop_line()])
                     self._leave_busy()
@@ -980,18 +1152,47 @@ class CircleSessionApp:
             return
 
         if kp.key == "ctrl+d":
+            if typed:
+                # Exits only from an empty box; with text it deletes forward, as in a shell
+                self._prompt.handle_key("delete")
+                self._update_completion()
+                self._app.render()
+                return
             self._app._running = False
+            return
+
+        if kp.key == "ctrl+z":
+            self._suspend()
+            return
+
+        if getattr(self, "_completion", None) is not None and self._completion_key(kp.key):
             return
 
         if kp.key == "escape":
             if self._is_loading:
                 with self._app.lock:
+                    self._stop_shell_command()
                     self._bridge.cancel()
+                    self._settle_inbox()
                     self._dismiss_user_panels()
                     self._notice([_stop_line()])
                     self._leave_busy()
                     self._drain_after_worker()
             else:
+                now = time.monotonic()
+                if not self._prompt.value and now - self._last_esc_at < 0.5:
+                    self._last_esc_at = 0.0
+                    # esc esc, as in pi: the tree, the fork list, or nothing (double_escape)
+                    action = getattr(self.settings, "double_escape", "tree")
+                    if action == "tree":
+                        self._open_tree()
+                        return
+                    if action == "fork":
+                        self._open_fork_picker()
+                        return
+                # Only an esc on an already empty box counts toward esc esc: the one that
+                # clears your text must not open the tree as well
+                self._last_esc_at = 0.0 if self._prompt.value else now
                 self._prompt.clear()
             self._app.render()
             return
@@ -1006,6 +1207,31 @@ class CircleSessionApp:
 
         if kp.key == "ctrl+l":
             self._app._force_full_render()
+            self._open_model_picker()
+            return
+
+        if kp.key == "ctrl+p":
+            self._cycle_model()
+            return
+
+        if kp.key == "shift+tab":
+            self._cycle_thinking()
+            return
+
+        if kp.key == "ctrl+g":
+            self._dispatch_slash("editor", "")
+            return
+
+        if kp.key == "ctrl+x":
+            self._dispatch_slash("copy", "")  # the last answer, as pi's ctrl+x
+            return
+
+        if kp.key == "ctrl+f":
+            self._open_find()
+            return
+
+        if kp.key == "alt+up" and self._dequeue_to_prompt():
+            self._app.render()
             return
 
         # 转录滚动键只在输入框为空时接管；非空时 home/end 归输入框的光标
@@ -1026,6 +1252,13 @@ class CircleSessionApp:
         if kp.key == "ctrl+r":
             self._enter_or_advance_search()
             return
+
+        # A draft of several rows: ↑ ↓ move between them first, as in pi's editor (while
+        # browsing the history they keep browsing)
+        if kp.key in ("up", "down") and not getattr(self._input_history, "browsing", False):
+            if self._prompt.move_vertical(-1 if kp.key == "up" else 1):
+                self._app.render()
+                return
 
         # 输入框为空且历史翻尽时 ↑↓ 滚转录；有历史可翻或框里有字时仍是输入历史
         if kp.key == "up":
@@ -1052,12 +1285,12 @@ class CircleSessionApp:
             self._dispatch_slash("hotkeys", "")
             return
 
-        # Pi-style: Alt+Enter queues a follow-up while busy (or sends now).
-        if kp.key in {"alt+enter", "alt+return"} or (getattr(kp, "alt", False) and kp.key in {"enter", "return"}):
-            text = self._prompt.value
-            if text.strip():
-                self._prompt.clear()
-                self._on_submit(text, kind="followup")
+        # Pi-style: Alt+Enter queues a follow-up while busy (or sends now). Most terminals
+        # send alt+enter as shift+enter, so ctrl+q does it too (pi's key on Windows).
+        if kp.key in {"alt+enter", "alt+return", "ctrl+q"} or (
+                getattr(kp, "alt", False) and kp.key in {"enter", "return"}):
+            if self._prompt.value.strip():
+                self._on_submit(self._prompt.take(), kind="followup")
                 self._app.render()
             return
 
@@ -1065,7 +1298,235 @@ class CircleSessionApp:
             kp.key if kp.key else "char",
             kp.char if len(kp.char) == 1 else "",
         ):
+            self._update_completion()
             self._app.render()
+
+    def _suspend(self) -> None:
+        """ctrl+z: give the terminal back to the shell; ``fg`` brings Circle back."""
+        import signal
+
+        if not hasattr(signal, "SIGTSTP"):
+            self._flash("Suspending is not supported here")
+            return
+        self._app.suspend_for_external()
+        try:
+            os.kill(os.getpid(), signal.SIGTSTP)  # returns once the shell continues us
+        finally:
+            self._app.resume_from_external()
+
+    # ── find in the conversation (ctrl+f) ───────────────────────────────────
+
+    def _open_find(self) -> None:
+        """ctrl+f: find text in the conversation. Typing narrows, enter or ↓ goes to the
+        next match, shift+enter or ↑ to the one before, esc closes."""
+        if self._active_card() is not None:
+            return
+        self._find = {"query": "", "matches": [], "at": -1, "lit": None}
+        self._show_find_status()
+        self._app.render()
+
+    def _find_matches(self, query: str) -> list[int]:
+        words = " ".join(query.lower().split())
+        if not words:
+            return []
+        return [index for index, row in enumerate(self._transcript.snapshot())
+                if words in " ".join(_strip_ansi(row).lower().split())]
+
+    def _show_find_status(self) -> None:
+        state = self._find
+        if state is None:
+            return
+        count = len(state["matches"])
+        where = (f"{state['at'] + 1}/{count}" if count else "no matches") if state["query"] else ""
+        text = f"find: {state['query']}▏" + (f"  {where}" if where else "")
+        self._footer.hold_status(f"{text} · enter next · shift+enter previous · esc closes")
+
+    def _unlight_find(self) -> None:
+        state = self._find
+        lit = state.get("lit") if state else None
+        if lit is None:
+            return
+        index, original, highlighted = lit
+        if self._transcript.message_at(index) == highlighted:  # a live turn may have redrawn it
+            self._transcript.update_message_at(index, original)
+        state["lit"] = None
+
+    def _light_find(self) -> None:
+        """Mark the current match and scroll it a third of the way down the view."""
+        state = self._find
+        self._unlight_find()
+        if not state["matches"]:
+            return
+        index = state["matches"][state["at"]]
+        original = self._transcript.message_at(index) or ""
+        highlighted = _mark_text(original, state["query"])
+        self._transcript.update_message_at(index, highlighted)
+        state["lit"] = (index, original, highlighted)
+        view = self._transcript.viewport_height()
+        self._transcript.scroll_to(max(0, self._transcript.row_of(index) - view // 3))
+
+    def _find_refresh(self, *, keep: bool = True) -> None:
+        state = self._find
+        self._unlight_find()
+        state["matches"] = self._find_matches(state["query"])
+        if state["matches"]:
+            node = self._transcript.node
+            top = self._transcript.message_at_row(int(getattr(node, "scroll_top", 0) or 0))
+            later = [i for i, index in enumerate(state["matches"]) if index >= top]
+            state["at"] = later[0] if later else len(state["matches"]) - 1
+            self._light_find()
+        else:
+            state["at"] = -1
+        self._show_find_status()
+
+    def _close_find(self) -> None:
+        self._unlight_find()
+        self._find = None
+        self._footer.clear_hold_status()
+        self._app.render()
+
+    def _handle_find_key(self, kp: KeyPress) -> bool:
+        state = self._find
+        key = kp.key
+        if key in ("escape", "ctrl+c", "ctrl+f"):
+            self._close_find()
+            return True
+        if key in ("enter", "return", "down", "shift+enter", "up"):
+            if state["matches"]:
+                step = -1 if key in ("shift+enter", "up") else 1
+                state["at"] = (state["at"] + step) % len(state["matches"])
+                self._light_find()
+                self._show_find_status()
+                self._app.render()
+            return True
+        if key == "backspace":
+            state["query"] = state["query"][:-1]
+        elif kp.char and len(kp.char) == 1 and kp.char.isprintable():
+            state["query"] += kp.char
+        else:
+            return key not in ("ctrl+d",)  # other keys do nothing while finding
+        self._find_refresh()
+        self._app.render()
+        return True
+
+    # ── completion list: /commands and @files as you type ─────────────────
+
+    _COMPLETION_ROWS = 6
+
+    def _command_descriptions(self) -> dict[str, str]:
+        found = {cmd.name: cmd.description for cmd in BUILTIN_SLASH}
+        found.update({name: cmd.description for name, cmd in self._custom_commands.items()})
+        found.update({name: cmd.description for name, cmd in self._extensions.commands().items()})
+        if getattr(self, "_skill_descriptions", None) is None:
+            from circle.skills import discover_skills
+
+            try:
+                self._skill_descriptions = {f"skill:{s.name}": s.description
+                                            for s in discover_skills(self.workspace, self.home)}
+            except Exception:  # noqa: BLE001 - completion without skills is still useful
+                self._skill_descriptions = {}
+        found.update(self._skill_descriptions)
+        return found
+
+    def _update_completion(self) -> None:
+        """After each key in the input box: the commands that ``/part`` can still become,
+        or the files ``@part`` can mean, listed above the box (as pi does)."""
+        value, cursor = self._prompt.value, self._prompt.cursor_pos
+        state: dict[str, Any] | None = None
+        if value == getattr(self, "_completion_dismissed", None):
+            state = None
+        elif value.startswith("/") and cursor == len(value) and not any(
+                ch.isspace() or ch == "↵" for ch in value):
+            typed = value[1:].lower()
+            described = self._command_descriptions()
+            names = [n for n in sorted(described) if n.lower().startswith(typed)]
+            if names and names != [typed]:
+                state = {"kind": "command", "start": 0, "token": value,
+                         "items": [(f"/{n}", f"/{n}", described[n].split("\n")[0][:70])
+                                   for n in names]}
+        else:
+            before = value[:cursor]
+            word = before.rsplit(" ", 1)[-1].rsplit("↵", 1)[-1]
+            if word.startswith("@"):
+                paths = complete(word[1:], self.workspace, limit=50)
+                if paths and paths != [word[1:]]:
+                    state = {"kind": "file", "start": cursor - len(word), "token": word,
+                             "items": [(f"@{p}", p, "") for p in paths]}
+        previous = getattr(self, "_completion", None)
+        if state is not None:
+            state["value"], state["cursor"] = value, cursor  # what the list was made for
+            keep = previous.get("focused") if previous is not None else None
+            values = [item[0] for item in state["items"]]
+            state["focus"] = values.index(keep) if keep in values else 0
+            state["focused"] = values[state["focus"]]
+        self._completion = state
+        if state is not None or previous is not None:
+            self._render_completion()
+
+    def _render_completion(self) -> None:
+        state = getattr(self, "_completion", None)
+        if getattr(self, "_picker", None) is not None or self._approvals_page is not None:
+            return  # the panel is theirs
+        if state is None:
+            self._ask_panel.clear()
+            return
+        focus, rows = state["focus"], self._COMPLETION_ROWS
+        top = min(max(0, focus - rows + 1), max(0, len(state["items"]) - rows))
+        window = state["items"][top:top + rows]
+        items = [PopupItem(label, f"  {meta}" if meta else "", False) for _v, label, meta in window]
+        title = "commands" if state["kind"] == "command" else "files"
+        more = len(state["items"]) - len(window)
+        lines = popup_rows(f"{title}" + (f" · {focus + 1}/{len(state['items'])}" if more else ""),
+                           items, focus - top, max(20, self._app.width or 80))
+        self._ask_panel.update(lines)
+
+    def _completion_key(self, key: str) -> bool:
+        """↑ ↓ move in the list, tab takes the marked entry, enter takes it (and runs a
+        command), esc closes the list. Other keys go on to the input box."""
+        if (self._completion["value"], self._completion["cursor"]) != (
+                self._prompt.value, self._prompt.cursor_pos):
+            # the box changed without a key (a paste, a draft put back): list it again
+            self._update_completion()
+            if self._completion is None:
+                return False
+        state = self._completion
+        if key in ("up", "down"):
+            step = -1 if key == "up" else 1
+            state["focus"] = (state["focus"] + step) % len(state["items"])
+            state["focused"] = state["items"][state["focus"]][0]
+            self._render_completion()
+            self._app.render()
+            return True
+        if key == "escape":
+            self._completion_dismissed = self._prompt.value
+            self._completion = None
+            self._render_completion()
+            self._app.render()
+            return True
+        if key not in ("tab", "enter", "return"):
+            return False
+        chosen = state["items"][state["focus"]][0]
+        value, cursor = self._prompt.value, self._prompt.cursor_pos
+        if state["kind"] == "command":
+            self._completion = None
+            self._render_completion()
+            if key == "tab":
+                self._prompt.set_value(f"{chosen} ")
+            else:
+                self._prompt.set_value(chosen)
+                self._on_submit(self._prompt.take())  # enter on a command runs it, as in pi
+            self._app.render()
+            return True
+        start = state["start"]
+        tail = "" if chosen.endswith("/") else " "
+        head = value[:start] + chosen + tail
+        self._prompt.set_value(head + value[cursor:], cursor=len(head))
+        self._completion = None
+        self._update_completion()  # a folder lists what is in it
+        if self._completion is None:
+            self._render_completion()
+        self._app.render()
+        return True
 
     # ── secret entry（question 工具 secret 类型的 TUI 侧）──────────────
 
@@ -1462,21 +1923,64 @@ class CircleSessionApp:
 
     def _tab_complete(self) -> None:
         val = self._prompt.value
-        if not val.startswith("/"):
+        if self._complete_mention():
+            return
+        if not val.startswith("/") or " " in val:
             return
         prefix = val[1:].lower()
-        matches = [
-            cmd for cmd in BUILTIN_SLASH if cmd.name.lower().startswith(prefix)
-        ]
+        matches = [name for name in self._command_names() if name.startswith(prefix)]
         if not matches:
+            self._flash(f"No command starts with /{prefix}")
             return
         if len(matches) == 1:
-            self._prompt.set_value(f"/{matches[0].name} ")
+            self._prompt.set_value(f"/{matches[0]} ")
         else:
-            names = "  ".join(f"/{m.name}" for m in matches[:8])
-            self._footer.set_toast(f"{names}  [Tab · Enter]", ttl_seconds=2.0)
-            self._prompt.set_value(f"/{matches[0].name} ")
+            shared = os.path.commonprefix(matches)
+            self._footer.set_toast("  ".join(f"/{m}" for m in matches[:8])
+                                   + ("  …" if len(matches) > 8 else ""), ttl_seconds=4.0)
+            if len(shared) > len(prefix):
+                self._prompt.set_value(f"/{shared}")
         self._app.render()
+
+    def _command_names(self) -> list[str]:
+        """Everything that can follow ``/``: built-in, custom and extension commands, and
+        ``skill:<name>`` for each skill."""
+        from circle.skills import discover_skills
+
+        names = {cmd.name for cmd in BUILTIN_SLASH}
+        names |= set(self._custom_commands) | set(self._extensions.commands())
+        try:
+            names |= {f"skill:{s.name}" for s in discover_skills(self.workspace, self.home)}
+        except Exception:  # noqa: BLE001 - completion without skills is still useful
+            logger.debug("skills unavailable for completion", exc_info=True)
+        return sorted(names)
+
+    def _complete_mention(self) -> bool:
+        """tab on ``@part``: the path it can only mean, or as much of it as all the
+        matches share, with the matches in the footer."""
+        cursor = self._prompt.cursor_pos
+        before, after = self._prompt.value[:cursor], self._prompt.value[cursor:]
+        word = before.rsplit(" ", 1)[-1].rsplit("↵", 1)[-1]
+        if not word.startswith("@"):
+            return False
+        matches = complete(word[1:], self.workspace)
+        if not matches:
+            self._flash(f"No file matches {word}")
+            return True
+        if len(matches) == 1:
+            chosen = matches[0] + ("" if matches[0].endswith("/") else " ")
+        else:
+            chosen = os.path.commonprefix(matches)
+            shown = "  ".join(matches[:8]) + ("  …" if len(matches) > 8 else "")
+            self._footer.set_toast(shown, ttl_seconds=4.0)
+            # Found by name elsewhere, the shared start need not contain what was typed
+            if len(chosen) <= len(word) - 1 or not chosen.startswith(word[1:]):
+                self._app.render()
+                return True
+        head = before[: len(before) - len(word)] + "@" + chosen
+        self._prompt.set_value(head + after, cursor=len(head))
+        self._app.render()
+        return True
 
     def _enter_or_advance_search(self) -> None:
         if self._input_history.in_search_mode:
@@ -1506,10 +2010,8 @@ class CircleSessionApp:
         if key == "enter":
             self._input_history.exit_search(restore=False)
             self._footer.set_search_state(query=None, match=None)
-            text = self._prompt.value
-            if text:
-                self._prompt.clear()
-                self._on_submit(text)
+            if self._prompt.value:
+                self._on_submit(self._prompt.take())
             else:
                 self._app.render()
             return True
@@ -1551,7 +2053,7 @@ class CircleSessionApp:
         self._app.render()
 
     def _on_submit(self, text: str, *, kind: str = "steering") -> None:
-        text = text.strip()
+        raw, text = text, text.strip()
         if not text:
             return
         self._input_history.add(text)
@@ -1560,6 +2062,38 @@ class CircleSessionApp:
         parsed = parse_slash(text, extra_commands=extra)
         if parsed is not None:
             self._dispatch_slash(parsed.name, parsed.args)
+            return
+        name = command_word(raw)
+        if name:
+            # A mistyped command would otherwise go to the model as a message. Give the
+            # draft back; a leading space sends it as text, and a path is never a command.
+            close = difflib.get_close_matches(name, sorted(known_slash_names() | extra), n=1)
+            hint = f" · did you mean /{close[0]}?" if close else " · /help lists them"
+            self._prompt.restore_draft(raw, self._prompt.submitted_pastes())
+            self._flash(f"Unknown command /{name}{hint}", 4.0)
+            return
+        if text.startswith("!"):
+            if self._is_loading:
+                self._prompt.restore_draft(raw, self._prompt.submitted_pastes())
+                self._flash("Busy · run it when the turn has finished")
+                return
+            self._run_shell_from_prompt(self._prompt.model_text(text))
+            return
+        # The model gets the long pastes, the line breaks and the @files; the transcript
+        # keeps the short form the user saw in the input box.
+        full = attach_files(self._prompt.model_text(text), self.workspace)
+        shown = text.replace("↵", "\n")
+        pastes = self._prompt.submitted_pastes()
+        if full != shown or pastes:
+            self._shown_as[full] = (shown, pastes)
+        text = full
+        inbox = getattr(self._bridge, "inbox", None)
+        if kind == "steering" and inbox is not None and self._bridge.is_running:
+            # The model reads it before its next call, without the turn being stopped
+            waiting = inbox.put(text, shown)
+            self._footer.set_toast(f"Steering · {waiting} waiting · read after the current step",
+                                   ttl_seconds=4.0)
+            self._app.render()
             return
         if self._bridge.is_running or self._is_loading or self._msg_queue:
             self._msg_queue.append((kind, text))
@@ -1575,14 +2109,16 @@ class CircleSessionApp:
             self._footer.set_toast(f"Queued steering · {len(self._msg_queue)}")
             return
         self._push_undo_checkpoint()
-        self._session_tree.add("user", text)
+        shown, pastes = self._shown_as.pop(text, (text, {}))
+        self._session_tree.add("user", shown)
 
         if self._session_title == "new":
-            self._session_title = text.split("\n", 1)[0][:60]
+            self._session_title = shown.split("\n", 1)[0][:60]
+        self._remember_session()
 
         # 契约 D5：回合之间靠 1 空行分隔，不画横线。
         self._transcript.ensure_block_gap()
-        self._transcript.append_messages(_user_rows(text))
+        self._transcript.append_messages(_user_rows(shown, self._view_options().width))
         self._transcript.ensure_block_gap()
         self._open_turn_region()
         self._turn_elapsed = 0.0
@@ -1591,7 +2127,13 @@ class CircleSessionApp:
         self._call_started_at = time.time()
         self._app.render()
         self._extensions.emit("turn_start", {"text": text})
-        self._bridge.start(text)
+        if self._leaf_checkpoint:
+            self._bridge.branch_from = self._leaf_checkpoint
+            self._forget_leaf()
+        if shown != text or pastes:
+            self._bridge.start(text, shown=shown, pastes=pastes)
+        else:
+            self._bridge.start(text)
 
     def _drain_message_queue(self) -> None:
         with self._app.lock:
@@ -1653,7 +2195,8 @@ class CircleSessionApp:
             self._app._running = False
             return
         if name == "help":
-            custom = [(c.name, c.description) for c in self._custom_commands.values()]
+            custom = [(f"{c.name} {c.argument_hint}".strip(), c.description)
+                      for c in self._custom_commands.values()]
             custom += [(c.name, c.description) for c in self._extensions.commands().values()]
             self._notice([f" {_faint(line)}" for line in help_text(custom=custom or None).splitlines()])
             self._app.render()
@@ -1725,6 +2268,7 @@ class CircleSessionApp:
             "editor": self._cmd_editor,
             "reload": self._cmd_reload,
             "yolo": self._cmd_yolo,
+            "effort": self._cmd_effort,
             "extensions": self._cmd_extensions,
             "approvals": self._cmd_approvals,
         }
@@ -1732,7 +2276,11 @@ class CircleSessionApp:
         if handler is None:
             self._flash(f"Unknown command /{name} · try /help")
             return
-        handler(args)
+        try:
+            handler(args)
+        except Exception as exc:  # noqa: BLE001 - a failed command must not end the session
+            logger.warning("/%s failed", name, exc_info=True)
+            self._fail(f"/{name} failed: {type(exc).__name__}: {exc}")
 
     def _archive_current(self) -> None:
         if self._transcript.message_count() <= 3 and self._session_title == "new":
@@ -1753,6 +2301,9 @@ class CircleSessionApp:
         self._thread_id = thread_id
         self._bridge = self._make_bridge()
         self._reset_turn_regions()
+        found = session_index.find(self.home, thread_id)
+        self._leaf_checkpoint = found.leaf if found is not None and found.leaf else None
+        self._session_tree = _tree_from(self._saved_messages(thread_id, self._leaf_checkpoint))
         if lines is not None:
             self._transcript.restore(lines, bgs)
             for rec in self._archive:
@@ -1809,7 +2360,8 @@ class CircleSessionApp:
             },
             self.home,
         )
-        save_settings(self.settings, self.home)
+        self._saved_model = None
+        self._save_settings("model")
         apply_auth_to_environ(self.settings, self.home)
         try:
             chat = build_chat_model(self.settings, home=self.home)
@@ -1825,7 +2377,8 @@ class CircleSessionApp:
         clear_credentials(self.home)
         self.settings.auth = ModelAuth()
         self.settings.initialized = False
-        save_settings(self.settings, self.home)
+        self._saved_model = None
+        self._save_settings("model")
         self._toast("Signed out · credentials cleared · /login or `circle --init` before the next turn")
 
     def _cmd_new(self, _args: str) -> None:
@@ -1834,49 +2387,345 @@ class CircleSessionApp:
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
         self._bridge = self._make_bridge()
         self._reset_turn_regions()
+        self._session_tree = SessionTree()
+        self._leaf_checkpoint = None
         self._session_title = "new"
         self._transcript.clear()
         self._show_welcome()
         self._toast(f"New session {self._thread_id}")
 
     def _cmd_resume(self, args: str) -> None:
+        """Pick a conversation (no argument), or open one by number or the end of its id."""
+        if not args.strip():
+            self._open_session_picker()
+            return
         self._archive_current()
-        sessions = list(self._archive)
-        # Always include current at end if not already archived this turn
-        if (not any(s.thread_id == self._thread_id for s in sessions)
-                and self._transcript.message_count() > 3):
-            sessions.append(self._snapshot_record())
-        if not sessions:
-            self._flash("No session to resume · chat a while or /new to archive this one")
+        in_run = {rec.thread_id: rec for rec in self._archive}
+        try:
+            saved = session_index.for_workspace(self.home, self.workspace)
+        except Exception:  # noqa: BLE001 - the list from this run still works
+            logger.warning("session index unavailable", exc_info=True)
+            saved = []
+        listed = [(item.thread_id, item.title, session_index.age(item.updated)) for item in saved]
+        known = {thread_id for thread_id, _title, _age in listed}
+        listed[:0] = [(rec.thread_id, rec.title, "") for rec in self._archive
+                      if rec.thread_id not in known]
+        if not listed:
+            self._flash("No earlier session in this folder")
             return
         target = args.strip()
-        if not target:
-            self._toast("Sessions:")
-            for i, rec in enumerate(sessions, 1):
-                mark = " *" if rec.thread_id == self._thread_id else ""
-                self._transcript.append_message(
-                    " " + _faint(f"{i}. {rec.thread_id}  {rec.title[:40]}{mark}")
-                )
-            self._flash("Usage: /resume <n|id>")
-            return
-        chosen: _SessionRecord | None = None
-        if target.isdigit():
-            idx = int(target) - 1
-            if 0 <= idx < len(sessions):
-                chosen = sessions[idx]
+        chosen: tuple[str, str] | None = None
+        if target.isdigit() and 1 <= int(target) <= len(listed):
+            chosen = listed[int(target) - 1][:2]
         else:
-            for rec in sessions:
-                if rec.thread_id == target or rec.thread_id.endswith(target):
-                    chosen = rec
-                    break
+            chosen = next(((tid, title) for tid, title, _ago in listed
+                           if tid == target or tid.endswith(target)), None)
         if chosen is None:
-            self._fail(f"No session {target!r}")
+            self._fail(f"No session {target!r} in this folder · /resume lists them")
             return
-        if chosen.thread_id == self._thread_id:
+        thread_id, title = chosen
+        if thread_id == self._thread_id:
             self._flash("Already in that session")
             return
-        self._switch_thread(chosen.thread_id, lines=chosen.lines, bgs=chosen.bgs)
-        self._toast(f"Resumed {chosen.thread_id} · {chosen.title[:40]}")
+        if thread_id in in_run:
+            rec = in_run[thread_id]
+            self._switch_thread(thread_id, lines=rec.lines, bgs=rec.bgs)
+            self._toast(f"Resumed {thread_id} · {rec.title[:40]}")
+            return
+        self._open_saved(thread_id, title)
+
+    def _saved_messages(self, thread_id: str, checkpoint: str | None = None) -> list[Any]:
+        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+        if checkpoint:
+            config["configurable"]["checkpoint_id"] = checkpoint
+        try:
+            state = self._agent.get_state(config)
+        except Exception:  # noqa: BLE001 - an empty history is the safe answer
+            logger.debug("no saved state for %s", thread_id, exc_info=True)
+            return []
+        return list((getattr(state, "values", None) or {}).get("messages") or [])
+
+    def _open_session_picker(self, *, everywhere: bool = False) -> None:
+        """Pick a conversation: type to search, tab for every folder's, ctrl+r renames,
+        ctrl+d deletes. One from another folder is forked into this one."""
+        if self._bridge.is_running or self._is_loading:
+            self._flash("Busy · switch sessions when the turn has finished")
+            return
+        self._archive_current()
+        state = {"everywhere": everywhere}
+
+        def rows() -> list[PickerItem]:
+            try:
+                found = (session_index.everywhere(self.home) if state["everywhere"]
+                         else session_index.for_workspace(self.home, self.workspace, limit=200))
+            except Exception:  # noqa: BLE001 - the list from this run still works
+                logger.warning("session index unavailable", exc_info=True)
+                found = []
+            here = str(self.workspace)
+            items = []
+            for saved in found:
+                where = "" if saved.workspace == here else f" · {_path_tail(saved.workspace)}"
+                items.append(PickerItem(
+                    key=saved.thread_id, label=saved.title or "(untitled)",
+                    meta=f"{session_index.age(saved.updated)}{where}",
+                    search=f"{saved.thread_id} {saved.workspace}",
+                    current=saved.thread_id == self._thread_id))
+            known = {item.key for item in items}
+            items[0:0] = [PickerItem(key=rec.thread_id, label=rec.title or rec.thread_id,
+                                     meta="this run", current=rec.thread_id == self._thread_id)
+                          for rec in self._archive if rec.thread_id not in known
+                          and not state["everywhere"]]
+            return items
+
+        def title() -> str:
+            return "Sessions · every folder" if state["everywhere"] else "Sessions · this folder"
+
+        def pick(item: PickerItem) -> None:
+            self._close_picker()
+            found = session_index.find(self.home, item.key)
+            if found is not None and found.workspace != str(self.workspace):
+                self._fork_from_elsewhere(found)
+                return
+            if item.key != self._thread_id:
+                self._cmd_resume(item.key)
+
+        def scope(_item: PickerItem | None) -> None:
+            state["everywhere"] = not state["everywhere"]
+            picker.title = title()
+            picker.set_items(rows())
+
+        def rename(item: PickerItem | None) -> None:
+            if item is None:
+                return
+
+            def done(text: str) -> None:
+                if text.strip():
+                    session_index.rename(self.home, item.key, text)
+                    if item.key == self._thread_id:
+                        self._session_title = " ".join(text.split())[:80]
+                    picker.set_items(rows())
+
+            picker.ask("New name", "" if item.label == "(untitled)" else item.label, done)
+
+        def delete(item: PickerItem | None) -> None:
+            if item is None:
+                return
+            if item.key == self._thread_id:
+                self._flash("The session you are in cannot be deleted")
+                return
+
+            def done() -> None:
+                session_index.forget(self.home, item.key)
+                remover = getattr(self._checkpointer, "delete_thread", None)
+                if callable(remover):
+                    try:
+                        remover(item.key)
+                    except Exception:  # noqa: BLE001 - the list entry is gone either way
+                        logger.warning("could not delete %s", item.key, exc_info=True)
+                self._archive = [rec for rec in self._archive if rec.thread_id != item.key]
+                picker.set_items(rows())
+                self._flash(f"Deleted {item.label[:40]}")
+
+            picker.confirm(f"Delete “{item.label[:40]}” and its messages?", done)
+
+        picker = Picker(
+            title=title(), items=rows(), on_pick=pick, on_close=self._close_picker,
+            render=self._render_picker, focus_key=self._thread_id,
+            keys={"tab": scope, "ctrl+r": rename, "ctrl+d": delete},
+            hint="enter opens · tab every folder · ctrl+r renames · ctrl+d deletes",
+            empty="No sessions here · tab shows every folder's")
+        self._open_picker(picker)
+
+    def _fork_from_elsewhere(self, saved: Any, *, into: str | None = None) -> None:
+        """A conversation from another folder continues here as a new session: its messages
+        are copied, the original stays where it was."""
+        messages = self._saved_messages(saved.thread_id, getattr(saved, "leaf", "") or None)
+        if not messages:
+            self._fail(f"Session {saved.thread_id} has no saved messages")
+            return
+        self._archive_current()
+        self._previous_thread_id = self._thread_id
+        self._thread_id = into or f"circle-{uuid.uuid4().hex[:8]}"
+        self._leaf_checkpoint = None
+        try:
+            self._write_history(self._thread_id, messages)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"Could not copy the session: {exc}")
+            return
+        self._bridge = self._make_bridge()
+        self._reset_turn_regions()
+        self._transcript.clear()
+        self._session_title = f"{saved.title or saved.thread_id} (from {_short_path(saved.workspace)})"
+        self._replay(messages)
+        self._remember_session()
+        self._toast(f"Forked {saved.thread_id} from {_short_path(saved.workspace)} → {self._thread_id}")
+
+    def _open_saved(self, thread_id: str, title: str = "") -> bool:
+        """Reopen a conversation from an earlier run: its messages are in the checkpoint
+        store, and the screen is drawn again from them."""
+        found = session_index.find(self.home, thread_id)
+        leaf = found.leaf if found is not None and found.leaf else None
+        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+        if leaf:
+            config["configurable"]["checkpoint_id"] = leaf
+        try:
+            state = self._agent.get_state(config)
+        except Exception as exc:  # noqa: BLE001 - shown, details in the log
+            logger.warning("could not read session %s", thread_id, exc_info=True)
+            self._fail(f"Could not open {thread_id}: {exc}")
+            return False
+        messages = list((getattr(state, "values", None) or {}).get("messages") or [])
+        if not messages:
+            self._fail(f"Session {thread_id} has no saved messages")
+            return False
+        if not title:
+            title = found.title if found else ""
+        self._switch_thread(thread_id, lines=[], bgs=[])
+        self._leaf_checkpoint = leaf
+        self._session_title = title or thread_id
+        self._replay(messages)
+        self._toast(f"Resumed {thread_id} · {self._session_title[:40]}")
+        return True
+
+    def _replay(self, messages: list[Any]) -> None:
+        options = self._view_options()
+        options.pending_calls = []
+        last = None
+        for text, snap in saved_turns(messages):
+            self._transcript.ensure_block_gap()
+            self._transcript.append_messages(_user_rows(text, self._view_options().width))
+            self._transcript.ensure_block_gap()
+            base = self._transcript.message_count()
+            rows = render_turn_rows(snap, options)
+            for row, bg in rows:
+                self._transcript.append_messages([row], bg=bg)
+            self._turns.append({"base": base, "entries": rows, "snap": snap})
+            last = snap
+        if last is not None:
+            self._last_assistant_plain = final_text(last)
+        self._session_tree = _tree_from(messages)
+        used = next((extract_message_usage(m) for m in reversed(messages)
+                     if getattr(m, "usage_metadata", None)), {})
+        self._footer.update(context_input_tokens=int(used.get("input_tokens") or 0) or None)
+        self._app.render()
+
+    def _run_shell_from_prompt(self, text: str) -> None:
+        """``!cmd`` runs a command yourself; its output goes into the conversation for the
+        model to see with your next message. ``!!cmd`` runs it without telling the model.
+        It is drawn like the model's own Bash calls, and esc stops it."""
+        quiet = text.startswith("!!")
+        command = text[2 if quiet else 1:].strip()
+        if not command:
+            self._flash("!command runs it and shows the model · !!command keeps it to you", 4.0)
+            return
+        backend = getattr(self._agent, "_circle_backend", None)
+        if self._is_loading or backend is None:
+            self._flash("Busy · run it when the turn has finished")
+            return
+        self._transcript.ensure_block_gap()
+        self._transcript.append_messages(_user_rows(text, self._view_options().width))
+        self._transcript.ensure_block_gap()
+        call_id = f"shell-{uuid.uuid4().hex[:8]}"
+        options = self._view_options()
+        options.pending_calls = []
+        rows = render_turn_rows(_shell_snapshot(call_id, command, None), options)
+        base = self._transcript.message_count()
+        for row, bg in rows:
+            self._transcript.append_messages([row], bg=bg)
+        stop = CancellationToken()
+        self._shell_stop = stop
+        self._call_started_at = time.time()
+        self._enter_busy()
+        self._app.render()
+        thread_id = self._thread_id
+
+        def work() -> None:
+            try:
+                result = backend.execute(command, stop=stop)
+            except Exception as exc:  # noqa: BLE001 - shown as the command's output
+                logger.warning("!command failed", exc_info=True)
+                result = ExecuteResponse(output=f"Error: {type(exc).__name__}: {exc}", exit_code=1)
+            with self._app.lock:
+                snap = _shell_snapshot(call_id, command, result)
+                done = render_turn_rows(snap, options)
+                self._transcript.replace_range(base, len(rows), [r for r, _bg in done],
+                                               bgs=[bg for _r, bg in done])
+                # The row keeps its place (one entry, running or done). After esc a queued
+                # message may have finished a turn below it already: keep _turns in order.
+                at = next((i for i, turn in enumerate(self._turns) if turn["base"] > base),
+                          len(self._turns))
+                self._turns.insert(at, {"base": base, "entries": done, "snap": snap})
+                if not quiet and not stop.cancelled and thread_id == self._thread_id:
+                    self._share_shell_output(command, result)
+                if self._shell_stop is stop:
+                    self._shell_stop = None
+                    self._leave_busy()
+                    self._drain_message_queue()
+                self._app.render()
+
+        threading.Thread(target=work, name="circle-shell", daemon=True).start()
+
+    def _settle_inbox(self) -> None:
+        """The turn is over: what the model read mid-turn joins the message tree, and what
+        it did not get to is sent next, ahead of the other queued messages."""
+        inbox = getattr(self._bridge, "inbox", None)
+        if inbox is None:
+            return
+        for shown in inbox.take_delivered():
+            self._session_tree.add("user", shown)
+            for full in [k for k, (s, _p) in self._shown_as.items() if s == shown]:
+                self._shown_as.pop(full, None)
+        self._msg_queue[0:0] = [("steering", full) for full, _shown in inbox.take()]
+
+    def _dequeue_to_prompt(self) -> bool:
+        """alt+up: messages that have not been sent yet come back to the input box."""
+        inbox = getattr(self._bridge, "inbox", None)
+        waiting = (inbox.take() if inbox is not None else [])
+        texts = [self._shown_as.pop(full, (shown, {}))[0] for full, shown in waiting]
+        texts += [self._shown_as.pop(full, (full, {}))[0] for _kind, full in self._msg_queue]
+        self._msg_queue.clear()
+        if not texts:
+            return False
+        current = self._prompt.value
+        self._prompt.clear()
+        self._prompt.handle_paste("\n\n".join([*texts, *([current] if current else [])]))
+        self._flash(f"{len(texts)} queued message{'s' if len(texts) != 1 else ''} back in the box")
+        return True
+
+    def _stop_shell_command(self) -> None:
+        """esc or ctrl+c: end a running ``!command``; its worker then leaves the screen be."""
+        if self._shell_stop is not None:
+            self._shell_stop.cancel()
+            self._shell_stop = None
+
+    def _share_shell_output(self, command: str, result: Any) -> None:
+        """Put a command's output into the conversation without starting a turn."""
+        message = HumanMessage(
+            content=f"I ran this command myself:\n$ {command}\n{result.output}",
+            additional_kwargs={"circle_shell": {"command": command, "output": result.output,
+                                                "exit_code": result.exit_code}})
+        try:
+            self._inject(message)
+        except Exception:  # noqa: BLE001 - shown, the output is still on screen
+            logger.warning("could not add the command output to the conversation",
+                           exc_info=True)
+            self._fail("The output is on screen but could not be added to the conversation")
+            return
+        self._session_tree.add("user", f"!{command}")
+        if self._session_title == "new":
+            self._session_title = f"!{command}"[:60]
+        self._remember_session()
+
+    def _remember_session(self) -> None:
+        """Keep this conversation in the folder's list so it can be reopened later."""
+        if self._run_options.no_session:
+            return
+        try:
+            session_index.record(self.home, self._thread_id, self.workspace,
+                                 title="" if self._session_title == "new" else self._session_title,
+                                 model=self.settings.auth.model)
+        except Exception:  # noqa: BLE001 - never stop a turn for the list
+            logger.warning("could not record the session", exc_info=True)
 
     def _cmd_continue(self, _args: str) -> None:
         prev = self._previous_thread_id
@@ -1904,24 +2753,203 @@ class CircleSessionApp:
     def _cmd_models(self, args: str) -> None:
         name = args.strip()
         if not name:
-            discovery = self._list_models()
-            models = discovery.models
-            if discovery.status == "failed":
-                self._fail(discovery.summary())
-            else:
-                self._toast(discovery.summary())
-            current = self.settings.auth.model
-            self._toast(f"Model: {current}")
-            for m in models[:40]:
-                mark = " *" if m == current else ""
-                self._transcript.append_message(" " + _faint(f"  {m}{mark}"))
-            if len(models) > 40:
-                self._flash(f"… {len(models)} models in all · /models <name> switches", 5.0)
-            else:
-                self._flash("/models <name> switches", 4.0)
-            self._app.render()
+            self._open_model_picker()
             return
-        self._switch_model(name)
+        self._use_model(name, save=False)
+
+    # ── pickers: models, thinking depth, sessions ───────────────────────────
+
+    def _open_picker(self, picker: Picker) -> None:
+        with self._app.lock:
+            self._picker = picker
+            self._render_picker()
+
+    def _render_picker(self) -> None:
+        with self._app.lock:
+            if self._picker is None:
+                self._ask_panel.clear()
+            else:
+                self._ask_panel.update(self._picker.render_lines(max(20, self._app.width or 80)))
+            self._app.render()
+
+    def _close_picker(self) -> None:
+        with self._app.lock:
+            self._picker = None
+            self._ask_panel.clear()
+            self._app.render()
+
+    def _refresh_models(self) -> str:
+        """Ask the endpoint for its models; returns what to say about the answer. A failed
+        ask is a red line, and no model names are made up."""
+        discovery = self._list_models()
+        if isinstance(discovery, list):  # a list given directly (tests, extensions)
+            self._model_list = list(discovery)
+            return ""
+        if getattr(discovery, "status", "") == "failed":
+            self._model_list = []
+            self._fail(discovery.summary())
+            return discovery.summary()
+        self._model_list = list(getattr(discovery, "models", []) or [])
+        return discovery.summary()
+
+    def _known_models(self) -> list[str]:
+        """What the endpoint listed, asked once per run (ctrl+p uses it), with the model in
+        use first when the endpoint does not list it."""
+        if self._model_list is None:
+            self._refresh_models()
+        found = self._model_list or []
+        current = self.settings.auth.model
+        return found if not current or current in found else [current, *found]
+
+    def _run_scope_only(self) -> bool:
+        """``circle --models``: this run has its own list for ctrl+p, never saved, even
+        when tab in /models has emptied it."""
+        if getattr(self, "_run_scope", None) is None:
+            self._run_scope = bool(self._run_options.models)
+        return self._run_scope
+
+    def _model_scope(self) -> list[str]:
+        """The models ctrl+p goes through: the scope's patterns matched against what the
+        endpoint lists (an id it does not list is kept as written), or every listed model."""
+        import fnmatch
+
+        patterns = (self._run_options.models if self._run_scope_only()
+                    else self.settings.enabled_models)
+        known = self._known_models()
+        if not patterns:
+            return known
+        out: list[str] = []
+        for pattern in patterns:
+            glob = any(c in pattern for c in "*?[")
+            hits = [m for m in known if fnmatch.fnmatch(m.lower(), pattern.lower())
+                    or (not glob and pattern.lower() == m.lower())]
+            for m in hits or ([] if glob else [pattern]):
+                if m not in out:
+                    out.append(m)
+        return out or known
+
+    def _open_model_picker(self) -> None:
+        if self._bridge.is_running or self._is_loading:
+            self._flash("Busy · switch models when the turn has finished")
+            return
+        current, saved = self.settings.auth.model, self._saved_model or self.settings.auth.model
+        said = self._refresh_models()  # asked again each time the list opens
+
+        def rows() -> list[PickerItem]:
+            scoped = self._run_options.models if self._run_scope_only() \
+                else self.settings.enabled_models
+            scope = set(self._model_scope()) if scoped else set()
+            return [PickerItem(key=m, label=m, current=m == current,
+                               meta=" · ".join(x for x in ("default" if m == saved else "",
+                                                          "in ctrl+p" if m in scope else "") if x))
+                    for m in self._known_models()]
+
+        def toggle(item: PickerItem | None) -> None:
+            """tab: the model joins or leaves the ones ctrl+p goes through, as pi's
+            /scoped-models. Saved in enabled_models, or for this run only with --models."""
+            if item is None:
+                return
+            scoped = self._run_options.models if self._run_scope_only() \
+                else self.settings.enabled_models
+            chosen = list(self._model_scope()) if scoped else []
+            if item.key in chosen:
+                chosen.remove(item.key)
+            else:
+                chosen.append(item.key)
+            if self._run_scope_only():
+                self._run_options.models = chosen
+            else:
+                self.settings.enabled_models = chosen
+                self._save_settings("enabled_models")
+            picker.set_items(rows())
+            self._flash(f"ctrl+p goes through {len(chosen)} model{'s' if len(chosen) != 1 else ''}"
+                        if chosen else "ctrl+p goes through every listed model", 2.0)
+
+        def pick(item: PickerItem) -> None:
+            self._close_picker()
+            self._use_model(item.key, save=False)
+
+        def save(item: PickerItem | None) -> None:
+            if item is not None:
+                self._close_picker()
+                self._use_model(item.key, save=True)
+
+        picker = Picker(
+            title="Model" + (f" · {said}" if said else ""), items=rows(), on_pick=pick,
+            on_close=self._close_picker,
+            render=self._render_picker, focus_key=current, keys={"ctrl+s": save, "tab": toggle},
+            hint="enter uses it in this session · ctrl+s also makes it the default · "
+                 "tab adds it to ctrl+p or takes it out",
+            empty="No model matches · /models <id> uses an id the endpoint does not list")
+        self._open_picker(picker)
+
+    def _cycle_model(self) -> None:
+        if self._bridge.is_running or self._is_loading:
+            self._flash("Busy · switch models when the turn has finished")
+            return
+        scope = self._model_scope()
+        if len(scope) < 2:
+            self._flash("Only one model to cycle through · /models lists them, "
+                        "enabled_models in settings sets which ctrl+p uses", 5.0)
+            return
+        current = self.settings.auth.model
+        following = scope[(scope.index(current) + 1) % len(scope)] if current in scope else scope[0]
+        self._use_model(following, save=False)
+
+    def _current_thinking(self) -> str:
+        return (reasoning_effort_of(self._chat_model)
+                or os.environ.get("CIRCLE_REASONING_EFFORT", "")).strip()
+
+    def _open_thinking_picker(self) -> None:
+        if self._bridge.is_running or self._is_loading:
+            self._flash("Busy · change the thinking depth when the turn has finished")
+            return
+        notes = {"minimal": "~1k tokens", "low": "~2k", "medium": "~8k", "high": "~16k",
+                 "xhigh": "~32k", "max": "as much as the model allows"}
+        current, saved = self._current_thinking(), self.settings.default_thinking
+        items = [PickerItem(key=level, label=level, current=level == current,
+                            meta=" · ".join(x for x in (notes.get(level, ""),
+                                                       "default" if level == saved else "") if x))
+                 for level in EFFORT_LEVELS]
+
+        def pick(item: PickerItem) -> None:
+            self._close_picker()
+            self._set_thinking(item.key)
+
+        def save(item: PickerItem | None) -> None:
+            if item is not None:
+                self._close_picker()
+                self.settings.default_thinking = item.key
+                self._save_settings("default_thinking")
+                self._set_thinking(item.key, saved=True)
+
+        self._open_picker(Picker(
+            title="Thinking depth", items=items, on_pick=pick, on_close=self._close_picker,
+            render=self._render_picker, focus_key=current or None, keys={"ctrl+s": save},
+            hint="enter uses it in this session · ctrl+s also makes it the default · "
+                 "shift+tab cycles"))
+
+    def _cycle_thinking(self) -> None:
+        if self._bridge.is_running or self._is_loading:
+            self._flash("Busy · change the thinking depth when the turn has finished")
+            return
+        levels = list(EFFORT_LEVELS)
+        current = self._current_thinking()
+        following = levels[(levels.index(current) + 1) % len(levels)] if current in levels else levels[0]
+        self._set_thinking(following)
+
+    def _set_thinking(self, level: str, *, saved: bool = False) -> None:
+        os.environ["CIRCLE_REASONING_EFFORT"] = level
+        try:
+            model = build_chat_model(self.settings, home=self.home)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"Could not change the thinking depth: {exc}")
+            return
+        self._rebuild_agent(model=model)
+        shown = reasoning_effort_of(self._chat_model) or level
+        note = "" if shown == level else f" (the closest this model supports to {level})"
+        self._flash(f"Thinking depth → {shown}{note}" + (" · saved as the default" if saved else ""),
+                    3.0)
 
     def _list_models(self):
         from circle.probe import resolve_endpoint
@@ -1936,9 +2964,19 @@ class CircleSessionApp:
         base = self.settings.auth.base_url
         return resolve_endpoint(base, key, protocol=self.settings.auth.protocol)
 
-    def _switch_model(self, name: str) -> None:
-        self.settings.auth.model = name
-        save_settings(self.settings, self.home)
+    def _use_model(self, name: str, *, save: bool) -> None:
+        """Switch the model for this session; ``save`` also makes it the default in
+        settings.json (ctrl+s in the picker), as pi does."""
+        if save:
+            self._saved_model = None
+            self.settings.auth.model = name
+            self._save_settings("model")
+        else:
+            if self._saved_model is None:
+                self._saved_model = self.settings.auth.model
+            self.settings.auth.model = name
+            if name == self._saved_model:
+                self._saved_model = None
         apply_auth_to_environ(self.settings, self.home)
         # Explicit /models switch leaves the scripted/test override behind.
         self.model_override = None
@@ -1949,25 +2987,43 @@ class CircleSessionApp:
             return
         self._rebuild_agent(model=model)
         self._footer.update(model=name)
-        self._toast(f"Model → {name}")
+        if save:
+            self._toast(f"Model → {name} · saved as the default")
+        else:
+            self._flash(f"Model → {name} · this session (ctrl+s in /models saves it)", 4.0)
+
+    def _cmd_effort(self, args: str) -> None:
+        """How hard the model thinks, for this session: a picker, or a level."""
+        level = args.strip().lower()
+        if not level:
+            self._open_thinking_picker()
+            return
+        if level not in EFFORT_LEVELS:
+            self._fail(f"Unknown depth {level!r} · choose {', '.join(EFFORT_LEVELS)}")
+            return
+        self._set_thinking(level)
+        self._toast(f"Thinking depth → {reasoning_effort_of(self._chat_model) or level}")
 
     def _cmd_compact(self, args: str) -> None:
         """Run deepagents ``compact_conversation`` in the current thread."""
         hint = args.strip()
-        try:
-            state = self._agent.get_state(thread_config(self._thread_id))
-            msgs = (state.values or {}).get("messages") or []
-        except Exception:  # noqa: BLE001
-            msgs = []
+        msgs = self._saved_messages(self._thread_id, self._leaf_checkpoint)
         if len(msgs) < 2:
             self._flash("Nothing to compact yet")
             return
+        config = thread_config(self._thread_id)
+        if self._leaf_checkpoint:
+            # compacting what is on screen: a branch from the point /tree went back to
+            config = {"configurable": {**config["configurable"],
+                                       "checkpoint_id": self._leaf_checkpoint}}
+            self._forget_leaf()
         self._flash("Compacting context…", 8.0)
         self._enter_busy()
         self._app.render()
 
         def _work() -> None:
             summary = ""
+            outcome = ""
             err: BaseException | None = None
             try:
                 result = self._agent.invoke(
@@ -1975,11 +3031,15 @@ class CircleSessionApp:
                         content=compact_prompt(hint=hint),
                         additional_kwargs={"circle_internal": "compact"},
                     )]},
-                    config=thread_config(self._thread_id),
+                    config=config,
                 )
                 if result.get("__interrupt__"):
                     raise RuntimeError("A tool call needs approval · compacting stopped · handle it in the normal conversation")
                 out_msgs = result.get("messages") or []
+                # What the compaction tool itself said, not the model's account of it
+                outcome = next((str(m.content) for m in reversed(out_msgs)
+                                if getattr(m, "type", "") == "tool"
+                                and getattr(m, "name", "") == "compact_conversation"), "")
                 last = out_msgs[-1] if out_msgs else None
                 content = getattr(last, "content", "") if last is not None else ""
                 if isinstance(content, list):
@@ -2003,9 +3063,17 @@ class CircleSessionApp:
                     )
                     self._app.render()
                     return
-                self._notice([" " + _faint("— compacted (same thread) —")]
-                             + [f" {line}" for line in (summary or "COMPACT_OK").splitlines()])
+                self._footer.set_toast(None)
                 self._leave_busy()
+                if outcome.startswith("Conversation compacted"):
+                    done = outcome.removeprefix("Conversation compacted. ").rstrip(".")
+                    self._notice([" " + _faint(f"— compacted · {done.lower()} —")]
+                                 + [f" {line}" for line in summary.splitlines() if summary])
+                elif outcome.startswith("Nothing to compact"):
+                    self._flash("Nothing to compact yet · the conversation fits in the context", 4.0)
+                else:
+                    self._fail("Not compacted: the model did not run the compaction"
+                               + (f" · it said: {summary.splitlines()[0][:80]}" if summary else ""))
                 self._app.render()
 
         threading.Thread(target=_work, name="circle-compact", daemon=True).start()
@@ -2027,11 +3095,7 @@ class CircleSessionApp:
         self._plan_mode = want
         try:
             self._rebuild_agent()
-            inject_thread_message(
-                self._agent,
-                self._thread_id,
-                plan_boundary_message(enabled=want),
-            )
+            self._inject(plan_boundary_message(enabled=want))
         except Exception as exc:  # noqa: BLE001
             self._plan_mode = not want
             self._fail(f"Could not switch read-only: {exc}")
@@ -2063,11 +3127,7 @@ class CircleSessionApp:
             self._fail(body)
             return
         try:
-            inject_thread_message(
-                self._agent,
-                self._thread_id,
-                skill_boundary_message(name=name, body=body, args=skill_args),
-            )
+            self._inject(skill_boundary_message(name=name, body=body, args=skill_args))
         except Exception as exc:  # noqa: BLE001
             self._fail(f"Could not load skill: {exc}")
             return
@@ -2075,57 +3135,259 @@ class CircleSessionApp:
         self._toast(f"Loaded skill `{name}`{suffix}")
 
     def _cmd_tree(self, args: str) -> None:
-        token = (args or "").strip()
-        if not token:
-            for line in self._session_tree.render_list().splitlines():
-                self._transcript.append_message(f" {_faint(line)}")
-            self._app.render()
-            return
-        if not self._session_tree.jump(token):
-            self._fail(f"No node {token}")
-            return
-        self._toast(f"Jumped to node {token} · the conversation branches from here")
+        """/tree, or /tree <words> to open it searching for them."""
+        self._open_tree((args or "").strip())
 
     def _cmd_fork(self, args: str) -> None:
-        token = (args or "").strip() or (self._session_tree.active_id or "")
-        if not token:
-            self._flash("Usage: /fork <id>")
+        """A new session from a message. From a reply: everything up to it. From your own
+        message: everything before it, with that message back in the box to change."""
+        token = (args or "").strip()
+        node = self._session_tree.nodes.get(token) if token else None
+        if node is None:
+            self._open_fork_picker(token)  # /fork <words> searches the picker
             return
-        forked = self._session_tree.fork_from(token)
-        if forked is None:
-            self._fail(f"Cannot fork {token}")
-            return
-        self._archive_current()
-        old_thread = self._thread_id
-        self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
-        self._session_tree = forked
-        copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
-        self._rebuild_agent()
-        self._session_title = (self._session_title or "session") + " (fork)"
-        self._reset_turn_regions()
-        self._transcript.clear()
-        self._show_welcome()
+        if node.role == "user":
+            forked = (self._session_tree.fork_from(node.parent_id) if node.parent_id
+                      else None) or SessionTree()
+        else:
+            forked = self._session_tree.fork_from(token) or SessionTree()
+        turns = sum(1 for item in forked.path_to() if item.role == "user")
+        messages = self._branch_into(forked, turns, "fork")
+        if node.role == "user":
+            # Your message comes back to change and send again, pastes and all
+            sent = [m for m in messages if is_user_message(m)]
+            text, pastes = draft_of(sent[turns]) if turns < len(sent) else (node.text, {})
+            self._prompt.restore_draft(text.replace("\n", "↵"), pastes)
         self._toast(f"Forked from {token} → {self._thread_id}")
-        self._notice([row for node in self._session_tree.path_to() if node.role == "user"
-                      for row in _user_rows(node.text.splitlines()[0][:80])])
-        self._app.render()
 
     def _cmd_clone(self, _args: str) -> None:
-        cloned = self._session_tree.clone_active()
+        self._branch_into(self._session_tree.clone_active(), None, "clone")
+        self._toast(f"Cloned this branch → {self._thread_id}")
+
+    # ── the conversation tree ───────────────────────────────────────────────
+
+    def _inject(self, message: Any) -> None:
+        """Add a message to the conversation without a turn (a skill, a mode change, a
+        !command's output), after the point /tree went back to when there is one."""
+        config: dict[str, Any] = {"configurable": {"thread_id": self._thread_id}}
+        if self._leaf_checkpoint:
+            config["configurable"]["checkpoint_id"] = self._leaf_checkpoint
+        append_messages(self._agent, config, [message])
+        self._forget_leaf()
+
+    def _write_history(self, thread_id: str, messages: list[Any]) -> None:
+        write_history(self._agent, thread_id, messages)
+
+    def _forget_leaf(self) -> None:
+        self._leaf_checkpoint = None
+        try:
+            session_index.set_leaf(self.home, self._thread_id, None)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not clear the leaf", exc_info=True)
+
+    def _conversation_tree(self):
+        """The tree of this conversation; what was read before is kept, per conversation,
+        so /tree and esc esc stay quick in a long session."""
+        from circle.tui.conversation_tree import TreeBuilder
+
+        builders = getattr(self, "_tree_builders", None)
+        if builders is None:
+            builders = self._tree_builders = {}
+        builder = builders.setdefault(self._thread_id, TreeBuilder())
+        builder.update(self._agent, self._thread_id)
+        return builder.tree(self._agent, self._thread_id, self._leaf_checkpoint)
+
+    def _open_tree(self, search: str = "") -> None:
+        """/tree (or esc esc): every message of this session, all branches. enter goes back
+        to the chosen point; your next message then starts a branch from there."""
+        try:
+            tree = self._conversation_tree()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not read the tree", exc_info=True)
+            self._fail(f"Could not read this session's history: {exc}")
+            return
+        if not tree.entries:
+            self._flash("Nothing in this session yet")
+            return
+        state = {"mine_only": False}
+        marks = session_index.labels(self.home, self._thread_id)
+
+        def rows() -> list[PickerItem]:
+            on_path = set(tree.path_to(tree.leaf))
+            items = []
+            for key, depth in tree.walk():
+                entry = tree.entries[key]
+                if state["mine_only"] and entry.role != "user":
+                    continue
+                parent = tree.entries.get(entry.parent)
+                fork = parent is not None and len(parent.children) > 1
+                lead = "  " * max(0, depth - (1 if fork else 0)) + ("├ " if fork else "")
+                mark = "›" if entry.role == "user" else "⏺"
+                text = row_text(entry.text)
+                label = f"[{marks[key]}] " if key in marks else ""
+                items.append(PickerItem(
+                    key=key, label=f"{lead}{mark} {label}{text}",
+                    meta="here" if key == tree.leaf else ("·" if key in on_path else ""),
+                    search=marks.get(key, ""), current=key == tree.leaf))
+            return items
+
+        def pick(item: PickerItem) -> None:
+            self._close_picker()
+            self._go_back_to(tree, tree.entries[item.key])
+
+        def mine(_item: PickerItem | None) -> None:
+            state["mine_only"] = not state["mine_only"]
+            picker.set_items(rows())
+
+        def label(item: PickerItem | None) -> None:
+            if item is None:
+                return
+
+            def done(text: str) -> None:
+                session_index.set_label(self.home, self._thread_id, item.key, text)
+                marks.clear()
+                marks.update(session_index.labels(self.home, self._thread_id))
+                picker.set_items(rows())
+
+            picker.ask("Label (empty removes it)", marks.get(item.key, ""), done)
+
+        picker = Picker(
+            title="Session tree", items=rows(), on_pick=pick, on_close=self._close_picker,
+            render=self._render_picker, focus_key=tree.leaf,
+            keys={"ctrl+u": mine, "L": label}, rows=14,
+            hint="enter goes back there · L labels · ctrl+u only your messages")
+        if search:
+            picker.search(search)
+        self._open_picker(picker)
+
+    def _go_back_to(self, tree: Any, entry: Any) -> None:
+        if self._bridge.is_running or self._is_loading:
+            self._cmd_stop_for_tree()
+        if entry.key == tree.leaf and entry.role != "user":
+            self._flash("Already here")
+            return
+        draft, pastes = "", {}
+        if entry.role == "user":
+            sent = next((m for m in self._saved_messages(self._thread_id, entry.resume_from or None)
+                         if str(getattr(m, "id", "")) == entry.key), None)
+            message = sent or self._find_message(entry.key)
+            draft, pastes = draft_of(message) if message is not None else (entry.text, {})
+        if entry.resume_from == "":
+            self._flash("This point cannot be returned to (a turn stopped there on a card)")
+            return
+        if entry.resume_from is None:
+            # Before the first message: a fresh branch, the original stays in /resume
+            self._branch_into(SessionTree(), 0, "branch")
+        else:
+            self._leaf_checkpoint = entry.resume_from
+            try:
+                session_index.set_leaf(self.home, self._thread_id, entry.resume_from)
+            except Exception:  # noqa: BLE001
+                logger.debug("could not save the leaf", exc_info=True)
+            messages = self._saved_messages(self._thread_id, entry.resume_from)
+            self._reset_turn_regions()
+            self._transcript.clear()
+            self._show_welcome()
+            self._replay(messages)
+        if draft:
+            self._prompt.restore_draft(draft.replace("\n", "↵"), pastes)
+        what = "before your message" if entry.role == "user" else "after that answer"
+        self._toast(f"Back {what} · your next message starts a new branch · "
+                    "/tree shows them all")
+        self._app.render()
+
+    def _find_message(self, message_id: str) -> Any:
+        for snap in self._agent.get_state_history({"configurable": {"thread_id": self._thread_id}}):
+            for msg in (snap.values or {}).get("messages") or []:
+                if str(getattr(msg, "id", "")) == message_id:
+                    return msg
+        return None
+
+    def _cmd_stop_for_tree(self) -> None:
+        """Going back stops the running turn first, as esc would."""
+        with self._app.lock:
+            self._stop_shell_command()
+            self._bridge.cancel()
+            self._settle_inbox()
+            self._dismiss_user_panels()
+            self._notice([_stop_line()])
+            self._leave_busy()
+
+    def _open_fork_picker(self, search: str = "") -> None:
+        """/fork: pick one of your messages; a new session gets everything before it, and
+        the message comes back to the box."""
+        try:
+            tree = self._conversation_tree()
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"Could not read this session's history: {exc}")
+            return
+        mine = [(key, tree.entries[key]) for key, _depth in tree.walk()
+                if tree.entries[key].role == "user"]
+        if not mine:
+            self._flash("No message to fork from yet")
+            return
+        items = [PickerItem(key=key, label=row_text(entry.text), meta=f"{i}/{len(mine)}")
+                 for i, (key, entry) in enumerate(mine, 1)]
+
+        def pick(item: PickerItem) -> None:
+            self._close_picker()
+            entry = tree.entries[item.key]
+            if entry.resume_from == "":
+                self._flash("This message cannot be forked from (a turn stopped there on a card)")
+                return
+            message = self._find_message(entry.key)
+            before = (self._saved_messages(self._thread_id, entry.resume_from)
+                      if entry.resume_from else [])
+            self._branch_into(SessionTree(), None, "fork", messages=before)
+            if message is not None:
+                text, pastes = draft_of(message)
+                self._prompt.restore_draft(text.replace("\n", "↵"), pastes)
+            self._toast(f"Forked → {self._thread_id} · your message is back in the box")
+
+        picker = Picker(
+            title="Fork from a message", items=items, on_pick=pick, on_close=self._close_picker,
+            render=self._render_picker, focus_key=mine[-1][0],
+            hint="a new session with everything before it; the message comes back to edit")
+        if search:
+            picker.search(search)
+        self._open_picker(picker)
+
+    def _branch_into(self, tree: SessionTree, turns: int | None, kind: str,
+                     messages: list[Any] | None = None) -> list[Any]:
+        """Start a new session that carries the model's history of the first ``turns``
+        turns (all of them when None), and draw it. Returns the old session's messages."""
         self._archive_current()
         old_thread = self._thread_id
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
-        self._session_tree = cloned
-        copy_thread_if_possible(self._checkpointer, old_thread, self._thread_id)
-        self._rebuild_agent()
-        self._session_title = (self._session_title or "session") + " (clone)"
+        self._session_tree = tree
+        carried: list[Any] = []
+        given = messages is not None
+        if messages is None:
+            messages = self._saved_messages(old_thread, self._leaf_checkpoint)
+        self._leaf_checkpoint = None
+        try:
+            carried = messages if (turns is None or given) else first_turns(messages, turns)
+            if carried:
+                self._write_history(self._thread_id, carried)
+        except Exception:  # noqa: BLE001 - the new session still works, only without history
+            logger.warning("could not carry the history into the %s", kind, exc_info=True)
+            self._fail(f"The {kind} starts without the earlier messages · see logs/circle.log")
+            carried = []
+        self._bridge = self._make_bridge()
+        self._session_title = (self._session_title or "session") + f" ({kind})"
         self._reset_turn_regions()
         self._transcript.clear()
         self._show_welcome()
-        self._toast(f"Cloned this branch → {self._thread_id}")
+        if carried:
+            self._replay(carried)
+            self._remember_session()
         self._app.render()
+        return messages
 
-    def _cmd_thinking(self, _args: str) -> None:
+    def _cmd_thinking(self, args: str) -> None:
+        if args.strip():
+            self._cmd_effort(args)  # /thinking high, as in pi
+            return
         self._show_thinking = not self._show_thinking
         self._rerender_turns()
         state = "shown" if self._show_thinking else "hidden"
@@ -2192,23 +3454,72 @@ class CircleSessionApp:
         if is_folder_trusted(self.settings, self.workspace):
             self._toast(f"Trusted {self.workspace}")
             return
-        self.settings = accept_trust(self.settings, self.workspace, home=self.home)
-        self._toast(f"Trusted {self.workspace} · created .agent/")
+        auth = self.settings.auth
+        self.settings = accept_trust(self._settings_to_save(), self.workspace, home=self.home)
+        self.settings.auth = auth
+        self._toast(f"Trusted {self.workspace}")
 
     def _cmd_settings(self, _args: str) -> None:
-        auth = self.settings.auth
-        lines = [
-            f"settings · theme={self.settings.theme}",
-            f"  mode={auth.mode} protocol={auth.protocol} model={auth.model}",
-            f"  base_url={auth.base_url or '—'}",
-            f"  oauth_provider={auth.oauth_provider or '—'}",
-            f"  trusted_folders={len(self.settings.trusted_folders)}",
-            f"  mcp_servers={len(self.settings.mcp_servers)}",
-            f"  home={self.home}",
-        ]
-        for line in lines:
-            self._transcript.append_message(f" {_faint(line)}")
-        self._app.render()
+        """A list of the settings, as pi's /settings: enter changes the marked one, and the
+        change is saved at once. Rows that open their own list say so."""
+        from circle.settings import DOUBLE_ESCAPE_ACTIONS
+
+        def following(options: tuple[str, ...], current: str) -> str:
+            return options[(options.index(current) + 1) % len(options)] if current in options \
+                else options[0]
+
+        def rows() -> list[PickerItem]:
+            auth = self.settings.auth
+            depth = self._current_thinking() or "default"
+            return [
+                PickerItem("theme", "theme", self.settings.theme),
+                PickerItem("thinking", "show thinking", "on" if self._show_thinking else "off"),
+                PickerItem("double_escape", "esc esc opens", self.settings.double_escape),
+                PickerItem("model", "model", f"{auth.model} · /models"),
+                PickerItem("depth", "thinking depth", f"{depth} · /effort"),
+                PickerItem("endpoint", "endpoint", f"{auth.protocol} · {auth.base_url or '—'}"),
+                PickerItem("trusted", "trusted folders", str(len(self.settings.trusted_folders))),
+                PickerItem("mcp", "mcp servers", f"{len(self.settings.mcp_servers)} · /mcp"),
+                PickerItem("home", "data folder", _short_path(str(self.home))),
+            ]
+
+        def change(item: PickerItem) -> None:
+            key = item.key
+            if key == "theme":
+                self._cmd_themes(following(THEME_CHOICES, self.settings.theme))
+            elif key == "thinking":
+                self._show_thinking = not self._show_thinking
+                self.settings.hide_thinking = not self._show_thinking
+                self._save_settings("hide_thinking")
+                self._rerender_turns()
+            elif key == "double_escape":
+                self.settings.double_escape = following(DOUBLE_ESCAPE_ACTIONS,
+                                                        self.settings.double_escape)
+                self._save_settings("double_escape")
+            elif key == "model":
+                self._close_picker()
+                self._open_model_picker()
+                return
+            elif key == "depth":
+                self._close_picker()
+                self._open_thinking_picker()
+                return
+            elif key == "mcp":
+                self._close_picker()
+                self._dispatch_slash("mcp", "")
+                return
+            elif key == "endpoint":
+                self._flash("circle --init sets the endpoint and key (it resets settings)", 4.0)
+                return
+            else:
+                return
+            picker.set_items(rows())
+            self._render_picker()
+
+        picker = Picker(title="Settings", items=rows(), on_pick=change,
+                        on_close=self._close_picker, render=self._render_picker,
+                        hint="enter changes it, saved at once · esc closes")
+        self._open_picker(picker)
 
     def _cmd_themes(self, args: str) -> None:
         name = args.strip().lower()
@@ -2221,7 +3532,7 @@ class CircleSessionApp:
             self._fail(f"Unknown theme {name!r} · available: {', '.join(THEME_CHOICES)}")
             return
         self.settings.theme = name
-        save_settings(self.settings, self.home)
+        self._save_settings("theme")
         pal = self._apply_theme()
         shown = "dark" if pal.is_dark else "light"
         self._toast(f"Theme → {name}" if name != "auto" else f"Theme → auto ({shown})")
@@ -2324,19 +3635,41 @@ class CircleSessionApp:
             self._flash("/name <title> renames it", 4.0)
             return
         self._session_title = title[:80]
+        self._remember_session()
         self._toast(f"Session name → {self._session_title}")
 
     def _cmd_session(self, _args: str) -> None:
-        n = self._transcript.message_count()
-        share = str(self._share_path) if self._share_path else "—"
-        for line in (
-            f"session {self._thread_id}",
-            f"  title={self._session_title}",
-            f"  model={self.settings.auth.model}",
-            f"  lines={n}  undo={len(self._undo_stack)}  archive={len(self._archive)}",
-            f"  share={share}",
-        ):
-            self._transcript.append_message(f" {_faint(line)}")
+        """What this session is and holds: its id and title, where it is kept, its
+        messages, and the tokens this run has used."""
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        messages = self._saved_messages(self._thread_id, self._leaf_checkpoint)
+        mine = sum(1 for m in messages if is_user_message(m))
+        answers = [m for m in messages if isinstance(m, AIMessage)]
+        calls = sum(len(m.tool_calls or []) for m in answers)
+        results = sum(1 for m in messages if isinstance(m, ToolMessage))
+        depth = reasoning_effort_of(getattr(self, "_chat_model", None))
+        model = self.settings.auth.model + (f" • {depth}" if depth in EFFORT_LEVELS else "")
+        kept = ("in memory only (--no-session)" if self._run_options.no_session
+                else f"{_short_path(str(self.home / 'checkpoints.sqlite'))}")
+        if self._leaf_checkpoint:
+            kept += " · at a point /tree went back to"
+        used = self._footer.usage_totals()
+        cached = (f" · {used['cached'] / used['input']:.0%} cached"
+                  if used["input"] and used["cached"] else "")
+        rows = [
+            f"session  {self._thread_id}"
+            + ("" if self._session_title == "new" else f" · {self._session_title}"),
+            f"folder   {_short_path(str(self.workspace))}",
+            f"model    {model}",
+            f"kept     {kept}",
+            f"messages {len(messages)} · {mine} yours · {len(answers)} from the model · "
+            f"{calls} tool calls · {results} results",
+            f"tokens   ↑ {used['input']:,}{cached} · ↓ {used['output']:,} in this run",
+        ]
+        if self._share_path:
+            rows.append(f"shared   {self._share_path}")
+        self._notice([f" {_faint(row)}" for row in rows])
         self._app.render()
 
     def _clipboard_set(self, text: str) -> bool:
@@ -2401,22 +3734,47 @@ class CircleSessionApp:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _cmd_export(self, args: str) -> None:
+        """/export [html|jsonl|md|path]: Markdown of the screen by default; HTML to read in
+        a browser; JSONL with every message, for /import."""
+        from circle.session_export import SessionMeta, export_kind, to_html, to_jsonl
+
         ensure_home(self.home)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         raw = args.strip()
-        if raw:
+        kind = export_kind(raw) if raw else "md"
+        if raw and raw.lower() != kind:
             path = Path(raw).expanduser()
             if not path.is_absolute():
                 path = self.workspace / path
         else:
-            path = self.home / "exports" / f"circle-{self._thread_id}-{stamp}.md"
-        self._write_markdown_export(path)
+            path = self.home / "exports" / f"circle-{self._thread_id}-{stamp}.{kind}"
+        if kind == "md":
+            try:
+                self._write_markdown_export(path)
+            except OSError as exc:
+                self._fail(f"Could not write {path}: {exc.strerror or exc}")
+                return
+        else:
+            messages = self._saved_messages(self._thread_id, self._leaf_checkpoint)
+            if not messages:
+                self._flash("Nothing to export yet")
+                return
+            meta = SessionMeta(thread_id=self._thread_id,
+                               title="" if self._session_title == "new" else self._session_title,
+                               workspace=str(self.workspace), model=self.settings.auth.model)
+            text = to_html(messages, meta) if kind == "html" else to_jsonl(messages, meta)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            except OSError as exc:
+                self._fail(f"Could not write {path}: {exc.strerror or exc}")
+                return
         self._toast(f"Exported {path}")
 
     def _cmd_import(self, args: str) -> None:
         raw = args.strip()
         if not raw:
-            self._flash("Usage: /import <path.md>")
+            self._flash("Usage: /import <file.jsonl or file.md>")
             return
         path = Path(raw).expanduser()
         if not path.is_absolute():
@@ -2427,11 +3785,22 @@ class CircleSessionApp:
         if not path.is_file():
             self._fail(f"No such file: {raw}")
             return
-        body = path.read_text(encoding="utf-8")
+        try:
+            body = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            self._fail(f"{path.name} is not a text file")
+            return
+        except OSError as exc:
+            self._fail(f"Could not read {path}: {exc.strerror or exc}")
+            return
+        if path.suffix.lower() == ".jsonl":
+            self._import_jsonl(path, body)
+            return
         self._push_undo_checkpoint()
         self._archive_current()
         self._previous_thread_id = self._thread_id
         self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        self._leaf_checkpoint = None
         self._bridge = self._make_bridge()
         self._session_title = path.stem[:60]
         lines = [f" {ln}" if ln else "" for ln in body.splitlines()]
@@ -2451,6 +3820,35 @@ class CircleSessionApp:
             self._fail(f"Imported for display, but saving to the checkpointer failed: {exc}")
             return
         self._toast(f"Imported {path}")
+
+    def _import_jsonl(self, path: Path, body: str) -> None:
+        """A JSONL export comes back as a new session with every message, so the model
+        remembers it exactly and /tree, /fork and ctrl+o work on it."""
+        from circle.session_export import from_jsonl
+
+        try:
+            header, messages = from_jsonl(body)
+        except ValueError as exc:
+            self._fail(f"{path.name} is not a Circle JSONL export: {exc}")
+            return
+        self._archive_current()
+        self._previous_thread_id = self._thread_id
+        self._thread_id = f"circle-{uuid.uuid4().hex[:8]}"
+        self._leaf_checkpoint = None
+        self._session_tree = SessionTree()
+        try:
+            write_history(self._agent, self._thread_id, messages)
+        except Exception as exc:  # noqa: BLE001
+            self._fail(f"Could not import {path.name}: {exc}")
+            return
+        self._bridge = self._make_bridge()
+        self._session_title = str(header.get("title") or path.stem)[:60]
+        self._reset_turn_regions()
+        self._transcript.clear()
+        self._show_welcome()
+        self._replay(messages)
+        self._remember_session()
+        self._toast(f"Imported {path} → {self._thread_id}")
 
     def _cmd_share(self, _args: str) -> None:
         ensure_home(self.home)
@@ -2481,6 +3879,7 @@ class CircleSessionApp:
 
     def _cmd_editor(self, _args: str) -> None:
         import os
+        import shlex
         import shutil
         import subprocess
         import tempfile
@@ -2496,7 +3895,12 @@ class CircleSessionApp:
         if not editor:
             self._fail("No $VISUAL / $EDITOR set, and no nvim, vim or nano found")
             return
-        initial = self._prompt.value
+        try:
+            command = shlex.split(editor)  # $EDITOR may carry arguments, e.g. "code -w"
+        except ValueError:
+            command = [editor]
+        # The editor gets the draft in full: real line breaks, pastes written out
+        initial = self._prompt.model_text(self._prompt.value)
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".md",
@@ -2508,7 +3912,7 @@ class CircleSessionApp:
         try:
             self._app.suspend_for_external()
             try:
-                subprocess.run([editor, str(tmp_path)], check=False)
+                subprocess.run([*command, str(tmp_path)], check=False)
             finally:
                 self._app.resume_from_external()
             text = tmp_path.read_text(encoding="utf-8")
@@ -2520,13 +3924,20 @@ class CircleSessionApp:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        self._prompt.set_value(text.rstrip("\n"))
+        # Back in the box like a paste: line breaks as ↵, a long text folded again
+        self._prompt.clear()
+        self._prompt.handle_paste(text.rstrip("\n"))
         self._flash("Loaded from the editor · enter sends")
         self._app.render()
 
     def _cmd_reload(self, _args: str) -> None:
+        from circle.keybindings import load_remap
+
         self.settings = load_settings(self.home)
         apply_auth_to_environ(self.settings, self.home)
+        self._key_remap, self._keybinding_problems = load_remap(self.home)
+        for problem in self._keybinding_problems:
+            self._fail(problem)
         self._apply_theme()
         self._extensions = self._load_extensions()
         try:
@@ -2770,6 +4181,7 @@ class CircleSessionApp:
                 self._transcript.ensure_block_gap()
                 self._transcript.append_message(assistant_block(said or NO_OUTPUT))
             self._last_assistant_plain = visible
+            self._settle_inbox()
             self._session_tree.add("assistant", visible)
             cooked = self._cooked_lines(answered=bool(shown or said))
             self._close_turn_region()
@@ -2789,6 +4201,7 @@ class CircleSessionApp:
             for line in cooked:
                 self._transcript.append_message(line)
             self._transcript.append_message(_error_line(_format_llm_error(exc)))
+            self._settle_inbox()
             self._leave_busy()
             self._app.render()
             self._extensions.emit("turn_end", {"error": _format_llm_error(exc)})
@@ -2934,14 +4347,19 @@ class CircleSessionApp:
                 if self._defer_card_while_typing(self._next_approval):
                     return
                 review = self._approvals.review(name, args)
+                backend = getattr(self._agent, "_circle_backend", None)
+                resolve = getattr(backend, "_resolve_path", None)
                 self._begin_exec_approval({
                     "tool": name,
                     "title": name,
                     "body": _approval_body(name, args),
+                    "preview": approval_preview(name, args,
+                                                resolve if callable(resolve) else None),
                     "policy": review.reason,
                     "allow_always": review.allow_always,
                     "warn_delete": review.warn_delete,
                     "scope": review.scope,
+                    "prefix_scope": review.prefix_scope,
                     "more": len(self._approval_queue) - 1,
                     "tint": tool_type_bg_sgr(name),
                 })
@@ -3132,6 +4550,7 @@ class CircleSessionApp:
         """``/approvals`` is a popup, not a card: it must not keep (or take) the keys while a
         card holds the frame, nor outlive a cancelled turn."""
         self._approvals_page = None
+        self._picker = None
         self._ask_panel.clear()
 
     def _defer_card_while_typing(self, begin: Callable[[], None]) -> bool:
@@ -3216,13 +4635,71 @@ def _warn_line(text: str) -> str:
     return f" {pal.yellow}{GLYPH_ERROR}{pal.reset} {text}"
 
 
-def _user_rows(text: str) -> list[str]:
-    """Your message: the blue ``›`` on the first row (marker column 1), the words emphasised,
-    continuation rows indented to the text column."""
+def _tree_from(messages: list[Any]) -> SessionTree:
+    """The message tree of a saved conversation: each user message and its answer."""
+    tree = SessionTree()
+    for text, snap in saved_turns(messages):
+        tree.add("user", text)
+        answer = final_text(snap)
+        if answer:
+            tree.add("assistant", answer)
+    return tree
+
+
+def _shell_snapshot(call_id: str, command: str, result: Any) -> MessageSnapshot:
+    """A ``!command`` as a Bash call: running while ``result`` is None, then its output."""
+    blocks = [make_tool_use_block(tool_use_id=call_id, name="execute",
+                                  input={"command": command},
+                                  status="running" if result is None else "done")]
+    if result is not None:
+        blocks.append(make_tool_result_block(tool_use_id=call_id, output=result.output,
+                                             is_error=result.exit_code != 0, name="execute"))
+    return MessageSnapshot(messages=(make_assistant_message(uuid=call_id, content=blocks),),
+                           status="idle")
+
+
+_user_rows = user_rows
+
+
+def _path_tail(path: str) -> str:
+    """The end of a path, which is what tells folders apart: ``…/code/app``."""
+    parts = [p for p in Path(path).parts if p not in ("/", "")]
+    return path if len(parts) <= 2 else "…/" + "/".join(parts[-2:])
+
+
+def _short_path(path: str) -> str:
+    home = str(Path.home())
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
+def _mark_text(row: str, query: str) -> str:
+    """``row`` with each place ``query`` appears shown in reverse video, for find. The
+    colour codes already in the row are kept; matching ignores case."""
     pal = palette()
-    lines = text.split("\n")
-    return [(f" {pal.blue}›{pal.reset} " if i == 0 else "   ") + f"{pal.em}{ln}{pal.reset}"
-            for i, ln in enumerate(lines)]
+    needle = query.lower()
+    if not needle:
+        return row
+    plain_chars: list[tuple[int, str]] = []  # (index in row, character) of what is seen
+    index = 0
+    while index < len(row):
+        match = _SGR_ANY.match(row, index)
+        if match:
+            index = match.end()
+            continue
+        plain_chars.append((index, row[index]))
+        index += 1
+    seen = "".join(ch for _i, ch in plain_chars).lower()
+    marks: list[tuple[int, int]] = []
+    start = seen.find(needle)
+    while start >= 0:
+        marks.append((plain_chars[start][0], plain_chars[start + len(needle) - 1][0] + 1))
+        start = seen.find(needle, start + len(needle))
+    for begin, end in reversed(marks):
+        row = f"{row[:begin]}{pal.reverse}{row[begin:end]}{pal.reset}{row[end:]}"
+    return row
+
+
+_SGR_ANY = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _cut_end(text: str, room: int) -> str:
@@ -3263,13 +4740,16 @@ _PLAN_BLOCKED_TOOLS = frozenset({"execute", "write_file", "edit_file", "apply_pa
 
 
 def _approval_body(name: str, args: dict[str, Any]) -> str:
-    """审批面板正文：命令、目标路径或补丁开头；其余工具列参数。"""
+    """The card's first lines: the command, the file, or the files a patch changes (its
+    diff follows from ``approval_preview``); other tools list their arguments."""
     if name == "execute":
         return "$ " + str(args.get("command") or "")
     if name == "apply_patch":
-        lines = str(args.get("patchText") or "").splitlines()
-        head = [ln for ln in lines if ln.startswith("*** ") and "Patch" not in ln]
-        return "\n".join(head[:12] or lines[:12])
+        files = [line.split(":", 1)[1].strip()
+                 for line in str(args.get("patchText") or "").splitlines()
+                 if line.startswith(("*** Add File:", "*** Update File:", "*** Delete File:"))]
+        more = f" and {len(files) - 6} more" if len(files) > 6 else ""
+        return ", ".join(files[:6]) + more if files else "(a patch with no files)"
     if name in {"write_file", "edit_file", "delete"}:
         return str(args.get("file_path") or args.get("path") or "")
     return "\n".join(f"{k}={v!r}"[:200] for k, v in list(args.items())[:8])
@@ -3281,8 +4761,11 @@ def run_circle_session(
     home: Path | None = None,
     force_init: bool = False,
     model_override=None,
+    **start: Any,
 ) -> int:
-    """Entry used by CLI: init/trust gates then CircleSessionApp."""
+    """Entry used by CLI: init/trust gates then CircleSessionApp. ``start`` is passed on to
+    it: ``resume`` (the thread id ``circle -c`` / ``--session`` opens), ``pick_session``,
+    ``fork``, ``thread_id``, ``initial`` messages and the ``run_options``."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print("Circle needs an interactive terminal.", file=sys.stderr)
         return 2
@@ -3305,16 +4788,15 @@ def run_circle_session(
         )
         # Only run until main would start — simpler: run init/trust then session
         return _run_gates_then_session(
-            workspace, home=home, force_init=force_init, model_override=model_override
-        )
+            workspace, home=home, force_init=force_init, model_override=model_override,
+            start=start)
 
     if not is_folder_trusted(settings, workspace):
         return _run_gates_then_session(
-            workspace, home=home, force_init=False, model_override=model_override
-        )
+            workspace, home=home, force_init=False, model_override=model_override, start=start)
 
     return CircleSessionApp(
-        settings, workspace, home=home, model_override=model_override
+        settings, workspace, home=home, model_override=model_override, **start,
     ).run()
 
 
@@ -3324,8 +4806,10 @@ def _run_gates_then_session(
     home: Path,
     force_init: bool,
     model_override,
+    start: dict[str, Any] | None = None,
 ) -> int:
     """Init/trust via existing ink CircleApp controllers, then session shell."""
+    start = start or {}
     # Use the gate portion of CircleApp by composing controllers directly in ink
     from circle.tui.app import CircleApp
 
@@ -3346,6 +4830,7 @@ def _run_gates_then_session(
                     self.workspace,
                     home=self.home,
                     model_override=self.model_override,
+                    **start,
                 ).run()
 
             self._rebuild()
@@ -3372,6 +4857,7 @@ def _run_gates_then_session(
                                 self.workspace,
                                 home=self.home,
                                 model_override=self.model_override,
+                                **start,
                             ).run()
                     if self.trust and self.trust.finished:
                         if not self.trust.accepted:
@@ -3383,6 +4869,7 @@ def _run_gates_then_session(
                             self.workspace,
                             home=self.home,
                             model_override=self.model_override,
+                            **start,
                         ).run()
             finally:
                 self._ink.stop()

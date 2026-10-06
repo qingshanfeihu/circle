@@ -23,6 +23,7 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 | `CIRCLE_LLM_REPEAT_GUARD` | `0`, `false`, `off` or `no` turns off the repetition guard. | on |
 | `CIRCLE_LLM_VERIFY_FINISH` | Same values. Turns off the check for a response that ends without a finish reason. | on |
 | `CIRCLE_MODEL_CTX` | Override the context window (in tokens) shown in the footer. | from the model name |
+| `SSL_CERT_FILE` | A PEM file of certificate authorities for Circle's HTTPS requests: the model, model discovery, `webfetch`, `websearch` and `circle update`. Set it when your network inspects HTTPS. | model requests: the certificates bundled with Circle; the others: the system's, or the bundled ones where the system's cannot be found |
 
 ## Agent guards
 
@@ -30,7 +31,7 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 |---|---|---|
 | `CIRCLE_LOOP_GUARD` | `0`, `false`, `no` or `off` turns off the loop guard. | on |
 | `CIRCLE_LOOP_DUP_THRESHOLD` | Same tool call repeated this many times triggers a reminder. | `3` |
-| `CIRCLE_LOOP_EMPTY_THRESHOLD` | This many empty results in a row triggers a reminder. | `4` |
+| `CIRCLE_LOOP_EMPTY_THRESHOLD` | This many rounds of tool calls in a row that all come back empty trigger a reminder. Calls made together in one reply count as one round. | `4` |
 | `CIRCLE_LOOP_SOFT_BUDGET` | Tool calls in one turn before a soft note. | `25` |
 | `CIRCLE_LOOP_WINDOW` | Minimum model replies between reminders. | `8` |
 | `CIRCLE_PRUNE_TOOL_OUTPUTS` | `0`, `false`, `no` or `off` turns off pruning of old tool output. | on |
@@ -53,7 +54,7 @@ At start, and after `/login`, `/models` and `/reload`, Circle exports these from
 - `OPENAI_BASE_URL` and `OPENAI_API_KEY` for the OpenAI protocol, or `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` for the Anthropic protocol
 - `CIRCLE_MODEL`
 
-`/logout` removes all five. Commands the model runs in the shell get a filtered copy of the environment: any variable whose name contains a word such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` is removed, so the API key does not reach them. `OPENAI_BASE_URL` and `CIRCLE_MODEL` do.
+`/logout` removes all five. Commands the model runs in the shell get a filtered copy of the environment: any variable whose name contains a word such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` is removed, so the API key does not reach them. `OPENAI_BASE_URL` and `CIRCLE_MODEL` do. When Circle was started from a shell with its own virtual environment active, `VIRTUAL_ENV` is removed too and that environment's folder is taken out of `PATH`, so the model's `python3` and `pip` are not Circle's; a virtual environment inside the workspace stays.
 
 ## Installer and updates
 
@@ -66,7 +67,7 @@ At start, and after `/login`, `/models` and `/reload`, Circle exports these from
 | `CIRCLE_NO_PATH` | `install.ps1` | `1` leaves your `PATH` alone. |
 | `CIRCLE_FROM_SOURCE` | `install.sh` | `1` runs `pip install -e` on the checkout instead of downloading. |
 | `CURL_CA_BUNDLE` | `install.sh` (through curl) | A PEM file of certificate authorities, for a network that inspects HTTPS. |
-| `SSL_CERT_FILE` | `circle update` | The same, for Circle's own requests. |
+| `SSL_CERT_FILE` | `circle update`, and Circle itself | The same, for Circle's own requests. See [Model requests](#model-requests). |
 | `HTTPS_PROXY` | all three | A proxy for the download. |
 
 See [Quickstart](quickstart.md#1-install) and [Updating](cli.md#updating).

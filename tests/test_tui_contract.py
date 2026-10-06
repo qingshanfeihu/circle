@@ -132,6 +132,15 @@ def test_popup_rows_use_the_panel_background_and_focus_one_row():
     assert pal.sel_bg in rows[3] and pal.sel_bg not in rows[2]
 
 
+def test_a_long_label_is_cut_so_the_right_column_stays():
+    rows = popup_rows("Models", [PopupItem("x" * 200, "  default", current=True),
+                                 PopupItem("short", "  in ctrl+p")], 0, 60)
+    text = [plain(r) for r in rows]
+    assert text[1].rstrip().endswith("default · current") and "…" in text[1]
+    assert text[2].rstrip().endswith("in ctrl+p")
+    assert all(visible_width(r) == 60 for r in rows)
+
+
 # ── the approval card's keys ───────────────────────────────────────────────
 
 
@@ -151,6 +160,18 @@ def test_options_name_their_scope_and_forced_calls_cannot_be_remembered():
     forced, _g, _r2 = _approval(allow_always=False)
     assert [o.label for o in forced.card_spec().options] == ["Allow once", "Reject and explain"]
     assert session.card_spec().title == "Bash needs your permission"
+
+
+def test_a_simple_command_also_offers_a_rule_for_commands_that_start_the_same_way():
+    session, got, _r = _approval(prefix_scope='"python3 -m pytest …"')
+    labels = [o.label for o in session.card_spec().options]
+    assert labels == ["Allow once", "Allow this exact command for this session",
+                      'Allow "python3 -m pytest …" for this session', "Reject and explain"]
+    session.handle_key("3", "3")
+    assert got == [{"decision": "prefix"}]
+    session, got, _r = _approval(prefix_scope='"python3 -m pytest …"')
+    session.handle_key("a", "a")  # the hidden mnemonic stays with the narrower rule
+    assert got == [{"decision": "always"}]
 
 
 @pytest.mark.parametrize("key,decision", [("1", "approve"), ("y", "approve"), ("2", "always"), ("a", "always"),
@@ -759,3 +780,82 @@ def test_fold_lines_carry_their_hint():
                          render=lambda: None, on_answer=lambda _a: None)
     spec = ask.card_spec()
     assert any(line.text.endswith("lines · ctrl+o") for line in spec.body)
+
+
+def test_a_long_paste_reaches_the_model_and_stays_folded_on_screen(app):
+    from circle.ink.parse_keypress import PasteEvent
+
+    sent: list[str] = []
+    app._bridge.start = lambda text, **_shown: sent.append(text)  # noqa: SLF001
+    app._handle_input(PasteEvent(text="\n".join(f"row {i}" for i in range(40))))  # noqa: SLF001
+    for ch in " explain":
+        app._handle_key(KeyPress(key=ch, char=ch))  # noqa: SLF001
+    app._handle_key(KeyPress(key="shift+enter"))  # noqa: SLF001
+    for ch in "briefly":
+        app._handle_key(KeyPress(key=ch, char=ch))  # noqa: SLF001
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    assert sent == ["\n".join(f"row {i}" for i in range(40)) + " explain\nbriefly"]
+    shown = [plain(row) for row in app._transcript.snapshot()]  # noqa: SLF001
+    assert " › [Pasted text #1 +39 lines] explain" in shown and "   briefly" in shown
+    assert not any("row 39" in row for row in shown)
+
+
+def test_a_long_paste_also_reaches_the_model_as_a_follow_up(app):
+    from circle.ink.parse_keypress import PasteEvent
+
+    app._is_loading = True  # noqa: SLF001 — a turn is running, so the message is queued
+    app._handle_input(PasteEvent(text="\n".join(f"line {i}" for i in range(30))))  # noqa: SLF001
+    app._handle_key(KeyPress(key="alt+enter", alt=True))  # noqa: SLF001
+    assert app._msg_queue == [("followup", "\n".join(f"line {i}" for i in range(30)))]  # noqa: SLF001
+
+
+def test_word_keys_edit_the_draft(app):
+    from circle.ink.parse_keypress import InputParser
+
+    for ch in "fix the failing test now":
+        app._handle_key(KeyPress(key=ch, char=ch))  # noqa: SLF001
+    keys = InputParser()
+    for event in keys.feed("\x1b\x7f"):  # option+delete: one word back, and not an esc
+        app._handle_key(event)  # noqa: SLF001
+    assert app._prompt.value == "fix the failing test "  # noqa: SLF001
+    app._handle_key(KeyPress(key="ctrl+w", ctrl=True, char="w"))  # noqa: SLF001
+    assert app._prompt.value == "fix the failing "  # noqa: SLF001
+    app._handle_key(KeyPress(key="alt+b", alt=True, char="b"))  # noqa: SLF001
+    app._handle_key(KeyPress(key="alt+b", alt=True, char="b"))  # noqa: SLF001
+    app._handle_key(KeyPress(key="ctrl+k", ctrl=True, char="k"))  # noqa: SLF001
+    assert app._prompt.value == "fix "  # noqa: SLF001
+    app._handle_key(KeyPress(key="ctrl+y", ctrl=True, char="y"))  # noqa: SLF001
+    assert app._prompt.value == "fix the failing "  # noqa: SLF001
+    app._handle_key(KeyPress(key="ctrl+left", ctrl=True))  # noqa: SLF001
+    app._handle_key(KeyPress(key="alt+d", alt=True, char="d"))  # noqa: SLF001
+    assert app._prompt.value == "fix the  "  # noqa: SLF001
+    app._handle_key(KeyPress(key="alt+right", alt=True))  # noqa: SLF001
+    assert app._prompt.cursor_pos == len("fix the  ")  # noqa: SLF001
+
+
+def test_a_mistyped_command_comes_back_with_a_suggestion(app):
+    sent: list[str] = []
+    app._bridge.start = lambda text, **_shown: sent.append(text)  # noqa: SLF001
+    for ch in "/modles step-5":
+        app._handle_key(KeyPress(key=ch, char=ch))  # noqa: SLF001
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    assert sent == [] and app._prompt.value == "/modles step-5"  # noqa: SLF001
+    assert app._footer._toast_text == "Unknown command /modles · did you mean /models?"  # noqa: SLF001
+    app._prompt.set_value("/usr/bin/env is missing")  # noqa: SLF001 — a path is a message
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    assert sent == ["/usr/bin/env is missing"]
+    app._leave_busy()  # noqa: SLF001
+    app._prompt.set_value(" /modles is what I typed")  # noqa: SLF001 — so is a leading space
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    assert sent == ["/usr/bin/env is missing", "/modles is what I typed"]
+
+
+def test_a_mistyped_command_comes_back_with_its_paste(app):
+    from circle.ink.parse_keypress import PasteEvent
+
+    for ch in "/reveiw ":
+        app._handle_key(KeyPress(key=ch, char=ch))  # noqa: SLF001
+    app._handle_input(PasteEvent(text="\n".join(f"row {i}" for i in range(30))))  # noqa: SLF001
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    assert app._prompt.value.startswith("/reveiw [Pasted text #1")  # noqa: SLF001
+    assert "row 29" in app._prompt.model_text(app._prompt.value)  # noqa: SLF001

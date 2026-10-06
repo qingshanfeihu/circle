@@ -32,6 +32,7 @@ def test_secret_looking_names_are_removed_and_the_rest_kept():
 
 
 def test_execute_sees_path_home_and_trust_but_no_keys(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # Circle's own venv: see the tests below
     monkeypatch.setenv("SSL_CERT_FILE", "/ca/bundle.pem")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
     expected_path = str(tmp_path / "venv-bin") + os.pathsep + os.environ["PATH"]
@@ -47,3 +48,22 @@ def test_execute_sees_path_home_and_trust_but_no_keys(tmp_path, monkeypatch):
     home, cert, path, key = json.loads(out.output.strip())
     assert home == str(tmp_path / "home") and cert == "/ca/bundle.pem" and path == expected_path
     assert key == ""
+
+
+def test_circles_own_venv_is_not_the_projects(tmp_path):
+    """Started from a shell with Circle's venv active, the model's python and pip would be
+    Circle's: that venv leaves PATH and VIRTUAL_ENV goes."""
+    own = os.path.join(sys.prefix, "Scripts" if os.name == "nt" else "bin")
+    env = shell_environment({"VIRTUAL_ENV": sys.prefix, "VIRTUAL_ENV_PROMPT": "(circle)",
+                             "PATH": os.pathsep.join([own, "/usr/local/bin", "/usr/bin"])},
+                            workspace=tmp_path)
+    assert env == {"PATH": os.pathsep.join(["/usr/local/bin", "/usr/bin"])}
+
+
+def test_another_venv_or_one_inside_the_project_stays(tmp_path):
+    other = {"VIRTUAL_ENV": str(tmp_path / "project-venv"),
+             "PATH": os.pathsep.join([str(tmp_path / "project-venv" / "bin"), "/usr/bin"])}
+    assert shell_environment(other, workspace=tmp_path) == other
+    mine = {"VIRTUAL_ENV": sys.prefix, "PATH": os.pathsep.join([sys.prefix, "/usr/bin"])}
+    # working on the folder the venv is in (Circle's own checkout): it is the project's venv
+    assert shell_environment(mine, workspace=os.path.dirname(sys.prefix)) == mine

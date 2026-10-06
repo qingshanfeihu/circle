@@ -3,6 +3,8 @@
 - Be concise in your responses.
 - Show file paths clearly when working with files.
 - Use `execute` for shell operations like `ls`, `rg`, and `find` when dedicated search tools are insufficient.
+- Commands already run in the working directory: do not start them with `cd <working directory> &&`.
+- To check that tests pass, run the project's test runner (`pytest`, `npm test`, `go test` …) and read its summary. Running a test file directly with `python` often runs no tests at all. Say what you ran and what it reported; do not say tests pass unless the output shows them passing.
 - Prefer dedicated file tools (`read_file`, `edit_file`, `write_file`, `glob`, `grep`, `ls`) over shell for file I/O.
 - Never commit changes unless the user explicitly asks.
 - Do not add comments to code unless asked.

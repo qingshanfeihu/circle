@@ -42,6 +42,50 @@ _SGR_SPLIT_RE = re.compile(r"(\x1b\[[0-9;]*m)")
 
 _MODEL_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SGR_TEXT_RE = re.compile(r"\x1b\[[0-9;]*m")
+_WRAP_TOKEN_RE = re.compile(r"(\x1b\[[0-9;]*m| +)")
+# Prose is broken between words here; the screen would otherwise cut it at the last
+# column, in the middle of a word. Code blocks and tables keep their own layout.
+_WRAP_ROLES = frozenset({"text", "list", "quote", "heading"})
+
+
+def word_wrap(styled: str, width: int, reset: str, hang: str = "") -> list[str]:
+    """Break a rendered line between words. Continuation lines start with ``hang``; a
+    word wider than the line (a long path or URL, or text without spaces) is cut."""
+    if string_width(_SGR_TEXT_RE.sub("", styled)) <= width:
+        return [styled]
+    hang_w = string_width(_SGR_TEXT_RE.sub("", hang))
+    lines: list[str] = []
+    current, used, active, space = "", 0, "", ""
+
+    def new_line() -> None:
+        nonlocal current, used, space
+        lines.append(current + (reset if active else ""))
+        current, used, space = hang + active, hang_w, ""
+
+    for token in _WRAP_TOKEN_RE.split(styled):
+        if not token:
+            continue
+        if _SGR_TEXT_RE.fullmatch(token):
+            current += token
+            active = "" if token == reset else token
+            continue
+        if token.startswith(" "):
+            space = token if used > hang_w or not lines else ""
+            continue
+        width_of = string_width(token)
+        if used + string_width(space) + width_of > width and used > hang_w:
+            new_line()
+        current += space
+        used += string_width(space)
+        space = ""
+        for char in token:
+            cell = char_width(char)
+            if used + cell > width and used > hang_w:
+                new_line()
+            current += char
+            used += cell
+    lines.append(current)
+    return lines
 
 
 def _punctuation(char: str) -> bool:
@@ -187,6 +231,9 @@ class MarkdownRenderer:
                     _emit(self._render_table(headers, alignments, rows, pal), "table")
                     continue
             rendered, role = self._render_line(line, pal)
+            if role in _WRAP_ROLES:
+                rendered = "\n".join(word_wrap(rendered, self._width, pal.reset,
+                                                 self._hang(line, role, pal)))
             _emit(rendered, role)
             index += 1
 
@@ -232,6 +279,23 @@ class MarkdownRenderer:
             out.append(text)
             out_roles.append(role)
         return out
+
+    @staticmethod
+    def _hang(line: str, role: str, pal) -> str:
+        """What a wrapped line continues under: list text lines up after its marker, a
+        quote keeps its bar."""
+        if role == "quote":
+            qm = _QUOTE_RE.match(line)
+            return f"{qm.group(1) if qm else ''}{pal.dim}│{pal.reset} "
+        if role == "list":
+            ol_m = _OL_RE.match(line)
+            if ol_m:
+                number = line[len(ol_m.group(1)):].split(".", 1)[0]
+                return " " * (len(ol_m.group(1)) + len(number) + 2)
+            ul_m = _UL_RE.match(line)
+            if ul_m:
+                return " " * (len(ul_m.group(1)) + 2)
+        return ""
 
     def _render_line(self, line: str, pal) -> tuple[str, str]:
         hm = _HEADER_RE.match(line)
@@ -510,7 +574,7 @@ class MarkdownRenderer:
         pal = palette()
         panel_rgb = sgr_to_rgb(pal.panel_bg)
         if panel_rgb is None:
-            raise ValueError(f"panel_bg 不是真彩 SGR: {pal.panel_bg!r}")
+            raise ValueError(f"panel_bg is not a truecolor SGR code: {pal.panel_bg!r}")
         panel_hex = rgb_to_hex(panel_rgb)
         fg_hex = pal.fg_hex
 

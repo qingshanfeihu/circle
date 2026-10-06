@@ -1,3 +1,3 @@
-"""Circle — compile harness with a frozen-aware install path."""
+"""Circle: a terminal coding agent for your own model endpoint."""
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"

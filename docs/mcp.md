@@ -50,7 +50,7 @@ If an extension tool has the same name as an MCP tool, the extension tool is dro
 | `/mcp` | List the servers and up to 40 loaded tools. |
 | `/mcp reload` | Rebuild the agent and reconnect, using the settings already in memory. It waits until the turn ends. To pick up a change you made to `settings.json`, use `/reload`. |
 
-MCP servers are not loaded in [line mode](cli.md#full-screen-and-line-mode).
+MCP servers are not loaded in [print mode or line mode](cli.md#print-mode).
 
 ## Security
 

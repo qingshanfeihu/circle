@@ -27,8 +27,13 @@ class PlanGuardedBackend(CircleSandboxBackend):
     def set_plan_mode(self, enabled: bool) -> None:
         self.plan_mode = enabled
 
+    def _blocked(self, file_path: str) -> bool:
+        # Circle's own files in the data folder are not project files
+        return (self.plan_mode and not _is_plan_file(file_path)
+                and self.offload_path(file_path) is None)
+
     def write(self, file_path: str, content: str) -> Any:  # noqa: ANN401
-        if self.plan_mode and not _is_plan_file(file_path):
+        if self._blocked(file_path):
             from deepagents.backends.protocol import WriteResult
 
             return WriteResult(
@@ -40,7 +45,7 @@ class PlanGuardedBackend(CircleSandboxBackend):
         return super().write(file_path, content)
 
     def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> Any:  # noqa: ANN401
-        if self.plan_mode and not _is_plan_file(file_path):
+        if self._blocked(file_path):
             from deepagents.backends.protocol import EditResult
 
             return EditResult(
@@ -63,7 +68,8 @@ class PlanGuardedBackend(CircleSandboxBackend):
             )
         return super().delete(file_path)
 
-    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None,
+                stop: object = None) -> ExecuteResponse:
         if self.plan_mode:
             return ExecuteResponse(
                 output=(
@@ -75,4 +81,4 @@ class PlanGuardedBackend(CircleSandboxBackend):
         refusal = self.command_guard(command) if self.command_guard else ""
         if refusal:
             return ExecuteResponse(output=refusal, exit_code=126)
-        return super().execute(command, timeout=timeout)
+        return super().execute(command, timeout=timeout, stop=stop)

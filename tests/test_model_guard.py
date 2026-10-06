@@ -447,3 +447,49 @@ def test_session_shows_waits_and_dropped_parameters(tmp_path, monkeypatch):
     # ...the retry is a flash: it was in the footer when it arrived
     assert app._footer._toast_text is not None  # noqa: SLF001
     assert "The endpoint rejects thinking · not sent for the rest of this session" in snap
+
+
+def _usage(inp: int, out: int, *, cached: int = 0, reasoning: int = 0, value: str = "",
+           finish: str | None = None) -> ChatGenerationChunk:
+    return ChatGenerationChunk(
+        message=AIMessageChunk(content=value, usage_metadata={
+            "input_tokens": inp, "output_tokens": out, "total_tokens": inp + out,
+            "input_token_details": {"cache_read": cached},
+            "output_token_details": {"reasoning": reasoning}}),
+        generation_info={"finish_reason": finish} if finish else None)
+
+
+def _total_usage(model: Any) -> dict:
+    merged = None
+    for chunk in model.stream("hi"):
+        merged = chunk if merged is None else merged + chunk
+    return merged.usage_metadata
+
+
+def test_a_running_usage_total_on_every_chunk_is_counted_once():
+    # Some OpenAI-compatible gateways repeat the running total on each chunk.
+    model = mg.guard_model(Scripted(scripts=[[
+        _usage(3360, 0, cached=3200), _usage(3360, 1, cached=3200, value="po"),
+        _usage(3360, 5, cached=3200, reasoning=3, value="ng"),
+        _usage(3360, 26, cached=3200, reasoning=20, finish="stop")]]))
+    usage = _total_usage(model)
+    assert usage["input_tokens"] == 3360 and usage["output_tokens"] == 26
+    assert usage["total_tokens"] == 3386
+    assert usage["input_token_details"]["cache_read"] == 3200
+    assert usage["output_token_details"]["reasoning"] == 20
+
+
+def test_usage_reported_once_or_split_is_unchanged():
+    once = mg.guard_model(Scripted(scripts=[[text("ok"), _usage(1200, 40, finish="stop")]]))
+    assert _total_usage(once)["total_tokens"] == 1240
+    # Input on the first chunk, output on the last, as Anthropic-style streams do.
+    split = mg.guard_model(Scripted(scripts=[[_usage(900, 0), text("ok"),
+                                              _usage(0, 75, finish="stop")]]))
+    usage = _total_usage(split)
+    assert (usage["input_tokens"], usage["output_tokens"], usage["total_tokens"]) == (900, 75, 975)
+
+
+def test_a_resent_stream_counts_only_its_own_usage(sleeps):
+    model = mg.guard_model(Scripted(scripts=[[status_error(503, "busy")],
+                                             [_usage(500, 0), _usage(500, 9, finish="stop")]]))
+    assert _total_usage(model)["total_tokens"] == 509

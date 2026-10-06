@@ -15,32 +15,32 @@ from typing import Any
 PRICING: dict[str, dict[str, float | str]] = {
     # mimo.mi.com/docs/zh-CN/price/pay-as-you-go 国内定价，2026-09-21 核对；缓存写限时免费
     "mimo-v2.5":     {"input_miss": 1.0, "input_hit": 0.02,  "output": 2.0, "cache_write": 0.0,
-                     "reference_basis": "MiMo国内刊例，缓存创建限免"},
+                     "reference_basis": "MiMo list price (China); cache writes free for now"},
     "mimo-v2.5-pro": {"input_miss": 3.0, "input_hit": 0.025, "output": 6.0, "cache_write": 0.0,
-                     "reference_basis": "MiMo国内刊例，缓存创建限免"},
+                     "reference_basis": "MiMo list price (China); cache writes free for now"},
     # api-docs.deepseek.com/quick_start/pricing 高峰价，2026-09-21 核对（空闲时段半价，未分时段按高峰估）；自动缓存无写费
     "deepseek-flash":    {"input_miss": 0.30, "input_hit": 0.006, "output": 1.20, "currency": "USD",
-                         "reference_basis": "DeepSeek高峰刊例，非高峰半价"},
+                         "reference_basis": "DeepSeek peak list price; off-peak is half"},
     "deepseek-v4-flash": {"input_miss": 0.30, "input_hit": 0.006, "output": 1.20, "currency": "USD",
-                         "reference_basis": "DeepSeek高峰刊例，非高峰半价"},  # 旧名仍受理，按 Flash 价
+                         "reference_basis": "DeepSeek peak list price; off-peak is half"},  # 旧名仍受理，按 Flash 价
     "deepseek-v4-pro":   {"input_miss": 1.32, "input_hit": 0.044, "output": 3.96, "currency": "USD",
-                         "reference_basis": "DeepSeek高峰刊例，非高峰半价"},
+                         "reference_basis": "DeepSeek peak list price; off-peak is half"},
     # help.aliyun.com/zh/model-studio/qwen3-8-flash 中国站按量，2026-09-21 核对（2026-08-27 调价后）
     "qwen3.8-flash": {"input_miss": 0.8, "input_hit": 0.1, "output": 2.7, "cache_write": 1.25,
-                     "reference_basis": "中国站北京刊例"},
+                     "reference_basis": "Alibaba Cloud China (Beijing) list price"},
     # https://help.aliyun.com/zh/model-studio/qwen3-8-max，2026-09-21 核对；显/隐式读价不同。
     "qwen3.8-max":   {"input_miss": 12.0, "input_hit": 1.5, "input_hit_explicit": 1.0,
-                     "output": 36.0, "cache_write": 15.0, "reference_basis": "中国站北京刊例"},
+                     "output": 36.0, "cache_write": 15.0, "reference_basis": "Alibaba Cloud China (Beijing) list price"},
     # Anthropic Sonnet 刊例：$3 / $15 每百万，缓存读 0.1×、5 分钟写 1.25×。网关别名按此参考，不是账单。
     "claude-sonnet-5": {"input_miss": 3.0, "input_hit": 0.30, "output": 15.0,
                         "cache_write": 3.75, "currency": "USD",
-                        "reference_basis": "Claude Sonnet 刊例参考，非账单"},
+                        "reference_basis": "Claude Sonnet list price for reference, not a bill"},
     "claude-sonnet-4-5": {"input_miss": 3.0, "input_hit": 0.30, "output": 15.0,
                           "cache_write": 3.75, "currency": "USD",
-                          "reference_basis": "Claude Sonnet 刊例参考，非账单"},
+                          "reference_basis": "Claude Sonnet list price for reference, not a bill"},
     "claude-sonnet-4": {"input_miss": 3.0, "input_hit": 0.30, "output": 15.0,
                         "cache_write": 3.75, "currency": "USD",
-                        "reference_basis": "Claude Sonnet 刊例参考，非账单"},
+                        "reference_basis": "Claude Sonnet list price for reference, not a bill"},
 }
 
 _CURRENCY_SYMBOL = {"RMB": "¥", "USD": "$"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -36,7 +37,27 @@ def thread_config(thread_id: str) -> dict[str, Any]:
 
 def inject_thread_message(agent: Any, thread_id: str, message: BaseMessage) -> None:
     """Persist a message into the checkpointer without a model turn."""
-    agent.update_state(thread_config(thread_id), {"messages": [message]})
+    append_messages(agent, thread_config(thread_id), [message])
+
+
+def append_messages(agent: Any, config: dict[str, Any], messages: list[BaseMessage]
+                    ) -> dict[str, Any]:
+    """Add messages to a thread without a model turn, after the checkpoint in ``config``
+    (its latest when the config names none). Returns the config of the new checkpoint.
+
+    LangGraph keeps an update's messages as writes on the checkpoint before it, and reads
+    every write on a checkpoint when it rebuilds a later one. Going back to a checkpoint
+    with writes for another branch would bring those messages along, so the update goes
+    after an empty step, and the result is closed like the end of a turn: nothing waits to
+    run, and /tree can go back to it.
+    """
+    config = {**config, "configurable": {"checkpoint_ns": "", **config.get("configurable", {})}}
+    # Every message gets an id, so that /tree and later updates can tell them apart
+    messages = [m if m.id else m.model_copy(update={"id": f"circle-{uuid.uuid4().hex}"})
+                for m in messages]
+    spacer = agent.update_state(config, None, as_node="__end__")
+    written = agent.update_state(spacer, {"messages": messages})
+    return agent.update_state(written, None, as_node="__end__")
 
 
 def plan_boundary_message(*, enabled: bool) -> HumanMessage:

@@ -9,6 +9,7 @@ from circle.ink.app import InkApp
 from circle.ink.components.footer import FooterPane
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.dom import NodeType, create_element, create_text
+from circle.ink.escape_input import StandaloneEscapeInputParser
 from circle.ink.parse_keypress import InputEvent
 from circle.ink.theme import init_palette_from_terminal
 from circle.paths import circle_home, normalize_workspace
@@ -40,12 +41,15 @@ class CircleApp:
         self._prompt = PromptInput(
             cursor_manager=self._ink.cursor,
             on_submit=self._on_submit,
-            placeholder="输入消息（/ 命令）",
+            placeholder="",
         )
         self._ink.root.append_child(self._body)
         self._ink.root.append_child(self._footer.node)
         self._ink.root.append_child(self._prompt.node)
         self._ink.on_input = self._on_input
+        # esc on its own leaves setup, as ctrl+c does (and as the docs say)
+        self._ink._input_parser = StandaloneEscapeInputParser(  # noqa: SLF001
+            self._ink._input_parser, self._on_input)  # noqa: SLF001
 
         self.init: InitController | None = None
         self.trust: TrustController | None = None
@@ -144,6 +148,12 @@ class CircleApp:
                 self.init.confirm()
                 self._rebuild()
                 return
+            if self.init and self.init.step in {InitStep.API_URL, InitStep.API_KEY}:
+                # An empty line keeps the saved URL or key (setting up again), or says
+                # what is missing
+                self.init.submit_line("")
+                self._rebuild()
+                return
             if self.trust and not self.trust.finished:
                 self.trust.confirm()
                 self._rebuild()
@@ -183,24 +193,34 @@ class CircleApp:
             lines.append("")
             lines.extend(self.init.body_lines())
             phase = self.init.step.name.lower()
-            self._prompt.placeholder = (
-                f"{self.init.prompt_label()}" if self.init.prompt_label() else "选择后 Enter"
-            )
+            label = self.init.prompt_label()
+            self._prompt.placeholder = label or "↑↓ and enter, or type"
+            self._prompt.masked = self.init.step == InitStep.API_KEY
         elif self.trust is not None:
             lines.extend(self.trust.body_lines())
             phase = "trust"
-            self._prompt.placeholder = "y trust / n 拒绝"
+            self._prompt.placeholder = "y trusts · n quits"
+            self._prompt.masked = False
         elif self.main is not None:
             lines.extend(self.main.body_lines())
             phase = self.main.phase
             model = self.main.settings.auth.model
-            self._prompt.placeholder = "输入消息（/exit 离开）"
+            self._prompt.placeholder = "/exit leaves"
+            self._prompt.masked = False
+        # The token meters mean nothing before a session starts
+        self._footer.node.style.display = "flex" if self.main is not None else "none"
         self._body.clear_children()
         for ln in lines:
             self._body.append_child(create_text(ln if ln else " "))
         self._footer.set_status(phase=phase, model=model)
         if self._ink._running:  # noqa: SLF001
-            self._ink.render()
+            if phase != getattr(self, "_drawn_phase", None):
+                # A new screen is drawn whole: drawing only what differs from the last
+                # screen leaves its words in pieces for anything reading the output
+                self._drawn_phase = phase
+                self._ink._force_full_render()  # noqa: SLF001
+            else:
+                self._ink.render()
 
 
 def run_circle_tui(
@@ -211,7 +231,7 @@ def run_circle_tui(
     model_override=None,
 ) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print("Circle TUI 需要交互式终端。", file=sys.stderr)
+        print("Circle needs an interactive terminal.", file=sys.stderr)
         return 2
     return CircleApp(
         workspace,

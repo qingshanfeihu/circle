@@ -33,6 +33,9 @@ BLOCK_WARN = "warn"
 
 BLOCK_AGENT_CARD = "agent_card"
 
+# A message the user sent while the turn ran, read by the model mid-turn
+BLOCK_STEER = "steer"
+
 
 @dataclass(frozen=True)
 class ContentBlock:

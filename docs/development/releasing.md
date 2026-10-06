@@ -72,6 +72,6 @@ Builds use isolated virtual environments and setuptools 79.0.1: newer setuptools
 | `scripts/release.py` | Bumps and checks the version and the changelog. `--notes` prints one version's section for the release page. |
 | `scripts/pack_release.py` | Turns `dist/circle` into the asset and its checksum. |
 | `scripts/smoke_frozen.py` | Runs the frozen program before it is packed. |
-| `install.sh`, `install.ps1` | First install. Verify the checksum, unpack to `versions/<version>`, point `current` at it. |
+| `install.sh`, `install.ps1` | First install. Verify the checksum, unpack to `versions/<version>`, point `current` at it. `install.sh` starts the new version once (`--version`) before it moves `current`, and leaves the old one in place when that fails. |
 | `circle/update.py` | `circle update` and the daily check. Same layout and asset names as the installers. |
 | `tests/test_install_sh.py`, `test_install_ps1.py`, `test_update.py`, `test_release_script.py` | Pin all of the above without a network. |

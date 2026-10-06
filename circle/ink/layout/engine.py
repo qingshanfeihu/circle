@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..dom import DOMElement, DOMNode, NodeType, Rect, TextNode
-from ..string_width import string_width
+from ..string_width import string_width, wrapped_row_count
 
 
 def compute_layout(root: DOMElement, width: int, height: int) -> None:
@@ -92,10 +92,11 @@ def _estimate_content_height(node: DOMElement, avail_w: int) -> int:
                 continue
             if not child.value:
                 continue
-            lines = child.value.split("\n")
-            for line in lines:
-                w = string_width(line)
-                total += max(1, (w + avail_w - 1) // avail_w) if avail_w > 0 else 1
+            # Rows as the renderer wraps them: colour codes take no columns
+            if avail_w > 0:
+                total += wrapped_row_count(child.value, avail_w)
+            else:
+                total += len(child.value.split("\n"))
         elif isinstance(child, DOMElement):
             h = child.style.height
             total += h if isinstance(h, int) else 1

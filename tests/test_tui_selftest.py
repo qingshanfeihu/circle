@@ -105,8 +105,7 @@ def test_trust_screen_creates_agent_and_renders(tmp_path: Path, monkeypatch):
     assert str(ws.resolve()) in body
     trust.confirm()
     assert trust.accepted
-    assert project_agent_dir(ws).is_dir()
-    assert (project_agent_dir(ws) / "settings.json").is_file()
+    assert not project_agent_dir(ws).exists()  # trust writes nothing into the folder
 
 
 def test_main_controller_io_and_exit(tmp_path: Path, monkeypatch):
@@ -201,3 +200,41 @@ def test_message_text_strips_thinking_blocks():
         {"type": "text", "text": "Hi. What do you want to work on?"},
     ]
     assert _message_text(content) == "Hi. What do you want to work on?"
+
+
+def test_setup_is_honest_when_the_endpoint_lists_no_models(tmp_path: Path):
+    home = tmp_path / "home"
+    failed = ProbeResult(protocol="openai", models=[], inferred=True, status="failed",
+                         detail="http 404")
+    ctl = InitController(home=home, probe=lambda *_a: failed)
+    ctl.submit_line("1")
+    ctl.submit_line("https://gateway.example/v1")
+    ctl.submit_line("sk-live")
+    body = _snap(ctl.body_lines())
+    assert "model discovery failed" in body and "http 404" in body
+    assert "gpt-4.1" not in body, "no made-up model names"
+    ctl.submit_line("1")  # openai
+    assert "type the model id your endpoint uses" in _snap(ctl.body_lines())
+    ctl.submit_line("step-3.7-flash")
+    assert ctl.done and load_settings(home).auth.model == "step-3.7-flash"
+
+
+def test_the_key_is_dots_while_it_is_typed(tmp_path: Path):
+    from circle.ink.app import InkApp
+    from circle.ink.components.prompt_input import PromptInput
+
+    prompt = PromptInput(cursor_manager=InkApp(alt_screen=False).cursor, on_submit=lambda _t: None)
+    for ch in "sk-secret":
+        prompt.handle_key(ch, ch)
+    prompt.masked = True
+    shown = prompt.node.children[0].value if prompt.node.children else ""
+    assert "sk-secret" not in shown and "•••••••••" in shown
+    assert prompt.value == "sk-secret"
+
+
+def test_trust_screen_names_the_real_data_folder(tmp_path: Path):
+    from circle.settings import CircleSettings
+
+    trust = TrustController(CircleSettings(), tmp_path, home=tmp_path / "data")
+    body = _snap(trust.body_lines())
+    assert str(tmp_path / "data" / "settings.json") in body and "~/.circle" not in body

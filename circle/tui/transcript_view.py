@@ -35,7 +35,7 @@ from circle.display_lexicon import (
     tool_result_recoverable,
     tool_short_name,
 )
-from circle.ink.components.markdown_renderer import MarkdownRenderer
+from circle.ink.components.markdown_renderer import MarkdownRenderer, word_wrap
 from circle.ink.string_width import char_width, string_width
 from circle.ink.theme import GLYPH_AGENT, GLYPH_ERROR, palette, status_light
 from circle.tui.agent_strip import (
@@ -50,6 +50,7 @@ from circle.tui.agent_strip import (
 from circle.tui.content_blocks import render_thinking_line
 from circle.tui.message_model import (
     BLOCK_ERROR,
+    BLOCK_STEER,
     BLOCK_TEXT,
     BLOCK_THINKING,
     BLOCK_TODO_LIST,
@@ -79,6 +80,18 @@ _TOOL_TYPE_THINK = frozenset({"question"})
 
 # 块间空行裁决表：本块紧跟在哪些块后面算同一块（不补空行）；其余一律隔 1 行。
 # text 只续 thinking（∴ → ⏺ 同一回答块）；text → text 不续，两个 ⏺ 块之间恒 1 空行。
+def user_rows(text: str, width: int | None = None) -> list[str]:
+    """Your message: the blue ``›`` on the first row (marker column 1), the words emphasised,
+    continuation rows indented to the text column. With ``width`` long lines are broken
+    between words, as answers are."""
+    pal = palette()
+    lines: list[str] = []
+    for line in text.split("\n"):
+        styled = f"{pal.em}{line}{pal.reset}"
+        lines.extend(word_wrap(styled, width - 3, pal.reset) if width else [styled])
+    return [(f" {pal.blue}›{pal.reset} " if i == 0 else "   ") + ln for i, ln in enumerate(lines)]
+
+
 _BLOCK_CONTINUES: dict[str, frozenset[str]] = {
     "text": frozenset({"thinking"}),
     "thinking": frozenset({"thinking"}),
@@ -226,7 +239,9 @@ def _result_lines(block: ContentBlock, result: ContentBlock, opts: ViewOptions) 
     if block.name == "read_file" and not result.is_error and not opts.tools_expanded:
         raw = str(result.output or "").rstrip("\n").splitlines()
         match = _READ_RANGE.match(raw[0]) if raw else None
-        header = raw[0] if match else f"Read {len(raw)} line{'s' if len(raw) != 1 else ''}"
+        # The range is in the call row already; the result says how much came back.
+        count = int(match.group(2)) - int(match.group(1)) + 1 if match else len(raw)
+        header = f"Read {count} line{'s' if count != 1 else ''}"
         hidden = max(0, len(raw) - (1 if match else 0))
         hint = " · ctrl+o" if hidden else ""
         return [f"   ⎿ {pal.faint}{header}{hint}{pal.reset}"]
@@ -362,6 +377,9 @@ def render_turn_rows(snap: MessageSnapshot, opts: ViewOptions) -> list[Row]:
             elif block.type == BLOCK_TEXT:
                 if block.text.strip():
                     add(_text_entry(block.text, opts), "text")
+            elif block.type == BLOCK_STEER:
+                add("\n".join(user_rows(str((block.payload or {}).get("text") or ""),
+                                         opts.width)), "steer")
             elif block.type == BLOCK_TOOL_USE:
                 if block.name not in _HIDDEN_TOOLS:
                     add(_tool_entry(block, results.get(block.tool_use_id), opts,

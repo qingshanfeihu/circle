@@ -7,7 +7,9 @@ valid after re-homing.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -46,3 +48,12 @@ def project_agent_dir(workspace: Path) -> Path:
 
 def normalize_workspace(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def project_data_dir(workspace: str | Path, home: Path | None = None) -> Path:
+    """Circle's own files about one project, kept in the data folder rather than in the
+    project: ``projects/<folder name>-<hash of its path>``."""
+    target = normalize_workspace(workspace)
+    digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:12]
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", target.name)[:40].strip("._") or "root"
+    return (home or circle_home()) / "projects" / f"{name}-{digest}"

@@ -165,6 +165,22 @@ class Transcript:
         if self._node.sticky_scroll:
             self._scroll_to_bottom()
 
+    def row_of(self, idx: int) -> int:
+        """The screen row (from the top of the content) where message ``idx`` starts."""
+        width = self._node.rect.width if self._node.rect.width > 0 else 80
+        children = [c for c in self._node.children if isinstance(c, TextNode)]
+        return sum(child.wrapped_rows(width) for child in children[:max(0, idx)])
+
+    def message_at_row(self, row: int) -> int:
+        """The message shown at content row ``row``."""
+        width = self._node.rect.width if self._node.rect.width > 0 else 80
+        seen = 0
+        for index, child in enumerate(c for c in self._node.children if isinstance(c, TextNode)):
+            seen += child.wrapped_rows(width)
+            if seen > row:
+                return index
+        return max(0, len(self._messages) - 1)
+
     def _content_height_rows(self) -> int:
         width = self._node.rect.width if self._node.rect.width > 0 else 80
         return sum(

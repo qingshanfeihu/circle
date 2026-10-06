@@ -537,7 +537,8 @@ def test_windows_redirected_cli_uses_utf8_even_without_python_flags(monkeypatch)
         cli.main(["--help"])
     assert stopped.value.code == 0
     streams[1].flush()
-    assert "工作区目录" in output.getvalue().decode("utf-8")
+    # The help is English now; its "…" is the character that is not ASCII
+    assert "edit_file, …" in output.getvalue().decode("utf-8")
     for stream in streams:
         assert stream.encoding == "utf-8"
     streams[2].write("模型测试")

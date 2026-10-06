@@ -19,7 +19,9 @@ from circle.approvals import (
     ApprovalPolicy,
     ApprovalStore,
     classify_command,
+    command_prefix,
     default_policy,
+    without_workspace_cd,
 )
 from circle.harness import create_harness, sandbox_backend
 from circle.ink.parse_keypress import KeyPress
@@ -324,3 +326,180 @@ def test_bridge_resume_passes_structured_values_through(monkeypatch):
     value = {"decisions": [{"type": "approve"}, {"type": "reject", "message": "no"}]}
     bridge.resume(value)
     assert captured[0].resume == value
+
+
+@pytest.mark.parametrize("command", [
+    "ls -la", "git status", "git diff HEAD~1 -- src", "git log --oneline -3", "git branch",
+    "rg -n 'log.*Error' src | head -20", "cat a.py | wc -l", "cd src && ls", "tree -L 2",
+    "grep -r 'a>b' .", "find . -name '*.py'", "tail -n5 log.txt && git show HEAD",
+])
+def test_commands_that_only_read_are_grouped(command):
+    review = classify_command(command)
+    assert review.verdict == "ASK" and review.pattern == "read-only"
+
+
+@pytest.mark.parametrize("command", [
+    "echo hi > out.txt", "ls >> f", "cat a | sh", "ls &", "ls $(pwd)", "cat `which x`",
+    "find . -exec cat {} \\;", "find . -fprint list", "rg --pre ./x foo", "git -c core.pager=x log",
+    "git diff --output=x", "git grep -O foo", "git branch new", "git push", "sort -o a b",
+    "tree -o out", "file -C -m x", "date -s 12:00", "./ls", "/tmp/cat x", "python3 -m pytest",
+    "sed -n 1p a", "awk 1 a", "uniq a b", "tee x", "cat <(ls)",
+    'GIT_EXTERNAL_DIFF="sh -c id" git diff', "env LD_PRELOAD=/tmp/x.so ls", "PAGER=evil git log",
+    "RIPGREP_CONFIG_PATH=/tmp/c rg foo", "GIT_CONFIG_PARAMETERS='core.fsmonitor=x' git status",
+    "ls | env FOO=1 cat",
+])
+def test_commands_that_may_write_or_run_something_are_not(command):
+    assert classify_command(command).pattern != "read-only"
+
+
+def test_allowing_read_only_commands_once_covers_the_others(tmp_path):
+    policy = ApprovalPolicy(ApprovalStore(tmp_path))
+    ls = {"command": "ls -la"}
+    review = policy.review("execute", ls)
+    assert review.allow_always and review.scope.startswith("read-only commands")
+    assert policy.remember("t", "execute", ls, "always")
+    assert not policy.needs_approval("execute", {"command": "git status"}, "t")
+    assert not policy.needs_approval("execute", {"command": "rg -n x | head"}, "t")
+    assert policy.needs_approval("execute", {"command": "python3 -m pytest"}, "t")
+    assert policy.needs_approval("execute", {"command": "ls > files.txt"}, "t")
+    assert policy.needs_approval("execute", {"command": "rm -rf build"}, "t")
+    assert policy.needs_approval("execute", {"command": "git status"}, "another-thread")
+
+
+# ── a cd into the workspace, and rules for commands that start the same way ───
+
+
+@pytest.mark.parametrize("command, prefix", [
+    ("python3 -m pytest -q", ("python3", "-m", "pytest")),
+    ("python3 todo.py add milk", ("python3", "todo.py")),
+    (".venv/bin/python -m pytest", (".venv/bin/python", "-m", "pytest")),
+    ("npm run build -- --prod", ("npm", "run", "build")),
+    ("uv run pytest -q", ("uv", "run", "pytest")),
+    ("git add todo.py", ("git", "add")),
+    ("pytest tests/x.py", ("pytest",)),
+    ("bash run.sh fast", ("bash", "run.sh")),
+    ("python3 -c 'print(1)'", ()),            # the code is the command
+    ("bash -c 'make'", ()),
+    ("git -c core.pager=x log", ()),          # the rule would cover every git command
+    ("make", ()),
+    ("curl https://example.com", ()),         # a rule would allow nearly anything
+    ("sed -i s/a/b/ f.txt", ()),
+    ("find . -exec python3 x.py {} ;", ()),   # a reader that runs something
+    ("FOO=1 pytest", ()),                     # a variable in front can change what runs
+    ("env FOO=1 pytest", ()),
+    ("pytest | tee out.txt", ()),
+    ("pytest > out.txt", ()),
+    ("pytest && echo done", ()),
+    ("pytest $(cat args)", ()),
+])
+def test_the_words_a_prefix_rule_keeps(command, prefix):
+    assert command_prefix(command) == prefix
+
+
+def test_a_cd_into_the_workspace_in_front_is_left_out(tmp_path):
+    root = tmp_path.resolve()
+    assert without_workspace_cd(f"cd {root} && make test", root) == "make test"
+    assert without_workspace_cd(f'cd "{root}" ; cd . && make test', root) == "make test"
+    assert without_workspace_cd(f"cd {root / 'sub'} && make test", root).startswith("cd ")
+    assert without_workspace_cd("cd $HOME && make test", root).startswith("cd ")
+    assert without_workspace_cd(f"cd {root} &&", root) == f"cd {root} &&"
+    assert without_workspace_cd(f"cd {root} && make test", None).startswith("cd ")
+
+
+def test_an_exact_rule_holds_with_or_without_a_cd_into_the_workspace(tmp_path):
+    _agent, policy, ws = _harness(tmp_path, [AIMessage(content="unused")])
+    thread = "t-cd"
+    first = {"command": f"cd {ws} && make test"}
+    assert policy.needs_approval("execute", first, thread)
+    assert policy.remember(thread, "execute", first, "always")
+    assert not policy.needs_approval("execute", {"command": "make test"}, thread)
+    assert not policy.needs_approval("execute", {"command": f"cd {ws.resolve()}; make test"}, thread)
+    assert policy.needs_approval("execute", {"command": f"cd {tmp_path} && make test"}, thread)
+    assert policy.needs_approval("execute", {"command": "make test -j8"}, thread)
+
+
+def test_a_prefix_rule_covers_commands_that_start_the_same_way(tmp_path):
+    _agent, policy, ws = _harness(tmp_path, [AIMessage(content="unused")])
+    thread = "t-prefix"
+    first = {"command": f"cd {ws} && python3 -m pytest -q"}
+    review = policy.review("execute", first)
+    assert review.prefix_scope == '"python3 -m pytest …"'
+    assert policy.remember(thread, "execute", first, "prefix")
+    for covered in ("python3 -m pytest test_todo.py -q", f"cd {ws} && python3 -m pytest"):
+        assert not policy.needs_approval("execute", {"command": covered}, thread), covered
+    for asked in ("python3 -m pytest -q > out.txt", "python3 -m pytest; echo hi",
+                  "python3 -m pip install x", "python3 other.py", "python3 -m pytesting",
+                  f"cd {tmp_path} && python3 -m pytest"):
+        assert policy.needs_approval("execute", {"command": asked}, thread), asked
+    assert policy.needs_approval("execute", {"command": "python3 -m pytest"}, "another-thread")
+    rule = policy.store.rules(thread)[0]
+    assert rule["label"] == '"python3 -m pytest …"'
+
+
+def test_a_prefix_rule_never_covers_a_forced_ask(tmp_path):
+    policy = default_policy(tmp_path / "home")
+    assert policy.remember("t", "execute", {"command": "git clean -n"}, "prefix")
+    assert not policy.needs_approval("execute", {"command": "git clean -n -d"}, "t")
+    assert policy.needs_approval("execute", {"command": "git clean -fd"}, "t")
+
+
+def test_no_prefix_rule_where_none_is_offered(tmp_path):
+    policy = default_policy(tmp_path / "home")
+    curl = {"command": "curl https://example.com"}
+    assert policy.review("execute", curl).prefix_scope == ""
+    assert policy.remember("t", "execute", curl, "prefix") is False
+    assert policy.store.rules("t") == []
+    assert policy.review("execute", {"command": "rm -rf build"}).prefix_scope == ""
+
+
+def test_a_prefix_rule_lets_the_next_call_run_without_asking(tmp_path):
+    agent, policy, _ws = _harness(tmp_path, [
+        _exec(f"cd {tmp_path / 'ws'} && echo one", "c1"), AIMessage(content="done"),
+        _exec("echo two", "c2"), AIMessage(content="done"),
+    ])
+    thread = CFG["configurable"]["thread_id"]
+    state = _send(agent, _user())
+    args = state.interrupts[0].value["action_requests"][0]["args"]
+    assert policy.remember(thread, "execute", args, "prefix")
+    state = _send(agent, _approve())
+    assert "one" in _tool_msgs(state)[-1].content
+    state = _send(agent, _user("again"))
+    assert not state.interrupts
+    assert "two" in _tool_msgs(state)[-1].content
+
+
+def test_the_card_offers_the_prefix_rule_and_the_session_keeps_it(tmp_path, monkeypatch):
+    app = _session(tmp_path, monkeypatch)
+    monkeypatch.setattr(app._bridge, "resume", lambda _value: None)  # noqa: SLF001
+    requests = [{"name": "execute", "args": {"command": "npm run test -- --watch=false"},
+                 "description": ""}]
+    app._on_interrupt([SimpleNamespace(value={"action_requests": requests})])  # noqa: SLF001
+    card = app._exec_approval  # noqa: SLF001
+    labels = [o.label for o in card.card_spec().options]
+    assert 'Allow "npm run test …" for this session' in labels
+    card.handle_key("3", "3")
+    thread = app._thread_id  # noqa: SLF001
+    assert not app._approvals.needs_approval(  # noqa: SLF001
+        "execute", {"command": "npm run test"}, thread)
+    assert app._approvals.needs_approval(  # noqa: SLF001
+        "execute", {"command": "npm run build"}, thread)
+
+
+def test_an_edit_card_shows_the_change_in_the_diff_colours(tmp_path, monkeypatch):
+    import re
+
+    from circle.ink.theme import palette, sgr_join
+
+    app = _session(tmp_path, monkeypatch)
+    (tmp_path / "ws" / "todo.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    requests = [{"name": "edit_file", "description": "",
+                 "args": {"file_path": "/todo.py", "old_string": "a = 1", "new_string": "a = 3"}}]
+    app._on_interrupt([SimpleNamespace(value={"action_requests": requests})])  # noqa: SLF001
+    card = app._exec_approval  # noqa: SLF001
+    rows = card.render_lines(80)
+    plain = [re.sub(r"\x1b\[[0-9;]*m", "", row).rstrip() for row in rows]
+    assert "   /todo.py" in plain and "   +1 -1" in plain
+    pal, tint = palette(), card._payload["tint"]  # noqa: SLF001
+    assert any("-  1  a = 1" in p and sgr_join(tint, pal.red) in r for p, r in zip(plain, rows))
+    assert any("+  1  a = 3" in p and sgr_join(tint, pal.green) in r for p, r in zip(plain, rows))
+    assert (tmp_path / "ws" / "todo.py").read_text(encoding="utf-8") == "a = 1\nb = 2\n"

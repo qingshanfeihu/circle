@@ -122,7 +122,7 @@ def test_bounded_read_keeps_actual_range_but_hides_body_until_expanded():
              result("r", f"@@ lines 301-345 of 345 @@\n{body}"))
     collapsed = plain(render_turn(s, ViewOptions()))[0]
     assert "Read(…/references/authoring.md:301-345)" in collapsed
-    assert collapsed.splitlines()[1:] == ["   ⎿ @@ lines 301-345 of 345 @@ · ctrl+o"]
+    assert collapsed.splitlines()[1:] == ["   ⎿ Read 45 lines · ctrl+o"]
     assert "301  source" not in collapsed
     narrow = plain(render_turn(s, ViewOptions(width=40)))[0]
     assert "Read(…/authoring.md:301-345)" in narrow.splitlines()[0]
@@ -224,3 +224,21 @@ def test_final_text_is_the_last_main_answer():
              make_assistant_message(uuid="y", content=make_text_block("second")),
              make_assistant_message(uuid="z", content=make_text_block("sub"), parent_tool_use_id="p"))
     assert final_text(s) == "second"
+
+
+def test_your_message_wraps_between_words():
+    from circle.tui.transcript_view import user_rows
+
+    import re
+
+    rows = [re.sub(r"\x1b\[[0-9;]*m", "", r)
+            for r in user_rows("one tool call at a time, then read the other file", 24)]
+    assert rows == [" › one tool call at a", "   time, then read the", "   other file"]
+
+
+def test_a_list_of_paths_shows_one_per_line():
+    from circle.tui.tool_display import result_content
+
+    assert result_content('["/a.py", "/src/"]') == ["/a.py", "/src/"]
+    assert result_content("['/a.py']") == ["/a.py"]
+    assert result_content("[]") == ["(empty)"]

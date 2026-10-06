@@ -6,11 +6,14 @@ import difflib
 import json
 import re
 from ast import literal_eval
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from pathlib import Path
 
 PREVIEW_LINES = 6
 MAX_CHANGE_CHARS = 256 * 1024
 MAX_CHANGE_LINES = 2_000
+# rows of change an approval card shows before "… +N more lines"
+APPROVAL_PREVIEW_LINES = 40
 _HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -25,6 +28,8 @@ def result_content(raw: str) -> list[str]:
             value = literal_eval(raw)
         except (MemoryError, RecursionError, SyntaxError, ValueError):
             return raw.rstrip("\n").splitlines() or ["(no output)"]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value) or ["(empty)"]  # a list of paths or names: one per line
     if not isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, indent=2, default=str).splitlines()
     priority = (
@@ -173,6 +178,60 @@ def change_preview(name: str, inputs: object) -> list[dict[str, str]] | None:
             lines.append(_line(text, tone))
         return _limit_change(lines) or None
     return None
+
+
+def _file_text(resolve: Callable[[str], Path], path: str) -> str | None:
+    """The file as it is now; "" when there is none yet; None when it cannot be shown."""
+    try:
+        target = Path(resolve(path))
+        if not target.exists():
+            return ""
+        if not target.is_file() or target.stat().st_size > MAX_CHANGE_CHARS:
+            return None
+        return target.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError, RuntimeError):
+        return None
+
+
+def approval_preview(name: str, args: object,
+                     resolve: Callable[[str], Path] | None = None) -> list[dict[str, str]]:
+    """What a file tool asks to change, for its approval card: a count of the lines it
+    adds and removes, then the diff. Against the file as it is now when it can be read
+    (real line numbers and context), else the change as the call states it."""
+    if not isinstance(args, Mapping) or name not in {"edit_file", "write_file", "apply_patch"}:
+        return []
+    path = str(args.get("file_path") or args.get("path") or "")
+    before = _file_text(resolve, path) if resolve is not None and path else None
+    after: str | None = None
+    if before is not None and name == "write_file" and isinstance(args.get("content"), str):
+        after = str(args["content"])
+    elif before and name == "edit_file":
+        old, new = args.get("old_string"), args.get("new_string")
+        if isinstance(old, str) and old and isinstance(new, str) and old in before:
+            after = before.replace(old, new, -1 if args.get("replace_all") is True else 1)
+    if after is not None:
+        rows = file_diff_preview(path, before or "", after, created=not before,
+                                 operation=name)[1:]
+        if not before:
+            count = len(after.splitlines())
+            summary = f"new file, {count} {'line' if count == 1 else 'lines'}"
+        else:
+            summary = ""
+    else:
+        rows = change_preview(name, args) or []
+        if name == "write_file":
+            rows = rows[1:]  # "Written content (N lines)": said by the summary instead
+        summary = ""
+    if not rows:
+        return []
+    if not summary:
+        added = sum(row.get("tone") == "added" for row in rows)
+        removed = sum(row.get("tone") == "removed" for row in rows)
+        summary = f"+{added} -{removed}"
+    if len(rows) > APPROVAL_PREVIEW_LINES:
+        hidden = len(rows) - APPROVAL_PREVIEW_LINES
+        rows = [*rows[:APPROVAL_PREVIEW_LINES], _line(f"… +{hidden} more lines")]
+    return [_line(summary), *rows]
 
 
 def display_lines(raw: str, payload: Mapping[str, object], *, is_error: bool) -> list[dict[str, str]]:

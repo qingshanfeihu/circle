@@ -124,23 +124,10 @@ _TLS_HINT = (
 
 
 def _ssl_context() -> ssl.SSLContext:
-    """The system's trust store. A frozen program can be left without one: Python builds point
-    OpenSSL at a certificate file that only exists on the machine that built them. In that case
-    fall back to the bundle that ships with certifi (httpx, which the model clients use, needs it
-    anyway). Windows reads its own certificate store, so nothing is added there."""
-    context = ssl.create_default_context()
-    if sys.platform == "win32":
-        return context
-    paths = ssl.get_default_verify_paths()
-    if any(p and os.path.exists(p) for p in (paths.cafile, paths.capath)):
-        return context
-    try:
-        import certifi
+    """See circle.net.tls_context, which model discovery and the web tools use as well."""
+    from circle.net import tls_context
 
-        context.load_verify_locations(certifi.where())
-    except (ImportError, OSError):
-        pass
-    return context
+    return tls_context()
 
 
 def _open(url: str, *, method: str = "GET", timeout: float = 15.0):

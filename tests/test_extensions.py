@@ -78,7 +78,7 @@ def test_discovery_respects_trust_and_settings(tmp_path):
     assert {e.name: e.source for e in trusted.extensions}["proj_ext"] == "project"
     off = _host(home, ws, settings={"user_ext": {"enabled": False}})
     assert [t.name for t in off.tool_specs()] == []
-    assert any("已关闭" in line for line in off.describe())
+    assert any(line.endswith("· off") for line in off.describe())
 
 
 def test_register_failure_drops_everything_that_extension_registered(tmp_path):
@@ -220,7 +220,7 @@ def test_session_wires_commands_renderers_and_events(tmp_path, monkeypatch):
     snapshot = lambda: "\n".join(app._transcript.snapshot())  # noqa: E731, SLF001
 
     app._on_submit("/extensions")  # noqa: SLF001
-    assert "sample（用户）— 工具 3 · 命令 1" in snapshot()
+    assert "sample (user) · 3 tools · 1 command" in snapshot()
     app._on_submit("/hello world")  # noqa: SLF001
     assert "hello world" in snapshot()
     app._on_submit("/help")  # noqa: SLF001

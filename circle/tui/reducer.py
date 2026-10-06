@@ -34,6 +34,7 @@ from circle.pricing import UsageCostTotals
 from circle.tui.message_model import (
     BLOCK_AGENT_CARD,
     BLOCK_ASK_USER,
+    BLOCK_STEER,
     BLOCK_ERROR,
     BLOCK_TODO_LIST,
     BLOCK_TOOL_USE,
@@ -295,6 +296,12 @@ class MessageReducer:
             self._on_tool_result(event)
         elif kind == "info":
             self._on_info(event)
+        elif kind == "steer":
+            payload = event.get("payload") or {}
+            self._messages.append(make_user_message(
+                uuid=make_uuid(event.get("run_id") or "", event.get("seq") or 0),
+                content=make_payload_block(BLOCK_STEER, {"text": str(payload.get("text") or "")}),
+                timestamp=event.get("ts") or ""))
         elif kind == "todo_list":
             self._on_todo_list(event)
         elif kind == "ask_user_request":

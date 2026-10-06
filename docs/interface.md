@@ -34,14 +34,17 @@ Circle's screen has a few parts, and each kind of information always goes to the
 
 | Part | What it holds |
 |---|---|
-| **Header** | Version, model, folder. On the right, the one general shortcut hint. |
+| **Header** | Version, model (with the thinking depth when it has one, such as `step-3.7-flash • high`), folder, and the git branch in brackets when the folder is in a repository. On the right, the one general shortcut hint. |
 | **Conversation** | Everything that happened: your messages, Circle's answers, thinking, tool calls and their results, notices, and after each turn a line with time and tokens. It scrolls and never loses anything. |
 | **Plan box** | Circle's own plan, when it has one. |
+| **Waiting messages** | Above the input box, while a turn runs: each message you sent that the model has not read yet, `steering: …`, and each that waits for the turn to end, `follow-up: …`. See [Steer a running turn](usage.md#steer-a-running-turn). |
 | **Input box** | The one framed box on the screen. It is where you type, and where questions appear. |
-| **Footer** | One line of numbers: tokens sent and received, estimated cost, cache hit rate, how full the context is. A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. |
+| **Footer** | One line of numbers: tokens sent and received, estimated cost, cache hit rate, how full the context is (yellow from 70%, red from 90%). A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. |
 | **Subagent strip** | Below the footer, only while subagents run. |
 
-A few things appear briefly and are not kept: the confirmations in the footer, and the popup of `/approvals`. Some views take over the whole conversation area, such as a subagent's record.
+A few things appear briefly and are not kept: the confirmations in the footer, the popup of `/approvals`, and the lists of `/models`, `/effort`, `/resume`, `/tree` and `/fork`, which open above the input box and close when you choose or press `esc`. Some views take over the whole conversation area, such as a subagent's record.
+
+Circle also sets the terminal window's title to `circle - <folder>`, or `circle - <session title> - <folder>` once the session has a title (the first line of your first message, or what `/name` set), and gives the old title back when it exits, in terminals that keep a title stack.
 
 ## The frame says whose turn it is
 
@@ -104,7 +107,7 @@ There are no other key hints on the screen. The header's `? for shortcuts` lists
 
 ## Questions in the frame
 
-A tool approval or a question from the model does not open a second box. The input box itself changes: the frame turns yellow and still, the plan box steps out of the way, and the box shows a title with a cyan lamp, what is being asked, and numbered options. The tool row above it, in the conversation, carries the same lamp and tint, so you can see which call is asking. When you answer, the box returns to normal and your draft is put back.
+A tool approval or a question from the model does not open a second box. The input box itself changes: the frame turns yellow and still, the plan box steps out of the way, and the box shows a title with a cyan lamp, what is being asked, and numbered options. For a file change, what is being asked includes the lines it would add and remove. The tool row above it, in the conversation, carries the same lamp and tint, so you can see which call is asking. When you answer, the box returns to normal and your draft is put back.
 
 If your screen is too short for a long command, the card shows the start of it and how many lines are hidden. Reject if you cannot see enough to approve.
 

@@ -58,6 +58,7 @@ def reasoning_effort_of(model: Any) -> str:
 
 
 _EFFORT_ORDER = ("minimal", "low", "medium", "high", "xhigh", "max")
+EFFORT_LEVELS = _EFFORT_ORDER
 # budget 族（目录里有、但不声明 effort 档位的老 Claude）：档位 → thinking.budget_tokens
 _BUDGET_BY_EFFORT = {"minimal": 1024, "low": 2048, "medium": 8192, "high": 16000,
                      "xhigh": 16000, "max": 31999}
@@ -72,7 +73,7 @@ def _clamp_effort(requested: str, levels: list[str]) -> str:
     return (below or known or [requested])[-1 if below else 0]
 
 
-def apply_reasoning(model: Any, effort: str, protocol: str) -> Any:
+def apply_reasoning(model: Any, effort: str, protocol: str, *, requested: bool | None = None) -> Any:
     """Fit the requested thinking depth to what the model family accepts.
 
     Anthropic protocol, judged from the provider's model catalog (``model.profile``):
@@ -86,8 +87,9 @@ def apply_reasoning(model: Any, effort: str, protocol: str) -> Any:
     if not effort or not isinstance(model, BaseChatModel):
         return model
     if protocol != "anthropic":
-        if (os.environ.get("CIRCLE_REASONING_EFFORT") or "").strip() and hasattr(
-                model, "reasoning_effort"):
+        if requested is None:
+            requested = bool((os.environ.get("CIRCLE_REASONING_EFFORT") or "").strip())
+        if requested and hasattr(model, "reasoning_effort"):
             model.reasoning_effort = effort
         return model
     name = str(getattr(model, "model", "") or "").rsplit("/", 1)[-1].lower()
@@ -143,7 +145,11 @@ def build_chat_model(
         )
 
     timeout = _request_timeout_s()
-    effort = (os.environ.get("CIRCLE_REASONING_EFFORT") or "xhigh").strip()
+    # The variable wins; then the saved default; Anthropic models think at xhigh otherwise
+    chosen = (os.environ.get("CIRCLE_REASONING_EFFORT") or settings.default_thinking).strip()
+    if chosen and chosen not in EFFORT_LEVELS:
+        chosen = ""
+    effort = chosen or "xhigh"
     kwargs: dict[str, Any] = {
         "model_provider": "anthropic" if auth.protocol == "anthropic" else "openai",
         "api_key": api_key,
@@ -158,5 +164,5 @@ def build_chat_model(
         kwargs["base_url"] = auth.base_url
 
     model = init_chat_model(model_name, **kwargs)
-    apply_reasoning(model, effort, auth.protocol)
+    apply_reasoning(model, effort, auth.protocol, requested=bool(chosen))
     return guard_model(model)

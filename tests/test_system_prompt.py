@@ -67,3 +67,47 @@ def test_discover_context_prefers_agents_override(tmp_path: Path):
     names = [Path(p).name for p, _ in files]
     assert "AGENTS.override.md" in names
     assert "AGENTS.md" in names
+
+
+def test_one_file_under_two_names_is_read_once(tmp_path):
+    import os
+
+    (tmp_path / "AGENTS.md").write_text("only once", encoding="utf-8")
+    # One file, two names: what AGENTS.md and AGENTS.MD are on a case-insensitive disk
+    os.link(tmp_path / "AGENTS.md", tmp_path / "CLAUDE.md")
+    files = discover_context_files(tmp_path)
+    assert [content for _path, content in files] == ["only once"]
+
+
+def test_project_instructions_are_not_also_memory(tmp_path):
+    import json
+
+    from langchain_core.messages import AIMessage
+
+    from circle.harness import create_harness
+    from circle.testing import ScriptedModel
+
+    (tmp_path / "AGENTS.md").write_text("Prefer TABS-NOT-SPACES.", encoding="utf-8")
+    seen = []
+
+    class Rec(ScriptedModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kw):
+            seen.append(messages)
+            return super()._generate(messages, stop, run_manager, **kw)
+
+    agent = create_harness(Rec(responses=[AIMessage(content="ok")]), root_dir=tmp_path,
+                           home=tmp_path / "home")
+    agent.invoke({"messages": [{"role": "user", "content": "hi"}]},
+                 config={"configurable": {"thread_id": "t"}})
+    system = seen[0][0].content
+    text = system if isinstance(system, str) else json.dumps(system)
+    assert text.count("TABS-NOT-SPACES") == 1
+
+
+def test_the_guidelines_ask_for_real_test_runs_and_no_cd_into_the_workspace(tmp_path):
+    from circle.system_prompt import build_system_prompt
+
+    prompt = build_system_prompt(cwd=tmp_path, context_files=[])
+    assert "run the project's test runner" in prompt
+    assert "do not say tests pass unless the output shows them passing" in prompt
+    assert "do not start them with `cd <working directory> &&`" in prompt

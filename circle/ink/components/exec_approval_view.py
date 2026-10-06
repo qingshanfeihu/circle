@@ -4,11 +4,13 @@ The approval is the composer frame with different content, not a panel stacked a
 it. The session hands ``card_spec()`` to the frame; keys are handled here.
 
 Options, in order: ``Allow once``, ``Allow <scope> for this session`` (only when the
-policy lets the call be remembered) and ``Reject and explain``. Digits pick and confirm;
-``y`` / ``a`` / ``n`` do the same without being shown; ``up`` / ``down`` move; ``enter``
-confirms the focused row; ``esc`` and ``n`` reject at once. ``Reject and explain`` turns
-the frame's last row into an input: ``enter`` sends the text to the model with the
-rejection, an empty ``enter`` is a plain rejection, ``esc`` goes back to the options.
+policy lets the call be remembered), ``Allow "<words> …" for this session`` (every command
+that starts with those words; offered for a simple command) and ``Reject and explain``.
+Digits pick and confirm; ``y`` / ``a`` / ``n`` do the same without being shown; ``up`` /
+``down`` move; ``enter`` confirms the focused row; ``esc`` and ``n`` reject at once.
+``Reject and explain`` turns the frame's last row into an input: ``enter`` sends the text
+to the model with the rejection, an empty ``enter`` is a plain rejection, ``esc`` goes
+back to the options.
 
 While the card is up every printable key is swallowed — a stray ``y`` typed for the
 composer must not answer the question, and nothing typed is lost because the draft was
@@ -28,6 +30,7 @@ _DIGITS = frozenset("123456789")
 
 _APPROVE = "approve"
 _ALWAYS = "always"
+_PREFIX = "prefix"
 _EXPLAIN = "explain"
 
 # keys that are not the card's business and must reach the session (interrupt, scroll…)
@@ -57,6 +60,9 @@ class ExecApprovalSession:
         if self._payload.get("allow_always") is not False:
             scope = str(self._payload.get("scope") or "this call")
             opts.append((_ALWAYS, f"Allow {scope} for this session"))
+        prefix = str(self._payload.get("prefix_scope") or "")
+        if prefix:
+            opts.append((_PREFIX, f"Allow {prefix} for this session"))
         opts.append((_EXPLAIN, "Reject and explain"))
         return opts
 
@@ -72,6 +78,11 @@ class ExecApprovalSession:
         body: list[CardLine] = []
         for i, ln in enumerate(str(p.get("body") or "").splitlines() or [""]):
             body.append(CardLine(ln, "em" if i == 0 else "text"))
+        # a file change: what it adds and removes, coloured like the diff after the edit
+        for row in p.get("preview") or ():
+            tone = str(row.get("tone") or "")
+            body.append(CardLine(str(row.get("text") or ""),
+                                 tone if tone in ("added", "removed") else "faint"))
         if p.get("warn_delete"):
             body.append(CardLine("This deletes or overwrites data.", "warn"))
         policy = str(p.get("policy") or "")
@@ -102,8 +113,8 @@ class ExecApprovalSession:
         kind = self._options[idx][0]
         if kind == _APPROVE:
             self._on_finish({"decision": "approve"})
-        elif kind == _ALWAYS:
-            self._on_finish({"decision": "always"})
+        elif kind in (_ALWAYS, _PREFIX):
+            self._on_finish({"decision": kind})
         else:
             self._focus = idx
             self._input = True

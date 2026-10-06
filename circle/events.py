@@ -38,6 +38,7 @@ EventKind = Literal[
     "error",
     "warn",
     "info",
+    "steer",
 ]
 
 

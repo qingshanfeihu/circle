@@ -121,3 +121,78 @@ def test_streamed_tool_args_replace_empty_object():
     done = bridge._absorb_tool_calls(Rest())
     assert done[0]["args"] == {"command": "pwd"}
     assert format_tool_args(done[0]["args"]) == '{"command":"pwd"}'
+
+
+class _RunningTotalModel:
+    """A streaming model whose usage repeats the running total on every chunk, as some
+    OpenAI-compatible gateways do."""
+
+    @staticmethod
+    def build():
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessageChunk
+        from langchain_core.outputs import ChatGenerationChunk
+
+        from circle.model_guard import guard_model
+
+        class Model(BaseChatModel):
+            streaming: bool = True
+
+            @property
+            def _llm_type(self) -> str:
+                return "running-total"
+
+            def bind_tools(self, tools, **kwargs):
+                return self
+
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+                raise NotImplementedError
+
+            def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+                parts = ["po", "ng", "!", ""]
+                for i, text in enumerate(parts):
+                    out = [0, 1, 5, 26][i]
+                    chunk = ChatGenerationChunk(
+                        message=AIMessageChunk(content=text, id="lc_run-1", usage_metadata={
+                            "input_tokens": 3360, "output_tokens": out,
+                            "total_tokens": 3360 + out,
+                            "input_token_details": {"cache_read": 3200}}),
+                        generation_info={"finish_reason": "stop"} if i == 3 else None)
+                    yield chunk
+
+        return guard_model(Model())
+
+
+def test_footer_counts_a_running_usage_total_once(tmp_path):
+    import time
+
+    from circle.harness import create_harness
+
+    agent = create_harness(_RunningTotalModel.build(), root_dir=tmp_path)
+    updates, done, errors = [], [], []
+    bridge = HarnessBridge(agent=agent, thread_id="running-total", on_update=updates.append,
+                           on_interrupt=lambda _i: None, on_done=done.append,
+                           on_error=errors.append)
+    bridge.start("hi")
+    deadline = time.monotonic() + 20
+    while bridge.is_running and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert done == ["pong!"] and not errors
+    last = [u.usage for u in updates if u.usage][-1]
+    assert (last["input_tokens"], last["output_tokens"], last["cache_hit"]) == (3360, 26, 3200)
+    assert last["context_input_tokens"] == 3360
+    state = agent.get_state({"configurable": {"thread_id": "running-total"}})
+    assert state.values["messages"][-1].usage_metadata["input_tokens"] == 3360
+
+
+def test_a_nearly_full_context_turns_yellow_then_red():
+    from circle.ink.theme import palette
+
+    footer = FooterPane()
+    footer.update(tokens_budget=100_000, context_input_tokens=50_000)
+    assert palette().yellow not in footer._session_summary(colored=True)
+    footer.update(context_input_tokens=75_000)
+    assert f"{palette().yellow}ctx 75.0k/100.0k (75%)" in footer._session_summary(colored=True)
+    footer.update(context_input_tokens=95_000)
+    assert f"{palette().red}ctx 95.0k/100.0k (95%)" in footer._session_summary(colored=True)
+    assert palette().red not in footer._session_summary(), "plain where the line is cut to fit"

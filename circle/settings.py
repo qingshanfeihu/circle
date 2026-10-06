@@ -46,8 +46,17 @@ class CircleSettings:
     extensions: dict[str, dict[str, Any]] = field(default_factory=dict)
     # shell 命令点名这些文件（basename 通配）即拒绝执行；为空时用 circle.approvals 的默认表
     credential_files: list[str] = field(default_factory=list)
-    # 启动时每天问一次 GitHub 有没有新 Release，有就在转录里提示一行（circle/update.py）
+    # Once a day at start, ask GitHub for a newer release and say so in one line
+    # (circle/update.py)
     update_check: bool = True
+    # The thinking depth a session starts with ("" = Circle's default for the protocol)
+    default_thinking: str = ""
+    # Models ctrl+p cycles through: ids or patterns ("*" "?" globs); empty = all listed
+    enabled_models: list[str] = field(default_factory=list)
+    # What esc twice on an empty box opens: "tree", "fork" or "none"
+    double_escape: str = "tree"
+    # Start sessions with the model's thinking rows hidden (/thinking shows them)
+    hide_thinking: bool = False
 
     def is_ready(self) -> bool:
         if not self.initialized:
@@ -74,7 +83,11 @@ def load_settings(home: Path | None = None) -> CircleSettings:
     path = settings_path(home)
     if not path.is_file():
         return CircleSettings()
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    return load_settings_from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def load_settings_from_dict(raw: dict[str, Any]) -> CircleSettings:
+    """Settings from their JSON form, with defaults for what is missing or malformed."""
     auth_raw = raw.get("auth") or {}
     auth = ModelAuth(
         mode=str(auth_raw.get("mode") or "api_key"),
@@ -96,6 +109,9 @@ def load_settings(home: Path | None = None) -> CircleSettings:
     cred_raw = raw.get("credential_files") or []
     credential_files = [str(p) for p in cred_raw if str(p).strip()] if isinstance(
         cred_raw, list) else []
+    enabled_raw = raw.get("enabled_models") or []
+    enabled_models = [str(p) for p in enabled_raw if str(p).strip()] if isinstance(
+        enabled_raw, list) else []
     return CircleSettings(
         version=int(raw.get("version") or SETTINGS_VERSION),
         initialized=bool(raw.get("initialized")),
@@ -106,13 +122,108 @@ def load_settings(home: Path | None = None) -> CircleSettings:
         extensions=extensions,
         credential_files=credential_files,
         update_check=bool(raw.get("update_check", True)),
+        default_thinking=str(raw.get("default_thinking") or "").strip().lower(),
+        enabled_models=enabled_models,
+        double_escape=_double_escape(raw.get("double_escape")),
+        hide_thinking=bool(raw.get("hide_thinking")),
     )
+
+
+DOUBLE_ESCAPE_ACTIONS = ("tree", "fork", "none")
+
+
+def _double_escape(value: Any) -> str:
+    name = str(value or "").strip().lower()
+    return name if name in DOUBLE_ESCAPE_ACTIONS else "tree"
+
+
+# What a project's .circle/settings.json may set for that folder. The endpoint, the key,
+# MCP servers, extensions and trusted folders stay yours: a repository cannot change them.
+PROJECT_KEYS = ("model", "default_thinking", "enabled_models", "double_escape",
+                "hide_thinking", "theme", "credential_files")
+
+
+def project_settings_path(workspace: str | Path) -> Path:
+    return Path(workspace) / ".circle" / "settings.json"
+
+
+def apply_project_settings(settings: CircleSettings, workspace: str | Path
+                           ) -> tuple[dict[str, tuple[Any, Any]], list[str]]:
+    """Put a project's own settings over yours, in memory. Returns, for each key set,
+    ``(your value, the project's)`` so a save can write yours back, and the problems found
+    (unknown or refused keys). ``credential_files`` is added to yours, never narrowed."""
+    path = project_settings_path(workspace)
+    if not path.is_file():
+        return {}, []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {}, [f"{path} could not be read: {exc}"]
+    if not isinstance(raw, dict):
+        return {}, [f"{path} should be a JSON object"]
+    problems = [f"{path}: {key!r} is not a project setting (allowed: {', '.join(PROJECT_KEYS)})"
+                for key in raw if key not in PROJECT_KEYS]
+    project = load_settings_from_dict({**asdict(settings), **{
+        key: value for key, value in raw.items() if key in PROJECT_KEYS and key != "model"}})
+    changed: dict[str, tuple[Any, Any]] = {}
+    model = raw.get("model")
+    if isinstance(model, str) and model.strip() and model.strip() != settings.auth.model:
+        changed["model"] = (settings.auth.model, model.strip())
+        settings.auth.model = model.strip()
+    for key in PROJECT_KEYS:
+        if key == "model" or key not in raw:
+            continue
+        mine, theirs = getattr(settings, key), getattr(project, key)
+        if key == "credential_files":
+            theirs = list(dict.fromkeys([*mine, *theirs]))
+        if theirs != mine:
+            changed[key] = (deepcopy(mine), deepcopy(theirs))
+            setattr(settings, key, theirs)
+    return changed, problems
+
+
+def without_project_settings(settings: CircleSettings,
+                             changed: dict[str, tuple[Any, Any]]) -> CircleSettings:
+    """``settings`` as they belong in your settings.json: each key a project set, and that
+    still has the project's value, back to yours. A key changed since stays changed."""
+    if not changed:
+        return settings
+    out = deepcopy(settings)
+    for key, (mine, theirs) in changed.items():
+        if key == "model":
+            if out.auth.model == theirs:
+                out.auth.model = mine
+        elif getattr(out, key) == theirs:
+            setattr(out, key, deepcopy(mine))
+    return out
+
+
+def with_connection(auth: ModelAuth, home: Path | None = None) -> CircleSettings:
+    """Your settings with a new model connection. Setup, ``circle --init`` included, replaces
+    the endpoint and the model and keeps everything else; the models ctrl+p goes through
+    were the old endpoint's, so they are cleared when the endpoint changes."""
+    try:
+        out = load_settings(home)
+    except (OSError, ValueError):
+        out = CircleSettings()  # a file that cannot be read is what setup is there to fix
+    if out.auth.base_url.rstrip("/") != auth.base_url.rstrip("/"):
+        out.enabled_models = []
+    out.initialized = True
+    out.auth = auth
+    return out
 
 
 def save_settings(settings: CircleSettings, home: Path | None = None) -> Path:
     root = ensure_home(home)
     path = settings_path(root)
     payload = asdict(settings)
+    # Keys Circle does not know (your own, or a newer version's) stay in the file
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        previous = {}
+    if isinstance(previous, dict):
+        payload.update({key: value for key, value in previous.items() if key not in payload})
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     try:
         os.chmod(path, 0o600)

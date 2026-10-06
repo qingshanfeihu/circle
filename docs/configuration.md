@@ -12,13 +12,17 @@ The data folder is `~/.circle`. Set `CIRCLE_HOME` to use another location, and r
 | `credentials.json` | Your API key. Readable only by you. |
 | `history` | Your prompt history, last 1,000 messages. |
 | `checkpoints.sqlite` | The model's history for each session. |
+| `sessions.sqlite` | Each folder's sessions, with their titles, for `/resume` and `circle -c`. |
 | `approvals/` | "Allow for this session" rules, one file per session. |
+| `projects/<folder>-<id>/` | Per project: the messages a summary replaced (`conversation_history/`) and tool output too long for the conversation (`large_tool_results/`). |
 | `logs/circle.log` | Log file, 5 MB and three older copies. Full-screen mode only. |
 | `exports/`, `shares/` | Output of `/export`, `/copy` (fallback) and `/share`. |
 | `skills/` | Your [skills](skills.md). |
 | `commands/` | Your [custom commands](custom-commands.md). |
 | `extensions/` | Your [extensions](extensions.md). |
 | `AGENTS.md` and friends | Your personal [instruction files](#instruction-files). |
+| `SYSTEM.md`, `APPEND_SYSTEM.md` | Replace or extend Circle's [system prompt](#system-prompt). |
+| `keybindings.json` | Your own keys for Circle's actions. See [Keyboard and mouse](keybindings.md#your-own-keys). |
 
 Circle creates most of these when it first needs them.
 
@@ -39,7 +43,22 @@ Later files in that order take priority. If your workspace is itself the git roo
 
 To have Circle write a starting `AGENTS.md` for a project, run `/init`. It reads the repository and drafts one. Add a focus after it, for example `/init testing conventions`.
 
-Circle can also edit these files itself when it learns something worth keeping. On macOS the same `AGENTS.md` can end up in the prompt more than once; see [Known issues](known-issues.md).
+Circle can also edit these files itself when it learns something worth keeping. Each file goes into the prompt once: a file reached under two names (as `AGENTS.md` and `agents.md` are on macOS) is read once, and a project instruction file is not added again as memory.
+
+`circle --no-context-files` (`-nc`) leaves out every `AGENTS.md`, `AGENTS.override.md` and `CLAUDE.md` for one run. `MEMORY.md` is still read.
+
+## System prompt
+
+Circle's system prompt starts with its own instructions and tool list, then the instruction files, the environment (folder, platform, date) and anything appended. Two files change it, the way pi's do:
+
+| File | What it does |
+|---|---|
+| `SYSTEM.md` | Replaces Circle's own instructions and tool list. The instruction files and the environment still follow. |
+| `APPEND_SYSTEM.md` | Is added at the end of the prompt. |
+
+Each is looked for in the project's `.circle/` folder first, then in the data folder; the first one found is used, and the two are not combined. On the command line, `--system-prompt` wins over `SYSTEM.md` and `--append-system-prompt` over `APPEND_SYSTEM.md`, for that run. See [CLI](cli.md#arguments-and-options).
+
+Replacing the instructions also removes what they say about approvals, plans and tools, so the model may use its tools less well. Start from a copy of what you replace.
 
 ## Project folders
 
@@ -51,8 +70,10 @@ Inside a project, Circle looks in these folders. Everything except extensions is
 | `.circle/commands` | Custom commands |
 | `.circle/extensions/<name>/extension.py` | Extensions. Loaded only in a trusted project. |
 | `.circle/AGENTS.md`, `.agent/AGENTS.md` | Instructions |
+| `.circle/SYSTEM.md`, `.circle/APPEND_SYSTEM.md` | The [system prompt](#system-prompt) for this project |
+| `.circle/settings.json` | [Settings for this project](settings.md#project-settings) |
 
-When you trust a folder, Circle creates `.agent/` with a `README.md` and a `settings.json`. Nothing reads those two files yet.
+Trusting a folder writes nothing into it. The trusted folders are listed in `settings.json` in the data folder.
 
 ## Other tools' folders
 

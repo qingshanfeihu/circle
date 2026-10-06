@@ -12,14 +12,18 @@ import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
+from langchain_core.messages import HumanMessage
+from langchain_core.messages.ai import add_usage
 from langgraph.types import Command
 
 from circle.events import EventBus, bind_bus, unbind_bus
 from circle.middleware.cancellation import CancellationToken
 from circle.middleware.loop_guard import is_loop_reminder
 from circle.middleware.plan_tail import is_plan_reminder
+from circle.middleware.steering import SteeringInbox
 from circle.tool_events import announce_blocked_tool_call
 from circle.tui.content_blocks import (
     message_text,
@@ -72,6 +76,13 @@ def format_tool_args(args: Any) -> str:
     return " ".join(text.split())[:80]
 
 
+def _internal_call(metadata: Any) -> bool:
+    """A model call middleware makes for itself (a summary, a compaction): its text is not
+    part of the answer, and its usage is not this conversation's context."""
+    return isinstance(metadata, dict) and (bool(metadata.get("lc_internal_call"))
+                                           or metadata.get("lc_source") == "summarization")
+
+
 def _json_object(raw: str) -> dict | None:
     raw = (raw or "").strip()
     if not raw:
@@ -122,6 +133,11 @@ class HarnessBridge:
         self._pending_interrupt_count = 0
         # 中断回调在本回合的工作线程里就给出的 resume（/yolo 自动放行）：本回合退出时再起
         self._deferred_resume: Any = None
+        # Messages typed during a turn, read by the model before its next call
+        self.inbox = SteeringInbox()
+        # /tree went back: the next turn continues from this checkpoint, making a branch
+        self.branch_from: str | None = None
+        self._start_from: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -147,7 +163,11 @@ class HarnessBridge:
             except Exception:
                 logger.exception("snapshot render failed")
 
-    def start(self, user_text: str) -> None:
+    def start(self, user_text: str, *, shown: str = "",
+              pastes: dict[int, str] | None = None) -> None:
+        """Send a user message. ``shown`` is the short form the user saw (pastes folded,
+        ``@files`` not attached) and ``pastes`` what the placeholders stand for; both are
+        kept on the message so a reopened or forked session can show and edit it again."""
         if self.is_running:
             return
         self._cancelled = False
@@ -157,8 +177,15 @@ class HarnessBridge:
             policy.begin_visible_turn(self._thread_id)
         self._clear_pending_interrupts()
         self._sink.reset()
-        payload: Any = {"messages": [{"role": "user", "content": user_text}]}
-        self._spawn(payload)
+        self._start_from, self.branch_from = getattr(self, "branch_from", None), None
+        extra: dict[str, Any] = {}
+        if shown and shown != user_text:
+            extra["circle_shown"] = shown
+        if pastes:
+            extra["circle_pastes"] = {str(k): v for k, v in pastes.items()}
+        message: Any = (HumanMessage(content=user_text, additional_kwargs=extra) if extra
+                        else {"role": "user", "content": user_text})
+        self._spawn({"messages": [message]})
 
     def resume(self, decision: Any) -> None:
         """``{"decision": …}`` 扇出到本次中断的全部挂起调用；其他值原样作为 resume 值。"""
@@ -343,6 +370,15 @@ class HarnessBridge:
     def _note_usage(self, msg: Any) -> dict | None:
         raw = getattr(msg, "usage_metadata", None)
         meta = getattr(msg, "response_metadata", None)
+        mid = str(getattr(msg, "id", "") or "") or f"anon-{id(msg)}"
+        source = msg
+        if isinstance(raw, dict) and raw and "Chunk" in type(msg).__name__:
+            # Each streamed chunk carries its own share of the usage (the model guard
+            # makes it so whatever the endpoint sends), so the message so far is the sum.
+            streamed = self.__dict__.setdefault("_streamed_usage", {})
+            raw = add_usage(streamed[mid], raw) if mid in streamed else dict(raw)
+            streamed[mid] = raw
+            source = SimpleNamespace(usage_metadata=raw, response_metadata=meta)
         if not isinstance(raw, dict) or not raw:
             if isinstance(meta, dict) and isinstance(meta.get("usage"), dict):
                 raw = meta["usage"]
@@ -370,11 +406,10 @@ class HarnessBridge:
             int(out_details.get("reasoning") or 0),
             effort,
         )
-        mid = str(getattr(msg, "id", "") or "") or f"anon-{id(msg)}"
         if self._usage_by_id.get(mid) == current:
             return None
         self._usage_by_id[mid] = current
-        normalized = extract_message_usage(msg)
+        normalized = extract_message_usage(source)
         totals = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -404,7 +439,11 @@ class HarnessBridge:
         resolver = getattr(backend, "_resolve_path", None)
         configurable = {**self._config.get("configurable", {}),
                         "circle_cancel_token": self._cancel_token,
-                        "circle_visible_turn": True}
+                        "circle_visible_turn": True,
+                        "circle_inbox": getattr(self, "inbox", None)}
+        start_from, self._start_from = getattr(self, "_start_from", None), None
+        if start_from and not isinstance(payload, Command):
+            configurable["checkpoint_id"] = start_from  # a new branch from there
         config = {**self._config, "configurable": configurable,
                   "callbacks": [CancellationHandler(self._cancel_token), ProgressHandler(
                       bus, path_resolver=resolver if callable(resolver) else None)]}
@@ -452,6 +491,8 @@ class HarnessBridge:
                         self._on_status("cancelled")
                         return
                     msg = item[0] if isinstance(item, tuple) else item
+                    if isinstance(item, tuple) and len(item) > 1 and _internal_call(item[1]):
+                        continue
                     if is_plan_reminder(msg) or is_loop_reminder(msg):
                         continue
                     name = getattr(msg, "__class__", type("x", (), {})).__name__
@@ -542,14 +583,14 @@ class HarnessBridge:
                 self._on_status("cancelled" if self._cancelled else "approval")
                 return
             bus.emit("run_end")
+            # The answer is the model's last message. The streamed text is not used: it is
+            # every round of the turn run together, without the spaces at chunk edges.
             values = getattr(state, "values", None) or {}
             messages = values.get("messages") if isinstance(values, dict) else None
-            if messages:
-                final_text = (
-                    message_text(getattr(messages[-1], "content", None))
-                    or final_text
-                )
-            self._on_done(final_text or NO_OUTPUT)
+            answer = ""
+            if messages and getattr(messages[-1], "type", "") == "ai":
+                answer = message_text(getattr(messages[-1], "content", None))
+            self._on_done(answer or NO_OUTPUT)
             self._on_status("ready")
         except Exception as exc:  # noqa: BLE001
             if self._cancelled:

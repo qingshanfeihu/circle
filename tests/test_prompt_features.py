@@ -207,3 +207,14 @@ def test_create_harness_plan_mode_appends_prompt(tmp_path: Path):
     )
     assert agent is not None
     assert hasattr(agent, "invoke")
+
+
+def test_grep_description_matches_the_tool():
+    """The grep tool matches literal text and filters with ``glob``; its description
+    must not promise regular expressions or an ``include`` parameter."""
+    from circle.system_prompt import load_tool_prompt
+
+    text = load_tool_prompt("grep")
+    assert "literal string, not a regular expression" in text
+    assert "full regex" not in text and "include parameter" not in text
+    assert "glob parameter" in text

@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# Circle 一键安装：从 GitHub Releases 拉取 PyInstaller onedir 资产。
+# Circle installer: fetches the PyInstaller onedir build from GitHub Releases.
 #
 #   curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
 #
-# 下载当前平台的二进制 → 校验 sha256 → 解到 ~/.local/share/circle/versions/<版本>，
-# current 指向它，~/.local/bin/circle 指向 current。目录布局与 `circle update` 共用。
-# 不依赖本机 Python。开发可设 CIRCLE_FROM_SOURCE=1 走源码 editable 安装。
+# Downloads the build for this machine, checks its sha256, unpacks it to
+# ~/.local/share/circle/versions/<version>, points `current` at it and ~/.local/bin/circle at
+# `current`. `circle update` uses the same layout. No Python is needed on the machine; for
+# development, CIRCLE_FROM_SOURCE=1 does an editable install from this checkout instead.
 #
-# Windows 的 shell（Git Bash、MobaXterm、Cygwin、MSYS）里运行时，转交 PowerShell 执行
-# install.ps1，装原生 Windows 版。
+# In a Windows shell (Git Bash, MobaXterm, Cygwin, MSYS) it hands over to PowerShell, which runs
+# install.ps1 and installs the native Windows build.
 #
-# 环境变量:
-#   CIRCLE_REPO       默认 qingshanfeihu/circle
-#   CIRCLE_VERSION    钉死版本（1.0.0 或 v1.0.0）；未设取最新 Release
-#   CIRCLE_BIN_DIR    默认 ~/.local/bin
-#   CIRCLE_PREFIX     安装根，默认 ~/.local/share/circle
-#   CIRCLE_HOME       运行时数据根，默认 ~/.circle（安装器只创建空目录）
-#   CIRCLE_FROM_SOURCE 设为 1 时对本仓库做 pip install -e（开发用）
-#   CURL_CA_BUNDLE    curl 用的 CA 证书文件（PEM）；网络劫持 HTTPS 时指向含代理根证书的文件
+# Environment variables:
+#   CIRCLE_REPO        default qingshanfeihu/circle
+#   CIRCLE_VERSION     pin a version (1.0.0 or v1.0.0); default is the newest release
+#   CIRCLE_BIN_DIR     default ~/.local/bin
+#   CIRCLE_PREFIX      install root, default ~/.local/share/circle
+#   CIRCLE_HOME        Circle's data folder, default ~/.circle (the installer only creates it)
+#   CIRCLE_FROM_SOURCE set to 1 for `pip install -e` of this checkout (development)
+#   CURL_CA_BUNDLE     a CA bundle (PEM) for curl; point it at your proxy's root certificate
+#                      when your network inspects HTTPS
 
 set -euo pipefail
 
@@ -28,43 +30,43 @@ HOME_DIR="${CIRCLE_HOME:-$HOME/.circle}"
 TMP_DIR=""
 
 log()  { printf '[circle-install] %s\n' "$*" >&2; }
-warn() { printf '[circle-install] 警告: %s\n' "$*" >&2; }
-die()  { printf '[circle-install] 错误: %s\n' "$*" >&2; exit 1; }
+warn() { printf '[circle-install] warning: %s\n' "$*" >&2; }
+die()  { printf '[circle-install] error: %s\n' "$*" >&2; exit 1; }
 
 need_cmd() {
-    command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"
+    command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
 }
 
-# 按 curl 的退出码说明原因和办法；调用方已经拿到了失败状态。
+# Say why curl failed and what to do; the caller already has the failure status.
 explain_curl_failure() {
     local rc="$1" url="$2"
     case "$rc" in
         35|51|58|60|77|82|83)
-            warn "TLS 证书校验失败（curl 退出码 $rc）：$url"
-            warn "多半是公司代理/网关替换了 HTTPS 证书，而系统证书库里没有它的根证书。"
-            warn "把根证书导出为 PEM 文件后重试：CURL_CA_BUNDLE=/path/to/ca.pem <重新执行安装命令>"
-            warn "不建议用 curl -k 跳过校验：下载的是要执行的程序。"
+            warn "the TLS certificate could not be verified (curl exit code $rc): $url"
+            warn "usually a company proxy or gateway replaces HTTPS certificates and the system does not have its root certificate."
+            warn "export that root certificate to a PEM file and run the install again with CURL_CA_BUNDLE=/path/to/ca.pem"
+            warn "do not skip the check with curl -k: what is downloaded is a program you will run."
             ;;
         22)
-            warn "服务器返回了错误（HTTP 4xx/5xx）：$url"
-            warn "该版本可能没有适合本机的文件，看 https://github.com/${CIRCLE_REPO}/releases"
+            warn "the server returned an error (HTTP 4xx/5xx): $url"
+            warn "the release may have no file for this system. See https://github.com/${CIRCLE_REPO}/releases"
             ;;
         6|7|28|56)
-            warn "连不上 $url（curl 退出码 $rc）。需要代理时设 HTTPS_PROXY。"
+            warn "cannot reach $url (curl exit code $rc). Behind a proxy, set HTTPS_PROXY."
             ;;
         *)
-            warn "下载失败（curl 退出码 $rc）：$url"
+            warn "download failed (curl exit code $rc): $url"
             ;;
     esac
 }
 
-# fetch URL DEST —— 失败时给出原因，然后退出
+# fetch URL DEST: on failure, say why and exit
 fetch() {
     local url="$1" dest="$2" rc=0
     curl -fsSL "$url" -o "$dest" || rc=$?
     if [[ $rc -ne 0 ]]; then
         explain_curl_failure "$rc" "$url"
-        die "下载失败"
+        die "download failed"
     fi
 }
 
@@ -73,7 +75,7 @@ detect_os() {
         Darwin) printf 'darwin' ;;
         Linux)  printf 'linux' ;;
         MINGW*|MSYS*|CYGWIN*) printf 'windows' ;;
-        *) die "暂不支持的 OS: $(uname -s)" ;;
+        *) die "unsupported system: $(uname -s)" ;;
     esac
 }
 
@@ -84,18 +86,19 @@ detect_asset() {
     case "$arch" in
         x86_64|amd64) arch_tag="x86_64" ;;
         arm64|aarch64) arch_tag="arm64" ;;
-        *) die "暂不支持的 arch: $arch" ;;
+        *) die "unsupported processor architecture: $arch" ;;
     esac
     # asset: circle-linux-x86_64.tar.gz
     printf 'circle-%s-%s.tar.gz' "$os_tag" "$arch_tag"
 }
 
-# 取最新 Release 的版本号：跟随 /releases/latest 的跳转，不走 API（没有匿名限流）。
 validate_version() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.]?[0-9A-Za-z][0-9A-Za-z.+-]*)?$ ]] \
-        || die "无效版本: $1（应为 0.2.0 这样的版本号）"
+        || die "invalid version: $1 (expected a version like 0.2.0)"
 }
 
+# The newest release's version: follow the /releases/latest redirect rather than ask the API,
+# which limits anonymous requests.
 resolve_version() {
     if [[ -n "${CIRCLE_VERSION:-}" ]]; then
         validate_version "${CIRCLE_VERSION#v}"
@@ -108,9 +111,9 @@ resolve_version() {
     final="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$url")" || rc=$?
     if [[ $rc -ne 0 ]]; then
         explain_curl_failure "$rc" "$url"
-        die "无法解析最新 Release（仓库 ${CIRCLE_REPO}）"
+        die "cannot find the newest release of ${CIRCLE_REPO}"
     fi
-    [[ "$final" == */releases/tag/* ]] || die "仓库 ${CIRCLE_REPO} 还没有发布 Release"
+    [[ "$final" == */releases/tag/* ]] || die "${CIRCLE_REPO} has not published a release yet"
     final="${final##*/}"
     printf '%s' "${final#v}"
 }
@@ -121,7 +124,7 @@ sha256_of() {
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 "$1" | awk '{print $1}'
     else
-        die "缺少 sha256sum 或 shasum，无法校验下载"
+        die "neither sha256sum nor shasum is installed, so the download cannot be checked"
     fi
 }
 
@@ -129,30 +132,30 @@ install_from_source() {
     need_cmd python3
     local root
     root="$(cd "$(dirname "$0")" && pwd)"
-    log "开发安装: pip install -e $root"
+    log "development install: pip install -e $root"
     python3 -m pip install -U pip setuptools wheel
     python3 -m pip install -e "$root"
     mkdir -p "$BIN_DIR" "$HOME_DIR"
     if ! command -v circle >/dev/null 2>&1; then
-        warn "circle 不在 PATH；请确认 pip scripts 目录已加入 PATH"
+        warn "circle is not on your PATH; add pip's scripts folder to it"
     fi
-    log "数据根: $HOME_DIR（settings.json 由首次 circle 写入）"
-    log "开始使用: circle"
+    log "data folder: $HOME_DIR (the first run of circle writes settings.json)"
+    log "start with: circle"
 }
 
-# Windows 的 shell 里运行本脚本：装原生 Windows 版，交给 PowerShell。
-# PowerShell 用 Windows 证书库，公司根证书通常已经在里面。
+# Run in a Windows shell: install the native Windows build through PowerShell, which uses the
+# Windows certificate store, where a company root certificate usually already is.
 install_windows() {
     command -v powershell.exe >/dev/null 2>&1 \
-        || die "在 Windows 的 shell 里但找不到 powershell.exe；请直接在 PowerShell 里运行: irm https://raw.githubusercontent.com/${CIRCLE_REPO}/main/install.ps1 | iex"
+        || die "this is a Windows shell but powershell.exe was not found; run this in PowerShell instead: irm https://raw.githubusercontent.com/${CIRCLE_REPO}/main/install.ps1 | iex"
     local ref="main"
     [[ -n "${CIRCLE_VERSION:-}" ]] && ref="v${CIRCLE_VERSION#v}"
-    log "检测到 Windows（$(uname -s)）：交给 PowerShell 安装原生 Windows 版"
+    log "Windows ($(uname -s)): handing over to PowerShell to install the native Windows build"
     exec powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
         "irm 'https://raw.githubusercontent.com/${CIRCLE_REPO}/${ref}/install.ps1' | iex"
 }
 
-# 相对 $1 的可执行文件路径（circle/circle 或 circle）；没有则不输出
+# The program's path relative to $1 (circle/circle or circle); prints nothing when there is none
 program_in() {
     if [[ -x "$1/circle/circle" ]]; then
         printf 'circle/circle'
@@ -161,11 +164,24 @@ program_in() {
     fi
 }
 
+# Start the new program once before switching to it. A build that cannot run here leaves the
+# previous install in place, and the slow first start of a new program (macOS checks each of
+# its libraries once) happens now rather than on the first `circle`.
+first_start() {
+    local program="$1" out rc=0
+    log "starting it once (the first start of a new version takes a few seconds)"
+    out="$("$program" --version 2>&1)" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        printf '%s\n' "$out" | tail -5 >&2
+        return 1
+    fi
+}
+
 install_binary() {
     need_cmd curl
     need_cmd tar
-    local version asset base tmp dest exe expected actual previous name keep
-    asset="$(detect_asset)"          # 先判断系统，再联网
+    local version asset base tmp dest exe expected actual previous name keep fresh=""
+    asset="$(detect_asset)"          # check the machine before going online
     version="$(resolve_version)"
     validate_version "$version"
     base="https://github.com/${CIRCLE_REPO}/releases/download/v${version}"
@@ -175,34 +191,41 @@ install_binary() {
 
     exe="$(program_in "$dest")"
     if [[ -n "$exe" ]]; then
-        # 这个版本已经装好（可能正在运行）：不动它，只重新指向
-        log "版本 ${version} 已在 ${dest}，不重新下载；要重装请先删掉这个目录"
+        # Already installed, and possibly the copy that is running: leave it alone, only re-point
+        log "version ${version} is already in ${dest}; not downloading it again (delete that folder to reinstall)"
     else
         tmp="$(mktemp -d)"
-        TMP_DIR="$tmp"               # EXIT trap 在函数返回后运行，看不到 local
+        TMP_DIR="$tmp"               # the EXIT trap runs after the function returns and cannot see a local
         trap 'rm -rf "$TMP_DIR"' EXIT
 
-        log "下载 ${base}/${asset}"
+        log "downloading ${base}/${asset}"
         fetch "${base}/${asset}.sha256" "$tmp/expected.sha256"
         expected="$(awk '{print $1; exit}' "$tmp/expected.sha256")"
-        [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "${asset}.sha256 的内容不是 sha256"
+        [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "${asset}.sha256 does not hold a sha256"
         fetch "${base}/${asset}" "$tmp/$asset"
         actual="$(sha256_of "$tmp/$asset")"
-        [[ "$actual" == "$expected" ]] || die "sha256 不符（期望 ${expected}，实际 ${actual}），未安装"
-        log "sha256 校验通过"
+        [[ "$actual" == "$expected" ]] || die "sha256 mismatch (expected ${expected}, got ${actual}); nothing was installed"
+        log "sha256 ok"
 
-        rm -rf "$dest"               # 上次没装完的残留
+        rm -rf "$dest"               # what an interrupted install left
         mkdir -p "$dest.partial"
         tar -xzf "$tmp/$asset" -C "$dest.partial"
         mv "$dest.partial" "$dest"
+        fresh=1
         exe="$(program_in "$dest")"
         if [[ -z "$exe" ]]; then
             rm -rf "$dest"
-            die "Release 资产布局异常：未找到可执行文件 circle"
+            die "${asset} does not hold the circle program"
         fi
     fi
 
-    # 旧布局（0.1.0 的安装器）把 current 建成真目录，它就是正在运行的那份；换成链接时只能删掉它。
+    if ! first_start "$dest/$exe"; then
+        [[ -n "$fresh" ]] && rm -rf "$dest"
+        die "circle ${version} does not start on this machine (output above); nothing was changed"
+    fi
+
+    # The old layout (the 0.1.0 installer) made `current` a real folder, the copy that is running;
+    # it can only be deleted to make way for the link.
     previous=""
     if [[ -L "$PREFIX/current" ]]; then
         previous="$(readlink "$PREFIX/current")"
@@ -211,7 +234,8 @@ install_binary() {
     fi
     ln -sfn "versions/${version}" "$PREFIX/current"
     ln -sfn "$PREFIX/current/$exe" "$BIN_DIR/circle"
-    # 留最新的三个版本、刚装的和上一个：几次升级前打开的会话还在用自己的目录。
+    # Keep the three newest versions, the new one and the previous one: a session opened a few
+    # updates ago still runs from its own folder.
     keep="$(ls -1 "$PREFIX/versions" | sort -t. -k1,1n -k2,2n -k3,3n | tail -3)"
     for d in "$PREFIX"/versions/*/; do
         name="${d%/}"; name="${name##*/}"
@@ -221,23 +245,22 @@ install_binary() {
         fi
     done
 
-    log "已安装: ${BIN_DIR}/circle → ${PREFIX}/current/${exe}（版本 ${version}）"
-    log "数据根: ${HOME_DIR}（凭据与 settings 由首次运行写入，安装器不写配置）"
-    log "以后升级: circle update"
+    log "installed circle ${version}: ${BIN_DIR}/circle -> ${PREFIX}/current/${exe}"
+    log "data folder: ${HOME_DIR} (the first run asks for your endpoint; the installer writes no settings)"
+    log "update later with: circle update"
 
     if [[ ":$PATH:" == *":${BIN_DIR}:"* ]]; then
-        log "安装完成。开始使用："
-        log "  circle            # 首跑初始化 → trust 工作区 → 主界面"
-        log "  circle /path/to/project"
+        log "done. Start it in a project folder:"
+        log "  cd /path/to/project && circle"
     else
         local rc="$HOME/.zshrc"
         [[ "${SHELL:-}" == *bash* ]] && rc="$HOME/.bashrc"
         if ! grep -q '# circle path' "$rc" 2>/dev/null; then
             printf '\n# circle path\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$rc"
-            log "已将 ${BIN_DIR} 写入 ${rc}"
+            log "added ${BIN_DIR} to PATH in ${rc}"
         fi
-        log "安装完成。当前终端生效：source ${rc} （或重开终端）"
-        log "然后运行: circle"
+        log "done. Open a new terminal (or run: source ${rc}), then start it in a project folder:"
+        log "  cd /path/to/project && circle"
     fi
 }
 

@@ -4,11 +4,19 @@ This page covers working in a session: sending messages, answering questions, st
 
 ## Send a message
 
-Type in the box at the bottom and press `enter`. The box is a single line that scrolls sideways. To put a line break in a message, press `shift+enter` or `ctrl+j`; it shows as `↵`.
+Type in the box at the bottom and press `enter`. The box grows with your message, up to 30% of the screen, and wraps long lines. To put a line break in a message, press `shift+enter` or `ctrl+j`, or type `\` and then `enter`. For a longer message, press `ctrl+g` (or run `/editor`) to write it in your editor.
 
-Type `/` to see commands. `tab` completes a command name. `?` on an empty prompt shows the shortcuts. Everything else you type goes to the model. A message that starts with `/` but is not a command is also sent to the model as ordinary text.
+A long paste shows as `[Pasted text #1 +39 lines]` so the box stays readable, and the model gets the whole text. Your message in the conversation keeps the short form.
 
-Circle has no `@file` mentions. Name the file in your message and Circle will read it.
+Type `/` and the commands it can become are listed above the input box, each with what it does; typing narrows the list. `↑` `↓` move in it, `tab` takes the marked command, `enter` takes it and runs it, and `esc` closes the list and keeps what you typed. `?` on an empty prompt shows the shortcuts. Everything else you type goes to the model. If what you type looks like a command but is not one, such as `/modles`, it is not sent: the footer says `Unknown command /modles · did you mean /models?` and your text stays in the box. A path such as `/usr/bin/env is missing` is sent as a message, and so is anything that starts with a space.
+
+To point at a file, write `@` and part of its path. The files it can mean are listed above the input box: `@src/st` lists what is in `src/` starting with `st`, and `@stats` finds `stats.py` anywhere in the workspace (skipping `.git`, `node_modules` and virtual environments). `tab` or `enter` takes the marked file; a folder lists what is in it. After `esc` closes the list, `tab` completes as far as the matches agree and lists them in the footer. When you send, each mentioned text file in the workspace of up to 64 KB is attached for the model, so it does not have to read it first. Your message on screen keeps the `@path`.
+
+## Run a command yourself
+
+Start a message with `!` to run a shell command yourself, without a card: `!git diff`, `!pytest -q`. It is drawn like Circle's own Bash calls, `esc` stops it, and its output becomes part of the conversation, so the model sees it with your next message. No turn starts. `!!command` runs it and shows the output to you only.
+
+These commands follow the same refusals as the model's: `sudo` and credential files are refused, and nothing runs in `read-only` mode. Messages you send while one runs are queued.
 
 ## Answer a question
 
@@ -23,11 +31,17 @@ A question from the model can have several questions. `←` and `→` move betwe
 
 What each approval option does is explained in [Security](security.md#approvals).
 
-## Interrupt and queue
+## Interrupt
 
-Press `esc` to stop a turn. Circle marks it `✖ Interrupted` and puts back any message you were typing. A command that is already running keeps running until it finishes or times out.
+Press `esc` to stop a turn. Circle marks it `✖ Interrupted` and puts back any message you were typing. A shell command that is running is ended, with everything it started, within a fraction of a second. `ctrl+c` also stops a turn. When Circle is idle, `ctrl+c` clears what you typed, and on an empty box twice exits. `ctrl+z` suspends Circle; `fg` in the shell brings it back.
 
-You can type while Circle works. Press `enter` and the message is queued; the footer says `Queued steering · 1`. Queued messages are sent as new turns when the current one ends. `ctrl+c` also stops a turn. When Circle is idle, `ctrl+c` twice exits.
+## Steer a running turn
+
+You can type while Circle works. Press `enter` and the turn goes on; the model reads your message after its current step, before it decides what to do next. The footer says `Steering · 1 waiting · read after the current step`, and the message is listed above the input box as `steering: …` until the model reads it. It then appears in the conversation at the point where the model read it.
+
+If the turn ends before the model reads the message, it is sent as the next turn. If you stop the turn with `esc` or `ctrl+c`, waiting messages are sent as the next turns too.
+
+`ctrl+q` instead of `enter` queues a follow-up: the model does not see it during the turn, and it is sent as a new turn when the turn ends. Waiting messages are listed above the input box as `steering: …` or `follow-up: …`. `alt+↑` takes back every message that has not been read yet and puts them in the input box, so you can change them or drop them.
 
 ## Modes
 
@@ -55,8 +69,9 @@ While `task` subagents run, a strip below the footer lists them. Press `↓` in 
 | `ctrl+o` | Expand or collapse tool output. Long output is folded by default: `… +15 lines · ctrl+o`. |
 | `ctrl+t` | Expand or collapse the model's thinking. |
 | `/thinking` | Hide or show thinking rows altogether. |
-| `ctrl+l` | Redraw the screen. |
+| `ctrl+l` | Choose a model. This also redraws the screen. |
 | `pageup`, `pagedown`, `home`, `end` | Scroll the conversation when the prompt is empty. |
+| `ctrl+f` | Find text in the conversation; `enter` goes to the next match. |
 
 ## Get text out
 

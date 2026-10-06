@@ -13,8 +13,9 @@ New here? Start with the [Quickstart](quickstart.md).
 | Connect a model or switch to another | [Choose a model](models.md) |
 | Know what it may do to my machine | [Run Circle safely](security.md) |
 | Find out what the screen is telling me | [The interface](interface.md) |
-| Stop, queue, copy, search | [Use Circle in the terminal](usage.md) |
-| Keep or reopen a conversation | [Sessions and context](sessions.md) |
+| Steer, stop, copy, find | [Use Circle in the terminal](usage.md) |
+| Keep, reopen or branch a conversation | [Sessions and context](sessions.md) |
+| Drive Circle from a script or an editor | [CLI: print mode, JSON events, RPC mode](cli.md) |
 | Teach Circle my project's rules | [Configuration](configuration.md#instruction-files) |
 | Add instructions on demand | [Skills](skills.md) |
 | Save a prompt as a command | [Custom commands](custom-commands.md) |

@@ -139,7 +139,8 @@ def test_emphasis_keeps_intraword_underscores_spaced_stars_urls_and_code() -> No
               "see https://example.com/some_path_here and https://example.com/a*b*c; "
               "x = a * b * c; "
               "`inline_code * literal *`; *italic* and _italic_.")
-    rendered = MarkdownRenderer(width=120).render_streaming(source)
+    # Wide enough for the whole line: this test is about emphasis, not wrapping.
+    rendered = MarkdownRenderer(width=240).render_streaming(source)
     assert _plain(rendered) == ("Updated tool_result_prune.py; set CIRCLE_HOME and "
                                 "ANTHROPIC_API_KEY; see https://example.com/some_path_here "
                                 "and https://example.com/a*b*c; "
@@ -228,3 +229,18 @@ def test_gfm_styles_use_only_theme_colors() -> None:
     codes = set(SGR.findall(rendered))
     assert codes <= {pal.dim, pal.em, pal.green, pal.faint, pal.reset,
                      sgr_join(pal.faint, "\x1b[9m")}
+
+
+def test_prose_wraps_between_words_and_code_keeps_its_lines() -> None:
+    source = ("Fixed operator precedence in stats.py and both tests pass now.\n\n"
+              "- a list item long enough to wrap under its own text\n"
+              "> a quote long enough to wrap under its own bar\n\n"
+              "```\nkeep this long code line exactly as it is written here\n```")
+    assert _plain(MarkdownRenderer(width=24).render_streaming(source)).split("\n") == [
+        "Fixed operator", "precedence in stats.py", "and both tests pass now.", "",
+        "• a list item long", "  enough to wrap under", "  its own text", "",
+        "│ a quote long enough to", "│ wrap under its own bar", "",
+        "┌─", "  keep this long code line exactly as it is written here", "└─"]
+    long_word = _plain(MarkdownRenderer(width=20).render_streaming("x " + "y" * 30)).split("\n")
+    # A word wider than the line starts a new line and is cut there, as wrap-ansi does.
+    assert long_word == ["x", "y" * 20, "y" * 10]

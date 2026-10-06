@@ -41,7 +41,7 @@ Start Circle and run `/extensions`. You should see the extension with its tool a
 
 A project extension replaces a user extension with the same name. Folder names use letters, digits, `_` and `-` (up to 64 characters, starting with a letter or digit); other folders are skipped without a message. The extension's folder is not on `sys.path`, so add it yourself if you import a sibling file.
 
-Extensions are loaded at start, on `/reload` and on `/extensions reload`. Trusting a project with `/trust` does not load its extensions until you reload. Extensions are not loaded in line mode.
+Extensions are loaded at start, on `/reload` and on `/extensions reload`. Trusting a project with `/trust` does not load its extensions until you reload. Extensions are not loaded in print mode or line mode.
 
 To turn one off, set it in `settings.json`:
 
@@ -77,7 +77,7 @@ Any error while an extension loads (a bad name, a duplicate, an exception in `re
 
 - `name` uses lowercase letters, digits, `_` and `-`, up to 32 characters, and must not be a built-in command or alias, a custom command, or another extension's.
 - `handler(args, ctx)` gets the argument text and a context with `ctx.workspace`, `ctx.toast(text)` (a line that stays in the conversation), `ctx.append(text)` (a raw line) and `ctx.send_user_message(text)` (start a turn as if you had typed it).
-- Extension commands do not run while a turn is running, are listed in `/help`, and are not tab-completed. An exception in the handler shows as `✖ /name failed`.
+- Extension commands do not run while a turn is running, are listed in `/help`, and are tab-completed. An exception in the handler shows as `✖ /name failed`.
 
 ### Middleware
 

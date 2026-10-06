@@ -76,7 +76,7 @@ def load_mcp_tools_sync(
 def format_mcp_status(servers: list[dict[str, Any]], tools: list[BaseTool] | None = None) -> str:
     if not servers:
         return (
-            "未配置 MCP。在 ~/.circle/settings.json 添加 mcp_servers:\n"
+            "No MCP servers. Add them to mcp_servers in settings.json in the data folder:\n"
             '  [{ "name": "example", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"] }]'
         )
     lines = [f"MCP servers ({len(servers)}):"]
@@ -85,7 +85,7 @@ def format_mcp_status(servers: list[dict[str, Any]], tools: list[BaseTool] | Non
         cmd = str(item.get("command") or item.get("url") or "")
         lines.append(f"  · {name}  {cmd}")
     if tools is not None:
-        lines.append(f"已加载工具: {len(tools)}")
+        lines.append(f"Tools loaded: {len(tools)}")
         for t in tools[:40]:
             lines.append(f"  · {getattr(t, 'name', t)}")
         if len(tools) > 40:

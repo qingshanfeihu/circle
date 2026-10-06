@@ -43,4 +43,4 @@ The main agent has these seventeen tools. MCP servers and [extensions](extension
 
 ## Display
 
-Tool output in the conversation is shortened to a few lines; `ctrl+o` shows all of it. Very large results (over 80,000 characters) are saved to `large_tool_results/` in the workspace and the model gets the start and end with the path.
+Tool output in the conversation is shortened to a few lines; `ctrl+o` shows all of it. Very large results (over 80,000 characters) are saved in the data folder (`projects/<folder>-<id>/large_tool_results/`), and the model gets the start and end and a path, `/large_tool_results/…`, to read the rest.

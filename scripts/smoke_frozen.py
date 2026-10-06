@@ -66,8 +66,9 @@ def main(argv: list[str]) -> int:
                 base_url="http://127.0.0.1:9", api_key="sk-smoke", model="smoke-model", home=home,
                 probe=lambda *_a, **_k: ProbeResult(protocol=protocol, models=["smoke-model"]))
             accept_trust(settings, workspace, home=home)
+            # Line mode builds the agent before it reads a line, and answers /help on stderr
             session = run(exe, ["--line", str(workspace)], env, stdin="/help\n/exit\n")
-            if session.returncode != 0 or "Available commands" not in session.stdout:
+            if session.returncode != 0 or "Line mode:" not in session.stderr:
                 print(f"smoke: the session did not start (exit {session.returncode})\n"
                       f"{session.stdout[-1500:]}\n{session.stderr[-1500:]}", file=sys.stderr)
                 return 1

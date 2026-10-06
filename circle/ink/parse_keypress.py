@@ -76,6 +76,9 @@ _CSI_KEYS: dict[str, str] = {
     "1~": "home", "2~": "insert", "3~": "delete",
     "4~": "end", "5~": "pageup", "6~": "pagedown",
     "Z": "shift+tab",
+    # function keys, for keybindings.json
+    "11~": "f1", "12~": "f2", "13~": "f3", "14~": "f4", "15~": "f5", "17~": "f6",
+    "18~": "f7", "19~": "f8", "20~": "f9", "21~": "f10", "23~": "f11", "24~": "f12",
 }
 
 
@@ -153,9 +156,33 @@ def _coalesce_alt_enter(events: list[InputEvent]) -> list[InputEvent]:
             out.append(KeyPress(key="shift+enter", shift=True))
             i += 2
             continue
+        # option+delete sends ESC DEL in one write; read as two keys it would be an esc
+        # (which stops a running turn) followed by a backspace
+        if (
+            isinstance(ev, KeyPress)
+            and ev.key == "escape"
+            and isinstance(nxt, KeyPress)
+            and nxt.key == "backspace"
+        ):
+            out.append(KeyPress(key="alt+backspace", alt=True))
+            i += 2
+            continue
+        # A terminal that sends option as a meta prefix sends option+↑ as ESC ESC [ A
+        if (
+            isinstance(ev, KeyPress)
+            and ev.key == "escape"
+            and isinstance(nxt, KeyPress)
+            and nxt.key in _META_ARROWS
+        ):
+            out.append(KeyPress(key=f"alt+{nxt.key}", alt=True))
+            i += 2
+            continue
         out.append(ev)
         i += 1
     return out
+
+
+_META_ARROWS = frozenset({"up", "down", "left", "right"})
 
 
 def coalesce_paste_runs(events: list[InputEvent]) -> list[InputEvent]:
@@ -272,6 +299,11 @@ def _parse_sequence(seq: str) -> InputEvent | None:
         return None
 
     rest = seq[1:]
+
+    # An ESC the tokenizer let go because another ESC came straight after it: the Esc key
+    # pressed twice quickly
+    if not rest:
+        return KeyPress(key="escape")
 
     if rest.startswith("]"):
         return _parse_osc(rest[1:])

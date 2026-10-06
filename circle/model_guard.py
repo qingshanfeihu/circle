@@ -381,6 +381,48 @@ def _finish_reason(chunk: Any) -> str:
     return str(meta.get("finish_reason") or meta.get("stop_reason") or "")
 
 
+class _StreamUsage:
+    """Make the usage of one streamed response add up to what the endpoint reported.
+
+    Endpoints report usage in a stream in different ways: once at the end, split between
+    the first and the last chunk, or, on some OpenAI-compatible gateways, the running
+    total on every chunk. LangChain adds the chunks' usage together, so a running total
+    is counted once per chunk and a 3k-token request shows as 40k, which also sets off
+    automatic compaction. Each chunk is rewritten to carry only what it adds to the
+    largest value seen so far for each field.
+    """
+
+    def __init__(self) -> None:
+        self._seen: dict[str, Any] = {}
+
+    def rewrite(self, chunk: Any) -> Any:
+        msg = _message(chunk)
+        usage = getattr(msg, "usage_metadata", None)
+        if not isinstance(usage, dict):
+            return chunk
+        delta = _usage_increase(self._seen, usage)
+        delta["total_tokens"] = int(delta.get("input_tokens") or 0) + int(
+            delta.get("output_tokens") or 0)
+        msg.usage_metadata = delta
+        return chunk
+
+
+def _usage_increase(seen: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in usage.items():
+        if key == "total_tokens":
+            continue
+        if isinstance(value, dict):
+            out[key] = _usage_increase(seen.setdefault(key, {}), value)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            before = int(seen.get(key) or 0)
+            out[key] = max(0, value - before)
+            seen[key] = max(before, value)
+        else:
+            out[key] = value
+    return out
+
+
 _BUDGET_STOPS = frozenset({"max_tokens", "length"})
 
 
@@ -541,12 +583,14 @@ class _GuardMixin:
             last_progress = time.monotonic()
             stall_s = _stall_seconds()
             monitor = RepetitionMonitor() if _env_flag("CIRCLE_LLM_REPEAT_GUARD") else None
+            usage = _StreamUsage()
             try:
                 upstream = super()._stream(messages, stop=stop,  # type: ignore[misc]
                                            run_manager=run_manager, **kwargs)
                 with contextlib.closing(upstream):
                     for chunk in upstream:
                         yielded = True
+                        usage.rewrite(chunk)
                         reason = _finish_reason(chunk)
                         if reason:
                             saw_finish, finish = True, reason
@@ -614,12 +658,14 @@ class _GuardMixin:
             last_progress = time.monotonic()
             stall_s = _stall_seconds()
             monitor = RepetitionMonitor() if _env_flag("CIRCLE_LLM_REPEAT_GUARD") else None
+            usage = _StreamUsage()
             try:
                 upstream = super()._astream(messages, stop=stop,  # type: ignore[misc]
                                             run_manager=run_manager, **kwargs)
                 async with contextlib.aclosing(upstream):
                     async for chunk in upstream:
                         yielded = True
+                        usage.rewrite(chunk)
                         reason = _finish_reason(chunk)
                         if reason:
                             saw_finish, finish = True, reason

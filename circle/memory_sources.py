@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from circle.system_prompt import file_identity
+
 
 _MEMORY_NAMES = (
     "AGENTS.md",
@@ -28,16 +30,16 @@ def memory_source_paths(
     loads in list order and combines).
     """
     out: list[str] = []
-    seen: set[str] = set()
+    seen: set[tuple[int, int]] = set()
 
     def _add(path: Path) -> None:
         if not path.is_file():
             return
-        key = str(path.resolve())
-        if key in seen:
+        key = file_identity(path)  # one file, even under two spellings of its name
+        if key is None or key in seen:
             return
         seen.add(key)
-        out.append(key)
+        out.append(str(path.resolve()))
 
     if home is not None:
         h = Path(home).expanduser().resolve()

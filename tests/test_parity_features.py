@@ -139,3 +139,39 @@ def test_slash_tree_fork_aliases():
     assert parse_slash("/tree abc").name == "tree"
     assert parse_slash("/fork").name == "fork"
     assert parse_slash("/clone").name == "clone"
+
+
+def test_templates_take_pi_argument_syntax():
+    from circle.commands import substitute_arguments
+
+    args = 'src/app.py "two words" third fourth'
+    assert substitute_arguments("$1|$2|$3|$9|end", args) == "src/app.py|two words|third||end"
+    assert substitute_arguments("$@ / $ARGUMENTS", "a b") == "a b / a b"
+    assert substitute_arguments("${@:2}", args) == "two words third fourth"
+    assert substitute_arguments("${@:2:2}", args) == "two words third"
+    assert substitute_arguments("${@:0}", "a b") == "a b"
+    assert substitute_arguments("${5:-none} ${1:-x}", "a") == "none a"
+    assert substitute_arguments("${@:-everything}", "") == "everything"
+    assert substitute_arguments("${ARGUMENTS:-all}", "") == "all"
+    assert substitute_arguments("$10 and $1", " ".join(f"w{i}" for i in range(1, 11))) == "w10 and w1"
+    # Arguments are not expanded again, and an unclosed quote does not fail.
+    assert substitute_arguments("[$1]", "'$2'") == "[$2]"
+    assert substitute_arguments("[$1][$2]", "it's fine") == "[it's][fine]"
+    assert substitute_arguments('[$1]', 'a"b c"d') == "[ab cd]"
+
+
+def test_prompt_folders_and_fallback_description(tmp_path):
+    home, ws = tmp_path / "home", tmp_path / "ws"
+    (home / "prompts").mkdir(parents=True)
+    (home / "prompts" / "review.md").write_text(
+        "---\nargument-hint: <path> [focus]\n---\nReview $1 with a focus on ${2:-bugs}.\n")
+    (ws / ".pi" / "prompts").mkdir(parents=True)
+    (ws / ".pi" / "prompts" / "summary.md").write_text(
+        "Summarize the changes in this repository for a release note, short and plain please\n")
+    commands = {c.name: c for c in discover_custom_commands(ws, home)}
+    assert commands["review"].argument_hint == "<path> [focus]"
+    assert commands["review"].description == "Review $1 with a focus on ${2:-bugs}."
+    assert commands["summary"].description == (
+        "Summarize the changes in this repository for a release note,...")
+    assert expand_command_template(commands["review"].template, "a.py") == (
+        "Review a.py with a focus on bugs.")

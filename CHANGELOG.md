@@ -4,6 +4,48 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-06
+
+### Added
+
+- **Print, JSON and RPC modes.** `circle -p "prompt"` runs a turn and prints the answer, with piped input put before the prompt. `--mode json` writes every step as one JSON object per line, and `--mode rpc` runs Circle as a child process driven by JSON commands, following pi's RPC mode. Calls that would ask for approval are not run unless you pass `--yolo`. See [Print mode](docs/cli.md#print-mode).
+- **Sessions that reopen.** `circle -c` goes on with the most recent conversation in the folder; `circle -r` and `/resume` pick one from a list, where you can also rename, delete and see every folder's sessions. `--session`, `--session-id`, `--fork`, `--no-session` and `--name` choose or start one. Leaving prints the command that reopens the session, and a reopened session is drawn again from its saved messages. See [Sessions](docs/sessions.md).
+- **Going back and branching.** `/tree`, or `esc` twice on an empty input box, lists every message of the session and all its branches, with labels. Choosing one goes back there, and your next message starts a branch while the old one stays. `/fork` starts a new session from one of your messages and `/clone` copies the session. `/export` writes Markdown, HTML or JSONL; `/import` reads a JSONL export back.
+- **Steering.** A message sent while a turn runs is read by the model after its current step. `ctrl+q` queues a follow-up for after the turn instead, and `alt+↑` takes waiting messages back. Waiting messages are listed above the input box.
+- **Models and thinking depth.** `/models` (`ctrl+l`) lists what the endpoint offers: `enter` uses a model for the session, `ctrl+s` also saves it, and `tab` adds it to the models `ctrl+p` switches between (`enabled_models`). `/effort`, `shift+tab`, `--thinking` and `default_thinking` set the thinking depth.
+- **Command-line options from pi:** messages and `@file`s after the folder, `-m`, `--thinking`, `--models`, `--list-models`, `--export`, `--system-prompt` and `--append-system-prompt` (and the `SYSTEM.md` and `APPEND_SYSTEM.md` files), `--no-context-files`, `--tools`, `--exclude-tools` and `--no-tools`.
+- **Input.** A completion list for `/commands` and `@files` as you type. An input box that grows to several rows. `!command` runs a shell command yourself. `ctrl+f` finds text in the conversation, `ctrl+x` copies the last answer, `ctrl+g` edits the draft in your editor and `ctrl+z` suspends Circle. Your own keys go in `keybindings.json`.
+- **`/settings`** lists the settings and changes the marked one with `enter`. `/session` shows the session's id, folder, model, counts and tokens. A project can set a few things in `.circle/settings.json`. Custom commands accept pi's prompt templates (`$1`, `$@`, `${2:-default}`, `${@:2}` …) and are read from pi's folders too.
+- **Approval for a kind of command.** For a command that is one program with its arguments, the approval card also offers `Allow "python3 -m pytest …" for this session`, which covers every command that starts with those words. See [Security](docs/security.md#approvals).
+- **The approval card shows the diff of a file change**: the lines added and removed, against the file as it is now.
+- The header shows the git branch and the thinking depth, the terminal title names the folder and the session, and the context meter turns yellow and then red as the context fills.
+
+### Changed
+
+- **Setup, the trust screen and the installer are in English**, like the rest of the interface.
+- **`circle --init` keeps your settings.** It replaces only the endpoint, key and model, and `enter` on an empty line keeps the saved URL and then the saved key. Saving settings also keeps keys Circle does not know.
+- **Circle writes nothing into your project.** Trusting a folder no longer creates `.agent/`. The messages a summary replaced, and very long tool results, are kept in the data folder under `projects/` instead of `conversation_history/` and `large_tool_results/` in the workspace.
+- **A `cd` into the workspace in front of a command** (`cd /your/project && make test`) no longer stops a "for this session" rule from matching, and the system prompt asks the model not to add it. The system prompt also asks the model to run the project's test runner and not to say tests pass without its output.
+- **Commands the model runs no longer use Circle's own virtual environment** when you started Circle from a shell where it was active, so `python3` and `pip` are your project's.
+- **`install.sh` starts the new version once before switching to it.** A build that does not start leaves the previous install in place, and the slow first start of a newly downloaded program happens during the install instead of on your first `circle`. `install.ps1` and `circle update` do not do this yet.
+- `/tree` and `/fork` show messages without Markdown marks, and in every list a long row is cut so that the column on the right stays visible.
+
+### Fixed
+
+- **Setup could not list models in the prebuilt program on macOS.** Certificate checks failed, so setup showed `connection failed`, did not find the `/v1` path, and the first message got a 404. Model discovery, web fetch and web search now fall back to the CA certificates bundled with Circle, as `circle update` already did, and a certificate failure is named as one.
+- **The API key was shown in clear text** while you typed it during setup. It is shown as dots.
+- **Endpoints that repeat the running usage total on every streamed chunk** (StepFun and other OpenAI-compatible gateways) were counted once per chunk. The footer showed millions of tokens and a summary started on almost every step. Each answer is now counted once.
+- **A summary made during a turn could appear as the answer**, with its words run together, when the model's own reply was empty. The answer is now only the model's last message, and a summary's text never reaches the screen.
+- `esc` now stops a running shell command at once, with everything it started.
+- `esc` on a setup screen leaves setup, as `ctrl+c` does. A lone `esc` used to be held, waiting for the rest of an escape sequence.
+- A long paste reaches the model as the pasted text, not as its placeholder.
+- `/fork` and `/clone` give the model the earlier messages, `/tree` goes back for the model as well as on screen, and sessions are listed again after a restart.
+- `$10` and beyond work in custom commands, and `/editor` works when `$EDITOR` has arguments.
+- On a case-insensitive file system, `AGENTS.md` is put in the prompt once.
+- The `grep` tool's description says it searches for literal text.
+- `/mcp` and `/extensions` print English.
+- `circle --help` describes Circle, tool output such as `ls` is shown as a list instead of raw JSON, and the token meters are hidden on the setup screens.
+
 ## 0.2.1 - 2026-10-01
 
 ### Fixed

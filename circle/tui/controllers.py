@@ -13,9 +13,11 @@ from circle.probe import ProbeResult, normalize_base_url, resolve_endpoint
 from circle.settings import (
     CircleSettings,
     ModelAuth,
-    is_folder_trusted,
+    load_credentials,
+    load_settings,
     save_credentials,
     save_settings,
+    with_connection,
 )
 from circle.trust import accept_trust
 
@@ -49,14 +51,25 @@ class InitController:
     error: str = ""
     settings: CircleSettings | None = None
     _oauth_token: str = ""
+    # Setting up again (circle --init): an empty enter keeps the saved URL and key
+    saved_url: str = ""
+    _saved_key: str = ""
 
     def __post_init__(self) -> None:
         if self.probe is None:
             # Default: full resolve (probe + URL hint). Tests may inject probe_endpoint.
             self.probe = resolve_endpoint  # type: ignore[assignment]
+        try:
+            previous = load_settings(self.home)
+            if previous.initialized and previous.auth.mode == "api_key":
+                self.saved_url = previous.auth.base_url
+                self._saved_key = load_credentials(self.home).get(
+                    previous.auth.api_key_ref or "api_key", "")
+        except (OSError, ValueError):
+            pass
 
     def title(self) -> str:
-        return "Circle 初始化"
+        return "Set up Circle"
 
     def body_lines(self) -> list[str]:
         lines: list[str] = []
@@ -64,52 +77,57 @@ class InitController:
             lines.append(f"✖ {self.error}")
         if self.step == InitStep.AUTH_MODE:
             lines += [
-                "接入方式（↑↓ 选择，Enter 确认）:",
-                f"  {'▸' if self.model_focus == 0 else ' '} [1] API URL + KEY",
-                f"  {'▸' if self.model_focus == 1 else ' '} [2] OAuth 登录",
+                "How does Circle reach your model?",
+                f"  {'▸' if self.model_focus == 0 else ' '} 1  API URL + KEY",
+                f"  {'▸' if self.model_focus == 1 else ' '} 2  OAuth sign-in (not available yet)",
             ]
         elif self.step == InitStep.API_URL:
-            lines.append("填写 API URL（OpenAI 兼容或 Anthropic 网关根）")
-            lines.append(f"  当前: {self.base_url or '（空）'}")
+            lines.append("The base URL of an OpenAI-style or Anthropic-style API,")
+            lines.append("for example https://api.openai.com/v1")
+            if self.saved_url:
+                lines.append(f"enter keeps {self.saved_url}")
         elif self.step == InitStep.API_KEY:
-            lines.append("填写 API KEY（输入后 Enter；界面以掩码显示）")
-            masked = ("*" * min(8, len(self.api_key))) if self.api_key else "（空）"
-            lines.append(f"  KEY: {masked}")
+            lines.append(f"The key for {self.base_url}")
+            lines.append("It is saved in credentials.json in the data folder, readable only by you.")
+            if self._saved_key:
+                lines.append("enter keeps the saved key")
         elif self.step == InitStep.OAUTH_PROVIDER:
             lines += [
-                "OAuth 提供方:",
+                "Sign in with OAuth:",
                 f"  {'▸' if self.model_focus == 0 else ' '} anthropic",
                 f"  {'▸' if self.model_focus == 1 else ' '} openai",
             ]
         elif self.step == InitStep.OAUTH_WAIT:
-            lines.append(f"正在完成 {self.oauth_provider} OAuth…")
-            lines.append(self.status or "等待授权回调")
+            lines.append(f"Signing in to {self.oauth_provider}…")
+            lines.append(self.status or "waiting for the browser")
         elif self.step == InitStep.PROBING:
-            lines.append(self.status or "正在探测协议…")
+            lines.append(self.status or "discovering models…")
         elif self.step == InitStep.MANUAL_PROTOCOL:
             lines.append(self.status)
             lines.append("select protocol for manual configuration:")
             for i, protocol in enumerate(("openai", "anthropic")):
                 lines.append(f"  {'▸' if i == self.model_focus else ' '} {protocol}")
         elif self.step == InitStep.PICK_MODEL:
-            lines.append(self.status)
-            lines.append("select a model or enter a model id (manual ids are unverified):")
+            lines.append(self.status or "Pick a model:")
             for i, m in enumerate(self.models):
                 mark = "▸" if i == self.model_focus else " "
                 lines.append(f"  {mark} {m}")
+            lines.append("")
+            lines.append("enter picks the marked one · or type a model id" if self.models
+                         else "type the model id your endpoint uses")
         elif self.step == InitStep.DONE:
-            lines.append("初始化完成。")
+            lines.append("Set up.")
             if self.settings:
-                lines.append(f"  协议: {self.settings.auth.protocol}")
-                lines.append(f"  模型: {self.settings.auth.model}")
+                lines.append(f"  protocol: {self.settings.auth.protocol}")
+                lines.append(f"  model: {self.settings.auth.model}")
         return lines
 
     def prompt_label(self) -> str:
         if self.step == InitStep.API_URL:
-            return "URL"
+            return "base url"
         if self.step == InitStep.API_KEY:
-            return "KEY"
-        if self.step == InitStep.PICK_MODEL:
+            return "api key"
+        if self.step == InitStep.PICK_MODEL and not self.models:
             return "model id"
         return ""
 
@@ -129,8 +147,9 @@ class InitController:
                 self.model_focus = 0 if text == "1" else 1
             self._confirm_auth_mode()
         elif self.step == InitStep.API_URL:
+            text = text or self.saved_url
             if not text:
-                self.error = "URL 不能为空"
+                self.error = "Enter a URL"
                 return
             try:
                 self.base_url = normalize_base_url(text, "openai")
@@ -139,8 +158,9 @@ class InitController:
                 return
             self.step = InitStep.API_KEY
         elif self.step == InitStep.API_KEY:
+            text = text or self._saved_key
             if not text:
-                self.error = "KEY 不能为空"
+                self.error = "Enter a key"
                 return
             self.api_key = text
             self._start_probe()
@@ -164,8 +184,10 @@ class InitController:
                     return
                 self.model_focus = int(text) - 1
             elif text:
-                self.models = [text]
-                self.model_focus = 0
+                # A model the endpoint did not list (or could not be asked about)
+                if text not in self.models:
+                    self.models.insert(0, text)
+                self.model_focus = self.models.index(text)
             self._confirm_model()
 
     def confirm(self) -> None:
@@ -192,7 +214,7 @@ class InitController:
     def _confirm_oauth_provider(self) -> None:
         self.oauth_provider = "anthropic" if self.model_focus == 0 else "openai"
         self.step = InitStep.OAUTH_WAIT
-        self.status = f"启动 {self.oauth_provider} OAuth…"
+        self.status = f"Starting {self.oauth_provider} sign-in…"
         try:
             session = self.oauth_login(self.oauth_provider)
         except OAuthNotConfiguredError as exc:
@@ -206,7 +228,7 @@ class InitController:
         self.models = list(getattr(session, "models", None) or [])
         self.model_focus = 0
         self.step = InitStep.PICK_MODEL
-        self.status = "OAuth 完成"
+        self.status = "Signed in · pick a model:"
 
     def _start_probe(self) -> None:
         self.step = InitStep.PROBING
@@ -238,17 +260,14 @@ class InitController:
             return
         model = self.models[self.model_focus]
         if self.mode == "oauth":
-            settings = CircleSettings(
-                initialized=True,
-                auth=ModelAuth(
-                    mode="oauth",
-                    protocol=self.protocol,
-                    base_url=self.base_url,
-                    model=model,
-                    oauth_provider=self.oauth_provider,
-                    api_key_ref="oauth_access_token",
-                ),
-            )
+            settings = with_connection(ModelAuth(
+                mode="oauth",
+                protocol=self.protocol,
+                base_url=self.base_url,
+                model=model,
+                oauth_provider=self.oauth_provider,
+                api_key_ref="oauth_access_token",
+            ), self.home)
             save_credentials(
                 {
                     "oauth_access_token": self._oauth_token or "mock-token",
@@ -257,15 +276,12 @@ class InitController:
                 self.home,
             )
         else:
-            settings = CircleSettings(
-                initialized=True,
-                auth=ModelAuth(
-                    mode="api_key",
-                    protocol=self.protocol,
-                    base_url=self.base_url,
-                    model=model,
-                ),
-            )
+            settings = with_connection(ModelAuth(
+                mode="api_key",
+                protocol=self.protocol,
+                base_url=self.base_url,
+                model=model,
+            ), self.home)
             save_credentials({"api_key": self.api_key}, self.home)
         save_settings(settings, self.home)
         self.settings = settings
@@ -290,12 +306,19 @@ class TrustController:
         self.workspace = normalize_workspace(self.workspace)
 
     def body_lines(self) -> list[str]:
+        from circle.paths import circle_home
+
+        home = self.home or circle_home()
         return [
-            "Circle 工作区信任",
-            f"路径: {self.workspace}",
-            "Trust 后将写入 ~/.circle/settings.json，并创建 .agent/",
-            f"  {'▸' if self.focus == 0 else ' '} Trust 此文件夹",
-            f"  {'▸' if self.focus == 1 else ' '} 拒绝并退出",
+            "Trust this folder?",
+            f"  {self.workspace}",
+            "",
+            "Circle reads, edits and runs commands here, asking first for anything that",
+            "changes files. Trusting also loads the folder's own commands, skills and",
+            f"extensions, and is saved in {home / 'settings.json'}.",
+            "",
+            f"  {'▸' if self.focus == 0 else ' '} Trust and continue",
+            f"  {'▸' if self.focus == 1 else ' '} Quit",
         ]
 
     def move(self, delta: int) -> None:

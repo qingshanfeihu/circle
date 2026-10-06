@@ -9,6 +9,7 @@ Assembly order:
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 import subprocess
@@ -25,6 +26,9 @@ _CONTEXT_CANDIDATES = (
     "CLAUDE.md",
     "CLAUDE.MD",
 )
+
+# The instruction files ``--no-context-files`` leaves out, lowercased
+CONTEXT_FILE_NAMES = frozenset({"agents.override.md", "agents.md", "claude.md"})
 
 _MAX_CONTEXT_BYTES = 120_000
 
@@ -152,17 +156,30 @@ def _strip_foreign_docs_block(text: str) -> str:
     return "\n".join(out).strip()
 
 
+def file_identity(path: str | Path) -> tuple[int, int] | None:
+    """Which file this is on disk. On a case-insensitive file system ``AGENTS.md`` and
+    ``agents.md`` are one file under two names; comparing paths would read it twice."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def discover_context_files(cwd: str | Path) -> list[tuple[str, str]]:
     """Walk cwd → parents for AGENTS.md / CLAUDE.md instruction files."""
     root = Path(cwd).resolve()
     found: list[tuple[str, str]] = []
-    seen: set[Path] = set()
+    seen: set[tuple[int, int]] = set()
     for directory in [root, *root.parents]:
         for name in _CONTEXT_CANDIDATES:
             path = directory / name
-            if path in seen or not path.is_file():
+            if not path.is_file():
                 continue
-            seen.add(path)
+            key = file_identity(path)
+            if key is None or key in seen:
+                continue
+            seen.add(key)
             try:
                 raw = path.read_bytes()
             except OSError:
@@ -271,24 +288,29 @@ def build_system_prompt(
     append: str | None = None,
     include_tool_catalog: bool = True,
     extension_tools: list[tuple[str, str]] | None = None,
+    base: str | None = None,
 ) -> str:
-    """Assemble the full system prompt for the main Circle agent."""
+    """Assemble the full system prompt for the main Circle agent. ``base`` replaces
+    Circle's own instructions and tool list; the project's instruction files, the
+    environment and ``append`` still follow it."""
     root = Path(cwd).resolve() if cwd else Path.cwd()
-    sections: list[str] = [load_session_prompt(model_id)]
+    if base is not None and base.strip():
+        sections: list[str] = [base.strip()]
+    else:
+        sections = [load_session_prompt(model_id)]
+        try:
+            sections.append(read_prompt("circle_guidelines.md"))
+        except FileNotFoundError:
+            pass
+        try:
+            sections.append(read_prompt("circle_paths.md"))
+        except FileNotFoundError:
+            pass
 
-    try:
-        sections.append(read_prompt("circle_guidelines.md"))
-    except FileNotFoundError:
-        pass
-    try:
-        sections.append(read_prompt("circle_paths.md"))
-    except FileNotFoundError:
-        pass
-
-    if include_tool_catalog:
-        catalog = _tool_catalog_section(extension_tools)
-        if catalog:
-            sections.append(catalog)
+        if include_tool_catalog:
+            catalog = _tool_catalog_section(extension_tools)
+            if catalog:
+                sections.append(catalog)
 
     files = (
         context_files if context_files is not None else discover_context_files(root)
@@ -306,6 +328,38 @@ def build_system_prompt(
     return "\n\n".join(s for s in sections if s and s.strip())
 
 
+SYSTEM_FILE = "SYSTEM.md"
+APPEND_SYSTEM_FILE = "APPEND_SYSTEM.md"
+
+
+def _prompt_file(cwd: str | Path, home: str | Path | None, name: str) -> str | None:
+    """``.circle/<name>`` in the project, else ``<name>`` in the data folder."""
+    candidates = [Path(cwd) / ".circle" / name]
+    if home is not None:
+        candidates.append(Path(home) / name)
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return None
+
+
+def prompt_overrides(cwd: str | Path, home: str | Path | None, *, system: str | None = None,
+                     append: list[str] | None = None) -> tuple[str | None, list[str]]:
+    """Circle's own instructions replaced, and text added to the prompt: what the command
+    line gave, else SYSTEM.md and APPEND_SYSTEM.md (the project's .circle folder first,
+    then the data folder)."""
+    base = system if system is not None else _prompt_file(cwd, home, SYSTEM_FILE)
+    if append:
+        extra = list(append)
+    else:
+        found = _prompt_file(cwd, home, APPEND_SYSTEM_FILE)
+        extra = [found] if found else []
+    return (base if base and base.strip() else None), [text for text in extra if text.strip()]
+
+
 def _tool_catalog_section(extension_tools: list[tuple[str, str]] | None = None) -> str:
     snippets = {
         "ls": "list directory entries",
@@ -313,7 +367,7 @@ def _tool_catalog_section(extension_tools: list[tuple[str, str]] | None = None) 
         "write_file": "create or overwrite a file",
         "edit_file": "apply a surgical edit to an existing file",
         "glob": "find files by glob pattern",
-        "grep": "search file contents with regex",
+        "grep": "search file contents for literal text",
         "execute": "run a shell command in the workspace (macOS: use python3 not python)",
         "write_todos": "track multi-step task progress",
         "task": "delegate to a listed subagent (general-purpose has full tools; explore is read-only)",

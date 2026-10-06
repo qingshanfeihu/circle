@@ -165,6 +165,14 @@ class FooterPane:
             kwargs["model"] = model
         self.update(**kwargs)
 
+    def usage_totals(self) -> dict[str, int]:
+        """This run's tokens, the main agent's and the subagents' together."""
+        return {
+            "input": self.input_tokens + self.fork_input,
+            "output": self.output_tokens + self.fork_output,
+            "cached": self._cache_hit_tokens + self.fork_cache_hit,
+        }
+
     def update(
         self,
         *,
@@ -415,7 +423,9 @@ class FooterPane:
         self._timer.daemon = True
         self._timer.start()
 
-    def _session_summary(self) -> str:
+    def _session_summary(self, *, colored: bool = False) -> str:
+        """The meters. ``colored``: the context figure turns yellow past 70% and red past
+        90%, as in pi, so a full context is seen before it is compacted."""
         total_in = self.input_tokens + self.fork_input
         settled_out = self.output_tokens + self.fork_output
         display_out = settled_out + self.fork_live_output
@@ -455,8 +465,12 @@ class FooterPane:
         budget = self.tokens_budget or 0
         if budget > 0 and self.context_input_tokens is not None:
             pct = min(999.0, self.context_input_tokens / budget * 100.0)
-            parts.append(f"ctx {_format_token_count(self.context_input_tokens)}/"
-                         f"{_format_context_budget(budget)} ({pct:.0f}%)")
+            ctx = (f"ctx {_format_token_count(self.context_input_tokens)}/"
+                   f"{_format_context_budget(budget)} ({pct:.0f}%)")
+            if colored and pct >= 70:
+                pal = palette()
+                ctx = f"{pal.red if pct >= 90 else pal.yellow}{ctx}{pal.reset}"
+            parts.append(ctx)
         return " · ".join(parts)
 
     def _busy_label(self, elapsed: float) -> str:
@@ -521,7 +535,7 @@ class FooterPane:
                 self._status_line.set_value(_FOOTER_INDENT + flash)
             return
 
-        status_text = self._hold_status or self._session_summary()
+        status_text = self._hold_status or self._session_summary(colored=True)
         if self._sticky_error and self.status == "error":
             pal = palette()
             status_text = (f"{pal.red}{GLYPH_ERROR} {self._sticky_error}"

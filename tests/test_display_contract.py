@@ -549,3 +549,56 @@ def test_a_lone_escape_is_the_esc_key(monkeypatch):
     assert [event.key for event in parser.feed("x")] == ["x"] and len(_FakeTimer.made) == 1
     parser.feed("\x1b")
     assert [event.key for event in parser.feed("b")] == ["alt+b"] and _FakeTimer.made[1].cancelled
+
+
+def test_esc_pressed_twice_quickly_is_two_escapes(monkeypatch):
+    """The second ESC arrives before the first was let go: the first is still the Esc key
+    (esc esc opens /tree); option+↑ sent with a meta prefix stays one key."""
+    from circle.ink.parse_keypress import InputParser
+    from circle.tui.session_app import _StandaloneEscapeInputParser
+
+    _FakeTimer.made = []
+    monkeypatch.setattr("circle.tui.session_app.threading.Timer", _FakeTimer)
+    emitted: list = []
+    parser = _StandaloneEscapeInputParser(InputParser(), emitted.append)
+    assert parser.feed("\x1b") == []
+    assert [event.key for event in parser.feed("\x1b")] == ["escape"]
+    _FakeTimer.made[-1].function()
+    assert [event.key for event in emitted] == ["escape"]
+    assert [event.key for event in InputParser().feed("\x1b\x1b")] == ["escape"]
+    assert [event.key for event in InputParser().feed("\x1b\x1b[A")] == ["alt+up"]
+
+
+def test_esc_then_slash_typed_quickly_keeps_both(monkeypatch):
+    """esc closes a list and "/" starts a command: read together, ESC and "/" would begin
+    an escape sequence and both keys, and the next, would be lost."""
+    from circle.ink.parse_keypress import InputParser
+    from circle.tui.session_app import _StandaloneEscapeInputParser
+
+    _FakeTimer.made = []
+    monkeypatch.setattr("circle.tui.session_app.threading.Timer", _FakeTimer)
+    parser = _StandaloneEscapeInputParser(InputParser(), lambda _event: None)
+    assert parser.feed("\x1b") == []
+    keys = [event.key for event in parser.feed("/models")]
+    assert keys[:3] == ["escape", "/", "m"] and len(keys) == 8
+
+
+def test_colour_codes_take_no_rows_when_a_panel_is_measured():
+    """A list drawn at the full width is as many rows tall as it has lines; the colour
+    codes in each line are not counted as columns."""
+    from circle.ink.components.dialog_card import PopupItem, popup_rows
+
+    width = 40
+    root = create_element(NodeType.BOX)
+    root.style.flex_direction = "column"
+    panel = create_element(NodeType.BOX)
+    rows = popup_rows("Pick", [PopupItem("a", "  one", False), PopupItem("b", "", True)], 0, width,
+                      info=["type to search"])
+    for row in rows:
+        panel.append_child(create_text(row))
+    rest = create_element(NodeType.BOX)
+    rest.style.flex_grow = 1
+    root.append_child(panel)
+    root.append_child(rest)
+    compute_layout(root, width, 20)
+    assert panel.rect.height == len(rows)

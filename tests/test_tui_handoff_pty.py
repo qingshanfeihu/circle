@@ -110,6 +110,12 @@ def discover_once(terminal, server):
         terminal.read(.05)
     assert len(server.requests) > before, "first /models was lost after gate/session handoff"
     terminal.expect({"valid": "discovered 2 models", "empty": "empty model list", "failed": "model discovery failed"}[server.kind])
+    # Close the model list before the next command; a lone esc is read as the esc key
+    # only once nothing follows it for a moment
+    terminal.send("\x1b")
+    settle = time.monotonic() + .5
+    while time.monotonic() < settle:
+        terminal.read(.05)
 
 
 @pytest.mark.parametrize("kind", ["valid", "empty", "failed"])
@@ -125,9 +131,9 @@ def test_first_command_after_init_and_repeated_handoffs(kind, tmp_path):
             terminal = Terminal(["--init", str(workspace)], home, workspace, tui=True)
             try:
                 terminal.expect("API URL + KEY"); terminal.send("\r")
-                terminal.expect("填写 API URL")
+                terminal.expect("The base URL of an OpenAI-style")
                 terminal.send(f"http://127.0.0.1:{server.server_port}/v1/\r")
-                terminal.expect("KEY:"); terminal.send(KEY + "\r")
+                terminal.expect("The key for"); terminal.send(KEY + "\r")
                 if kind == "failed":
                     terminal.expect("select protocol for manual configuration:")
                     terminal.send("2\r")
@@ -140,7 +146,7 @@ def test_first_command_after_init_and_repeated_handoffs(kind, tmp_path):
                     terminal.expect("discovered 2 models")
                     terminal.expect("handoff-b")
                 terminal.send(("1" if kind == "valid" else "manual-handoff") + "\r")
-                terminal.expect("工作区信任"); terminal.send("y\r")
+                terminal.expect("Trust this folder?"); terminal.send("y\r")
                 terminal.expect("for shortcuts", 30)
                 # No retry or settling sleep: the very first command must work.
                 discover_once(terminal, server)
@@ -192,7 +198,7 @@ def test_declining_trust_exits_without_starting_a_session(tmp_path):
     for _ in range(2):
         terminal = Terminal([str(workspace)], home, workspace, tui=True)
         try:
-            terminal.expect("工作区信任")
+            terminal.expect("Trust this folder?")
             terminal.send("n\r")
             terminal.finish(allowed_codes=(1,))
             assert "for shortcuts" not in ANSI.sub("", terminal.text)

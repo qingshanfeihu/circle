@@ -46,19 +46,3 @@ def make_store() -> Any:
         return InMemoryStore()
     except ImportError:
         return None
-
-
-def copy_thread_if_possible(
-    checkpointer: Any,
-    source_thread_id: str,
-    target_thread_id: str,
-) -> bool:
-    """Copy checkpoints between threads when the saver supports it."""
-    fn = getattr(checkpointer, "copy_thread", None)
-    if not callable(fn):
-        return False
-    try:
-        fn(source_thread_id, target_thread_id)
-        return True
-    except Exception:  # noqa: BLE001
-        return False

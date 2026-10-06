@@ -22,7 +22,11 @@ from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph._internal._constants import CONFIG_KEY_DURABILITY
+
+try:
+    from langgraph._internal._constants import CONFIG_KEY_DURABILITY
+except ImportError:  # pragma: no cover - the key has had this value since langgraph 0.6
+    CONFIG_KEY_DURABILITY = "__pregel_durability"
 
 from circle.approvals import ApprovalPolicy, default_policy
 from circle.context_middleware import build_context_middleware
@@ -37,6 +41,10 @@ from circle.middleware import (
     ToolResultPruneMiddleware,
 )
 from circle.middleware.cancellation import CancellationMiddleware
+from circle.middleware.steering import SteeringMiddleware
+from circle.middleware.tool_selection import ToolSelectionMiddleware
+from circle.paths import project_data_dir
+from circle.run_options import RunOptions
 from circle.plan_backend import PlanGuardedBackend
 from circle.prompt_features import (
     build_extra_tools,
@@ -46,7 +54,14 @@ from circle.prompt_features import (
 )
 from circle.sandbox import shell_environment
 from circle.skills import skill_sources
-from circle.system_prompt import build_system_prompt, load_tool_prompt
+from circle.system_prompt import (
+    CONTEXT_FILE_NAMES,
+    build_system_prompt,
+    discover_context_files,
+    file_identity,
+    load_tool_prompt,
+    prompt_overrides,
+)
 
 if TYPE_CHECKING:
     from circle.extensions import ExtensionHost
@@ -107,15 +122,18 @@ def sandbox_backend(
     root_dir: str | Path | None = None,
     *,
     plan_mode: bool = False,
+    home: Path | None = None,
 ) -> PlanGuardedBackend:
-    """Local sandbox: workspace-virtual paths under root; host abs paths pass through."""
+    """Local sandbox: workspace-virtual paths under root; host abs paths pass through;
+    summaries' history and very long tool results go to the data folder."""
     install_tilde_expansion()
     return PlanGuardedBackend(
         root_dir=root_dir,
         virtual_mode=True,
         inherit_env=False,
-        env=shell_environment(),
+        env=shell_environment(workspace=root_dir or Path.cwd()),
         plan_mode=plan_mode,
+        offload_root=project_data_dir(Path(root_dir) if root_dir else Path.cwd(), home),
     )
 
 
@@ -135,6 +153,7 @@ def create_harness(
     extensions: ExtensionHost | None = None,
     approvals: ApprovalPolicy | None = None,
     ask_user: bool = False,
+    run_options: RunOptions | None = None,
 ):
     """Build harness with file/shell tools, explore subagent, and prompt-backed extras.
 
@@ -147,6 +166,9 @@ def create_harness(
     ``ask_user``: the caller answers ``ask_user`` interrupts (the full-screen session),
     so the ``question`` tool pauses for real answers instead of returning the questions
     as text.
+
+    ``run_options``: what the command line chose for this run: a replaced or extended
+    system prompt, no AGENTS.md / CLAUDE.md, and which tools the model gets.
     """
     _ensure_tool_description_profiles()
 
@@ -159,18 +181,30 @@ def create_harness(
         if mid is not None:
             mid = str(mid)
 
-    append = plan_mode_append() if plan_mode else None
+    options = run_options or RunOptions()
+    base, added = prompt_overrides(cwd, home, system=options.system_prompt,
+                                   append=options.append_system_prompt)
+    append = "\n\n".join(part for part in (plan_mode_append() if plan_mode else None, *added)
+                          if part) or None
     prompt = system_prompt or build_system_prompt(
         cwd=cwd,
         model_id=mid,
         protocol=protocol,
         append=append,
         extension_tools=extensions.catalog() if extensions is not None else None,
+        context_files=[] if options.no_context_files else None,
+        base=base,
     )
 
     explore = explore_subagent_spec()
     skills = skill_sources(cwd, home)
     memory = memory_source_paths(cwd, home)
+    if options.no_context_files:
+        memory = [path for path in memory if Path(path).name.lower() not in CONTEXT_FILE_NAMES]
+    elif system_prompt is None:
+        # Files already in the prompt as project instructions are not added again
+        in_prompt = {file_identity(path) for path, _text in discover_context_files(cwd)}
+        memory = [path for path in memory if file_identity(path) not in in_prompt]
     tools: list[Any] = list(build_extra_tools(cwd, home, plan_mode=plan_mode, ask_user=ask_user))
     if extra_tools:
         tools.extend(extra_tools)
@@ -179,7 +213,7 @@ def create_harness(
         tools.extend(mcp_tools)
     else:
         mcp_tools = []
-    backend = sandbox_backend(root_dir, plan_mode=plan_mode)
+    backend = sandbox_backend(root_dir, plan_mode=plan_mode, home=home)
     policy = approvals or default_policy(home)
     # 禁止类命令在后端拒绝执行：主代理与子代理共用这个后端，一处拦住全部
     backend.command_guard = policy.deny_message
@@ -247,10 +281,15 @@ def create_harness(
         except Exception:
             logger.debug("context middleware unavailable", exc_info=True)
     extra_mw.extend(extension_middleware)
+    # Messages typed during the turn go in before the next model call.
+    extra_mw.append(SteeringMiddleware())
     # Persist an occasional plan reminder after tool results. Its before_model
     # hook leaves a durable message instead of changing only the model request.
     extra_mw.append(PlanTailMiddleware())
     extra_mw.append(LoopGuardMiddleware())
+    if options.limits_tools():
+        extra_mw.append(ToolSelectionMiddleware(allowed=options.tools,
+                                                excluded=options.exclude_tools))
 
     kwargs: dict[str, Any] = {
         "model": model,
