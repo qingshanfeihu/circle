@@ -21,6 +21,7 @@ export interface Checkpoint {
 }
 export class CheckpointStore {
   private db: DatabaseSync;
+  private closed = false;
   constructor(home?: string) {
     this.db = new DatabaseSync(
       home ? join(ensureHome(home), 'circle-next.sqlite') : ':memory:',
@@ -226,6 +227,8 @@ export class CheckpointStore {
     ];
   }
   close(): void {
+    if (this.closed) return;
     this.db.close();
+    this.closed = true;
   }
 }

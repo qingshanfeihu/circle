@@ -46,6 +46,6 @@ Use `npm run format` to format TypeScript and configuration, `npm run format:che
 
 This is a development build, not the first stable release. The runtime and CLI execute turns, file tools, commands, approvals, session persistence, branching and streamed model responses without Python or an agent framework. The TUI is being validated against the established interaction style.
 
-MCP, extension compatibility, LSP, full command behavior, robust provider recovery, cross-platform packaging and one-command installation are still under development. Existing session databases are not migrated automatically. Keep development data separate from an existing installation.
+MCP, TypeScript/JavaScript extensions and LSP are connected through the runtime. Full command and terminal parity, robust provider recovery, cross-platform packaging and one-command installation are still under development. Existing session databases are not migrated automatically. Keep development data separate from an existing installation.
 
 See [architecture](docs/architecture.md), [development](docs/development/README.md), and [known issues](docs/known-issues.md). License selection is pending.

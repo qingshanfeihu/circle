@@ -17,6 +17,12 @@ export interface HarnessOptions {
   approve?: (call: ToolCall, signal: AbortSignal) => Promise<ApprovalDecision>;
   maxSteps?: number;
   headless?: boolean;
+  beforeRun?: (signal: AbortSignal) => Promise<void>;
+  toolBoundary?: (
+    tool: Tool,
+    args: Record<string, unknown>,
+    context: import('./types.js').ToolContext,
+  ) => Promise<string>;
 }
 export class Harness {
   readonly bus: EventBus;
@@ -39,6 +45,9 @@ export class Harness {
   }
   get busy(): boolean {
     return Boolean(this.active);
+  }
+  get pendingMessageCount(): number {
+    return this.steering.length + this.followUps.length;
   }
   get messages(): Message[] {
     return this.options.store.messages(this.sessionId);
@@ -81,6 +90,8 @@ export class Harness {
     prompt: string,
     signal: AbortSignal,
   ): Promise<{ answer: string; usage: Usage }> {
+    await this.options.beforeRun?.(signal);
+    signal.throwIfAborted();
     const total = emptyUsage();
     let answer = '';
     let next: string | undefined = prompt;
@@ -141,7 +152,7 @@ export class Harness {
             }),
         });
         signal.throwIfAborted();
-        this.save(response.message);
+        this.save({ ...response.message, usage: response.usage });
         for (const key of Object.keys(usage) as (keyof Usage)[])
           usage[key] += response.usage[key];
         this.bus.emit('llm_end', {
@@ -175,6 +186,7 @@ export class Harness {
               throw new Error(found.message || found.reason);
             if (
               tool.effect !== 'read' &&
+              tool.approval !== false &&
               (this.options.policy.needsApproval(
                 call.name,
                 call.args,
@@ -205,10 +217,12 @@ export class Harness {
             }
             signal.throwIfAborted();
             this.bus.emit('tool_start', { payload: { ...call } });
-            content = await tool.run(call.args, {
-              signal,
-              sessionId: this.sessionId,
-            });
+            const context = { signal, sessionId: this.sessionId };
+            content = this.options.toolBoundary
+              ? await this.options.toolBoundary(tool, call.args, context)
+              : await tool.run(call.args, context);
+            if (typeof content !== 'string')
+              throw new Error('tool must return text');
           } catch (error) {
             status = 'error';
             content = error instanceof Error ? error.message : String(error);

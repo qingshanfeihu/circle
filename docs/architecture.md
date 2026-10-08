@@ -20,4 +20,4 @@ The application runs on Node.js 24 and uses TypeScript with strict compiler chec
 
 `src/ink/` parses input and terminal colour reports, derives a readable palette, and renders components. `src/tui/` handles drafts, dialogs, pickers, commands, transcript views and model events. Colors come from the shared palette. UI words are short English labels; user and model content are retained as written.
 
-`src/events.ts` isolates subscribers so a display failure cannot interrupt the runtime. The same runtime serves headless entry points. Integration and release modules are added with their corresponding behavior and platform tests.
+`src/events.ts` isolates subscribers so a display failure cannot interrupt the runtime. The same runtime serves headless entry points. MCP connections are owned by `src/mcp_loader.ts`; each external tool passes through the same policy as built-in tools. `src/extensions.ts` stages registrations atomically, supplies typed model/tool middleware and hosts subagents, commands, renderers and events. `src/lsp_tool.ts` owns stdio language-server processes and bounded JSON-RPC requests. Release modules are added with their platform tests.

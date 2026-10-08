@@ -200,7 +200,7 @@
       "bytes": 14753,
       "category": "source",
       "target": "src/extensions.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/git_info.py",
@@ -568,7 +568,7 @@
       "bytes": 9139,
       "category": "source",
       "target": "src/lsp_tool.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/main_session.py",
@@ -584,7 +584,7 @@
       "bytes": 3226,
       "category": "source",
       "target": "src/mcp_loader.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/memory_sources.py",

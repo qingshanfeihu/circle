@@ -29,6 +29,7 @@ export interface ScreenState {
   dialog?: DialogState;
   picker?: Picker;
   hiddenTurns: number;
+  renderToolResult?: (message: Message) => string[] | undefined;
 }
 export function transcriptRows(state: ScreenState, width: number): string[] {
   const p = palette();
@@ -103,6 +104,12 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
         );
       }
     } else if (message.role === 'tool') {
+      const custom = state.renderToolResult?.(message);
+      if (custom) {
+        for (const row of custom) rows.push(pad(row, width));
+        rows.push('');
+        continue;
+      }
       const lines = wrap(message.content, width - 5);
       const shown = state.showTools ? lines : lines.slice(0, 3);
       rows.push(...shown.map((line) => '   ' + p.dim + '⎿ ' + line + p.reset));

@@ -19,6 +19,7 @@ export interface Message {
   status?: 'success' | 'error';
   display?: string;
   provider_content?: unknown[];
+  usage?: Usage;
 }
 export type Effect = 'read' | 'write' | 'execute' | 'unknown';
 export interface Tool {
@@ -26,6 +27,7 @@ export interface Tool {
   description: string;
   parameters: Record<string, unknown>;
   effect: Effect;
+  approval?: boolean;
   run(args: Record<string, unknown>, context: ToolContext): Promise<string>;
 }
 export interface ToolContext {

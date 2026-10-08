@@ -2,8 +2,7 @@
 
 This development build has not completed full compatibility or release acceptance.
 
-- MCP and extension loading, LSP and several integration commands are not yet connected.
-- RPC does not yet implement all model/account/export commands, and runtime usage statistics need persistence.
+- RPC message serialization and several terminal/account interactions need further compatibility checks. Usage is persisted with completed model messages.
 - TUI search, external-editor input ownership, configurable picker actions, plan scrolling, queue display, Markdown presentation and several shortcuts need further parity work.
 - Legacy JSONL can be imported, but existing SQLite history and Python extension code are not automatically migrated.
 - Provider retry, unsupported-parameter recovery, context limits and long-output offloading need broader tests.

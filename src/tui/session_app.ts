@@ -151,6 +151,31 @@ export class SessionApp {
         this.runtime.session.id,
       );
       this.state.busy = this.runtime.harness.busy;
+      this.state.renderToolResult = (message) => {
+        const renderer = this.runtime!.extensions.renderer(message.name || '');
+        if (!renderer) return undefined;
+        try {
+          const rows = renderer({
+            tool_name: message.name,
+            tool_call_id: message.tool_call_id,
+            status: message.status,
+            output: message.content,
+            content: message.content,
+          });
+          if (
+            !Array.isArray(rows) ||
+            !rows.every((row) => typeof row === 'string')
+          )
+            throw new Error('renderer must return text lines');
+          return rows;
+        } catch (error) {
+          const note =
+            '✖ Extension renderer failed: ' +
+            (error instanceof Error ? error.message : String(error));
+          if (!this.state.notices.includes(note)) this.state.notices.push(note);
+          return undefined;
+        }
+      };
     }
     this.state.welcome = welcomeRows(process.stdout.columns || 80, {
       version: VERSION,
@@ -259,7 +284,9 @@ export class SessionApp {
     }
     return !this.ended;
   }
-  attach(options: Omit<RuntimeOptions, 'approve' | 'question'>): void {
+  async attach(
+    options: Omit<RuntimeOptions, 'approve' | 'question'>,
+  ): Promise<void> {
     this.runtime = new AgentRuntime({
       ...options,
       settings: this.settings,
@@ -316,6 +343,7 @@ export class SessionApp {
         this.state.notices.push('✖ ' + String(event.payload.message));
       this.repaint();
     });
+    await this.runtime.initialize();
     this.repaint();
   }
   private askChoice(
@@ -705,6 +733,21 @@ export class SessionApp {
       );
       return;
     }
+    if (name === 'mcp' || name === 'extensions') {
+      if (args === 'reload') {
+        if (runtime.harness.busy) {
+          this.flash(
+            `reload ${name === 'mcp' ? 'MCP' : 'extensions'} after the current turn`,
+          );
+          return;
+        }
+        await runtime.reloadIntegrations();
+      }
+      this.notice(
+        name === 'mcp' ? runtime.mcp.describe() : runtime.extensions.describe(),
+      );
+      return;
+    }
     if (name === 'trust') {
       this.settings = trustFolder(this.settings, this.workspace);
       saveSettings(this.settings, this.home);
@@ -819,8 +862,7 @@ export class SessionApp {
     if (name === 'models') {
       const choose = (model: string): void => {
         if (runtime.harness.busy) throw new Error('a turn is running');
-        this.settings.auth.model = model;
-        runtime.harness.model = new GatewayModel(this.settings, this.home);
+        runtime.setModel(model);
         this.notice(`Model → ${model}`);
       };
       if (args) choose(args);
@@ -848,8 +890,7 @@ export class SessionApp {
       const choose = (effort: string): void => {
         if (!(EFFORT_LEVELS as readonly string[]).includes(effort))
           throw new Error('unknown thinking depth');
-        if (runtime.harness.model instanceof GatewayModel)
-          runtime.harness.model.effort = effort;
+        runtime.setThinkingLevel(effort);
         this.notice(`Thinking → ${effort}`);
       };
       if (args) choose(args);
@@ -973,15 +1014,18 @@ export class SessionApp {
       if (args === 'anthropic' || args === 'openai')
         throw new Error('OAuth sign-in is not available yet');
       if (runtime.harness.busy) throw new Error('a turn is running');
-      if (await this.initialize(true))
-        runtime.harness.model = new GatewayModel(this.settings, this.home);
+      if (await this.initialize(true)) {
+        runtime.options.settings = this.settings;
+        runtime.setModel(this.settings.auth.model);
+      }
       return;
     }
     if (name === 'reload') {
       if (runtime.harness.busy) throw new Error('a turn is running');
-      this.settings = loadSettings(this.home);
-      runtime.harness.model = new GatewayModel(this.settings, this.home);
-      this.notice('Settings reloaded');
+      await runtime.reloadIntegrations();
+      this.settings = runtime.options.settings;
+      runtime.setModel(this.settings.auth.model);
+      this.notice('Settings and integrations reloaded');
       return;
     }
     const custom = discoverCustomCommands(this.workspace, this.home).find(
@@ -995,6 +1039,23 @@ export class SessionApp {
         new AbortController().signal,
       );
       await this.submit(prompt);
+      return;
+    }
+    const extensionCommand = runtime.extensions.commands().get(name);
+    if (extensionCommand) {
+      await extensionCommand.handler(args, {
+        workspace: this.workspace,
+        toast: (message) => this.notice(message),
+        append: (message) => {
+          runtime.store.append(runtime.session.id, [
+            { id: crypto.randomUUID(), role: 'assistant', content: message },
+          ]);
+          this.repaint();
+        },
+        sendUserMessage: (message) => {
+          void this.submit(message).catch((error) => this.fail(error));
+        },
+      });
       return;
     }
     throw new Error(`command not available: /${name}`);
@@ -1087,7 +1148,7 @@ export async function runTui(
   app.start();
   try {
     if (!(await app.initialize(options.init))) return 0;
-    app.attach(options);
+    await app.attach(options);
     if (options.pickSession) await app.command('resume', '');
     for (const prompt of options.prompts ?? []) void app.submit(prompt);
     return await app.wait();
