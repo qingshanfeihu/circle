@@ -44,7 +44,7 @@ def main(argv: list[str]) -> int:
             probe=lambda *_a, **_k: ProbeResult(protocol="openai", models=["smoke-model"]))
         accept_trust(settings, workspace, home=home)
         env = {**os.environ, "CIRCLE_HOME": str(home), "CIRCLE_NO_TUI": "1",
-               "CIRCLE_NO_UPDATE_CHECK": "1", "PYTHONUTF8": "1"}
+               "CIRCLE_NO_UPDATE_CHECK": "1", "CIRCLE_NO_MODELS_REFRESH": "1", "PYTHONUTF8": "1"}
 
         version = run(exe, ["--version"], env)
         if version.stdout.strip() != __version__:

@@ -94,7 +94,7 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | 登录方式，接着 URL、key（圆点）、模型，问法同 setup（`InitController`）；没做好的方式列出来、标 `not available yet`、选不动 | `/login` 无参数 | 弹窗；选完模型才保存，成了进转录淡色一行 |
 | key 被端点拒（401 / 403） | 回合失败 | 转录，红色 `✖` 行尾加 `· /login to change the key` |
 | 等着被读的插话 `steering: …`、回合后才发的 `follow-up: …` | 回合进行中你按了 enter | 常驻，输入框上方，淡色一行一条；读到后进转录 |
-| 压缩进行中 `auto-compacting · ████░░░░ summarizing · 12s`（`/compact` 为 `compacting`；不写触发条件；不能取消） | 压缩开始到结束 | 常驻，输入框上方，排在插话之前；结束撤下，转录落一条淡色 `auto-compacted · …` 或 `compacted · …`（失败红色 `✖`），回合进行中则等回合结束、落在用量行之下 |
+| 压缩进行中 `auto-compacting · ████░░░░ summarizing · 12s`（`/compact` 为 `compacting`；不写触发条件；自动的那种随回合被 esc 中止，行撤下、不落失败行） | 压缩开始到结束 | 常驻，输入框上方，排在插话之前；结束撤下，转录落一条淡色 `auto-compacted · …` 或 `compacted · …`（失败红色 `✖`），回合进行中则等回合结束、落在用量行之下 |
 | 子代理详情 | 在途条 enter / 点名字 | 页面 |
 | `/jobs` 任务列表（跑着的在前，状态 `running · 1m 12s` / `waiting for you` / `exit 1 · 4s` / `stopped`，别的对话的 `· other session`） | `/jobs`、`/tasks` | 弹窗 |
 | 后台任务页 | `/jobs` 里 enter | 页面 |

@@ -91,12 +91,20 @@ def test_a_subscription_without_a_pay_as_you_go_twin_has_no_price(catalog):
     assert facts.context_window == 256_000 and facts.rates is None
 
 
-def test_an_unknown_endpoint_falls_back_to_128k_and_no_price(catalog):
+def test_a_host_models_dev_does_not_list_goes_by_the_models_name(catalog):
+    """A gateway or a proxy: the model's own entry (the vendor's first, a subscription's
+    last) gives the window and the price; only a model nobody lists falls back to 128k."""
     model_catalog.bind_endpoint("https://gateway.example.internal/v1", "openai")
     facts = model_catalog.facts("glm-5.3")
     assert (facts.context_window, facts.window_known, facts.window_source) == (
+        1_000_000, True, "models.dev")
+    assert (facts.provider, facts.price_provider) == ("zhipuai", "zhipuai")
+    sonnet = model_catalog.facts("claude-sonnet-5")
+    assert (sonnet.provider, sonnet.price_provider) == ("anthropic", "anthropic")
+    nobody = model_catalog.facts("nobody-knows-7b")
+    assert (nobody.context_window, nobody.window_known, nobody.window_source) == (
         128_000, False, "fallback")
-    assert facts.rates is None and facts.provider == ""
+    assert nobody.rates is None and nobody.provider == ""
 
 
 def test_the_setting_overrides_the_window_only(catalog):
@@ -143,19 +151,19 @@ def test_prices_are_dollars_with_cache_and_long_context_rates(catalog):
     assert long["amount"] == pytest.approx(0.3 * 4 + 0.001 * 15), "over 200k: the long rates"
     assert short["amount"] == pytest.approx(0.1 * 2 + 0.001 * 10)
     model_catalog.bind_endpoint("https://gateway.example.internal/v1", "openai")
-    unknown = price_call("glm-5.3", {"input_tokens": 10, "output_tokens": 10})
+    unknown = price_call("nobody-knows-7b", {"input_tokens": 10, "output_tokens": 10})
     assert unknown["amount"] is None and unknown["currency"] == ""
 
 
 def test_unknown_window_and_price_read_n_a(catalog):
     model_catalog.bind_endpoint("https://gateway.example.internal/v1", "openai")
     footer = FooterPane()
-    footer.update(model="glm-5.3", input_tokens=12_000, context_input_tokens=12_000,
+    footer.update(model="nobody-knows-7b", input_tokens=12_000, context_input_tokens=12_000,
                   output_tokens=300)
     text = footer._session_summary(colored=True)
     assert "ctx 12.0k/N/A" in text and "%" not in text.split("ctx")[1]
     assert format_usage_costs({"amounts": {}, "calls": 1, "unpriced_calls": 1}) == "N/A"
-    assert format_usage_costs(empty_model="glm-5.3") == "N/A"
+    assert format_usage_costs(empty_model="nobody-knows-7b") == "N/A"
     model_catalog.bind_endpoint("https://open.bigmodel.cn/api/anthropic", "anthropic")
     assert format_usage_costs(empty_model="glm-5.3") == "$0.0000"
     footer.update(model="glm-5.3")
@@ -177,7 +185,30 @@ def test_the_built_model_carries_the_window_the_footer_shows(catalog, tmp_path):
     assert build_chat_model(settings, home=tmp_path).profile["max_input_tokens"] == 64_000
     settings.auth.base_url = "https://gateway.example.internal/v1"
     settings.models = {}
-    assert build_chat_model(settings, home=tmp_path).profile["max_input_tokens"] == 128_000
+    assert build_chat_model(settings, home=tmp_path).profile["max_input_tokens"] == 1_000_000
+    settings.auth.model = "nobody-knows-7b"
+    built = build_chat_model(settings, home=tmp_path)
+    assert built.profile["max_input_tokens"] == 128_000
+    assert built.profile["circle_window_source"] == "fallback"
+
+
+def test_a_model_models_dev_does_not_know_keeps_its_langchain_window(catalog, tmp_path):
+    """Not in models.dev at all, but LangChain's own profile for it has a window: that one
+    is used (and shown), not 128k."""
+    from langchain.chat_models import init_chat_model
+
+    from circle.model import build_chat_model
+    from circle.settings import CircleSettings, ModelAuth
+
+    own = (init_chat_model("claude-sonnet-4-5", model_provider="anthropic", api_key="sk-test")
+           .profile or {}).get("max_input_tokens")
+    assert isinstance(own, int) and own > 128_000, "langchain knows this model"
+    (tmp_path / "credentials.json").write_text('{"api_key": "sk-test"}', encoding="utf-8")
+    settings = CircleSettings(initialized=True, auth=ModelAuth(
+        protocol="anthropic", base_url="http://10.4.127.100:8080", model="claude-sonnet-4-5"))
+    model = build_chat_model(settings, home=tmp_path)
+    assert model.profile["max_input_tokens"] == own
+    assert model.profile["circle_window_source"] == "profile"
 
 
 def test_the_answer_keeps_to_a_quarter_of_the_window(catalog, tmp_path):
@@ -253,3 +284,38 @@ def test_a_failed_refresh_keeps_what_is_there(tmp_path, monkeypatch):
     assert not model_catalog.cache_path(tmp_path).exists()
     model_catalog.bind_endpoint("", "anthropic")
     assert model_catalog.facts("claude-sonnet-5").window_known
+
+
+def test_a_subscription_without_a_reference_price_shows_none_rather_than_free():
+    """Kimi's coding plan (models.dev: price 0) is a subscription: its reference is
+    Moonshot's pay-as-you-go entry, here under the vendor's own name for the model."""
+    model_catalog.set_catalog(model_catalog.slim({
+        "kimi-code-plan-cn": {"api": "https://api.kimi.com/coding/v1", "models": {
+            "k3": {"limit": {"context": 1_048_576}, "cost": {"input": 0, "output": 0}},
+            "kimi-for-coding": {"limit": {"context": 262_144}, "cost": {"input": 0, "output": 0}}}},
+        "moonshotai-cn": {"api": "https://api.moonshot.cn/v1", "models": {
+            "kimi-k3": {"limit": {"context": 1_048_576}, "cost": {"input": 0.95, "output": 4}}}},
+    }))
+    model_catalog.bind_endpoint("https://api.kimi.com/coding/v1", "openai")
+    assert model_catalog.facts("k3").price_provider == "moonshotai-cn"
+    assert model_catalog.facts("kimi-for-coding").rates is None, "N/A, not $0"
+
+
+def test_a_copy_in_another_shape_is_not_used(tmp_path):
+    copy = model_catalog.cache_path(tmp_path)
+    copy.parent.mkdir(parents=True)
+    copy.write_text(json.dumps({"schema": model_catalog.SCHEMA, "providers": {
+        "x": {"api": "", "models": ["not", "a", "mapping"]}}}), encoding="utf-8")
+    model_catalog.reset(tmp_path)
+    assert model_catalog.source() == "snapshot"
+    assert model_catalog.facts("anything").context_window > 0
+
+
+def test_circle_model_ctx_sets_every_models_window(catalog, monkeypatch):
+    monkeypatch.setenv("CIRCLE_MODEL_CTX", "64_000")
+    model_catalog.bind_endpoint("https://open.bigmodel.cn/api/anthropic", "anthropic")
+    model_catalog.set_catalog(catalog)
+    assert model_catalog.facts("glm-5.3").context_window == 64_000
+    model_catalog.bind_endpoint("https://open.bigmodel.cn/api/anthropic", "anthropic",
+                                {"glm-5.3": 200_000})
+    assert model_catalog.facts("glm-5.3").context_window == 200_000, "the setting wins"

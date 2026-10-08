@@ -2,18 +2,22 @@
 shows a progress row while it runs (``auto-compacting · ████░░░░ summarizing · 12s``) and one
 line when it ends, automatic and /compact alike.
 
-The window is the model's ``profile["max_input_tokens"]``: 20,000 here, so the compaction
-starts at 85% = 17,000 and keeps the last 10% = 2,000. Circle's own system prompt and tools
-are about 11,600 tokens, so a 6,000-token message takes a two-message conversation past the
-threshold (one message alone cannot be split), and a 3,000-token one gives /compact something
-older than what it keeps.
+The window is the model's ``profile["max_input_tokens"]``. It is set from what Circle's own
+system prompt and tools measure on the harness these tests build (``Sizes``), so that the
+prompt plus a 6,000-token message is 90% of it: past the 85% the compaction starts at, still
+inside the 95% budget, and a second message takes the conversation over (one message alone
+cannot be split). The compaction keeps the last 10%, less than a 3,000-token message, which
+gives /compact something older than what it keeps. Your home folder is replaced by an empty
+one, so the skills and instruction files there do not change the prompt.
 """
 
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from circle.compaction import (
@@ -22,6 +26,8 @@ from circle.compaction import (
     CompactionWatcher,
     done_text,
 )
+from langchain_core.messages.utils import count_tokens_approximately
+
 from circle.context_middleware import build_context_middleware, thread_config
 from circle.harness import create_harness
 from circle.testing import ScriptedModel
@@ -30,9 +36,49 @@ LONG = "word " * 4_800  # ~6k tokens by the approximate counter: past 85%, under
 OLDER = "word " * 2_400  # ~3k tokens: more than the 2k the compaction keeps
 
 
-def _model(*replies: str) -> ScriptedModel:
+@pytest.fixture(autouse=True)
+def _empty_home(tmp_path, monkeypatch):
+    """Skills and instruction files in your home folder would make the prompt longer."""
+    home = tmp_path / "user-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+
+@dataclass
+class Sizes:
+    overhead: int  # Circle's system prompt and tools, as the engine counts them
+    window: int  # the model's window: overhead + a LONG message is 90% of it
+
+    @property
+    def threshold(self) -> int:
+        return int(self.window * 0.85)
+
+
+@pytest.fixture
+def sizes(tmp_path, monkeypatch) -> Sizes:
+    seen: list[int] = []
+    room = CircleSummarization._room
+
+    def measure(self, request):
+        out = room(self, request)
+        seen.append(self._approximate([]))
+        return out
+
+    monkeypatch.setattr(CircleSummarization, "_room", measure)
+    probe = ScriptedModel(responses=[AIMessage(content="ok")])
+    probe.profile = {"max_input_tokens": 1_000_000}
+    create_harness(probe, root_dir=tmp_path, home=tmp_path).invoke(
+        {"messages": [HumanMessage(content="hi")]}, config=thread_config("probe"))
+    monkeypatch.setattr(CircleSummarization, "_room", room)
+    overhead = seen[0]
+    long_tokens = count_tokens_approximately([HumanMessage(content=LONG)])
+    return Sizes(overhead=overhead, window=round((overhead + long_tokens) / 0.9))
+
+
+def _model(*replies: str, window: int) -> ScriptedModel:
     model = ScriptedModel(responses=[AIMessage(content=reply) for reply in replies])
-    model.profile = {"max_input_tokens": 20_000}
+    model.profile = {"max_input_tokens": window}
     return model
 
 
@@ -44,7 +90,7 @@ def test_the_engine_takes_deepagents_place_and_reads_the_window_from_the_profile
         tmp_path, monkeypatch):
     from deepagents.middleware.summarization import SummarizationMiddleware
 
-    model = _model("ok")
+    model = _model("ok", window=20_000)
     engine, tool = build_context_middleware(model, None)
     assert isinstance(engine, CircleSummarization)
     assert engine.name == "SummarizationMiddleware", "replaces deepagents' own by name"
@@ -63,8 +109,8 @@ def test_the_engine_takes_deepagents_place_and_reads_the_window_from_the_profile
     assert ran == ["CircleSummarization"], "one summarization layer, and it is Circle's"
 
 
-def test_auto_compaction_reports_each_step(tmp_path):
-    model = _model("first", "SUMMARY OF THE EARLIER TALK", "second")
+def test_auto_compaction_reports_each_step(tmp_path, sizes):
+    model = _model("first", "SUMMARY OF THE EARLIER TALK", "second", window=sizes.window)
     agent = create_harness(model, root_dir=tmp_path, home=tmp_path)
     events: list[dict] = []
     cfg = {**thread_config("auto"), "callbacks": [CompactionWatcher(events.append)]}
@@ -74,11 +120,11 @@ def test_auto_compaction_reports_each_step(tmp_path):
     assert out["messages"][-1].content == "second"
     assert _phases(events) == ["start", "saving", "saved", "summarizing", "summarized", "done"]
     start, done = events[0], events[-1]
-    assert start["trigger"] == "auto" and start["tokens"] > 17_000
+    assert start["trigger"] == "auto" and start["tokens"] > sizes.threshold
     assert done["trigger"] == "auto" and done["summarized"] >= 1 and done["kept"] >= 1
     assert done["file"] and done["tokens_after"] < done["tokens_before"]
-    # both counts are the whole request, as the footer's ctx: the ~11.6k of prompt and tools too
-    assert done["tokens_after"] > 10_000
+    # both counts are the whole request, as the footer's ctx: the prompt and tools too
+    assert done["tokens_after"] > sizes.overhead
     text = done_text(done, automatic=True)
     assert text.startswith("auto-compacted · ~") and "history: " in text
 
@@ -113,7 +159,7 @@ def test_the_answers_reserve_can_bring_the_compaction_forward(tmp_path):
     assert progress.label == "auto-compacting"
 
 
-def test_compact_tool_reports_the_same_steps(tmp_path, monkeypatch):
+def test_compact_tool_reports_the_same_steps(tmp_path, monkeypatch, sizes):
     from deepagents.middleware.summarization import SummarizationToolMiddleware
 
     # deepagents lets the tool run from half the threshold on, judged by reported usage
@@ -126,7 +172,7 @@ def test_compact_tool_reports_the_same_steps(tmp_path, monkeypatch):
         AIMessage(content="THE SUMMARY"),
         AIMessage(content="compacted it"),
     ])
-    model.profile = {"max_input_tokens": 20_000}
+    model.profile = {"max_input_tokens": sizes.window}
     agent = create_harness(model, root_dir=tmp_path, home=tmp_path)
     events: list[dict] = []
     cfg = {**thread_config("tool"), "callbacks": [CompactionWatcher(events.append)]}
@@ -136,10 +182,10 @@ def test_compact_tool_reports_the_same_steps(tmp_path, monkeypatch):
     # the tool summarizes first and saves the history after
     assert _phases(events) == ["start", "summarizing", "summarized", "saving", "saved", "done"]
     assert events[0]["trigger"] == "tool" and events[-1]["trigger"] == "tool"
-    assert 10_000 < events[-1]["tokens_after"] < events[-1]["tokens_before"]
+    assert sizes.overhead < events[-1]["tokens_after"] < events[-1]["tokens_before"]
 
 
-def test_a_failed_summary_is_reported_and_still_raises(tmp_path):
+def test_a_failed_summary_is_reported_and_still_raises(tmp_path, sizes):
     import pytest
 
     class Broken(ScriptedModel):
@@ -152,7 +198,7 @@ def test_a_failed_summary_is_reported_and_still_raises(tmp_path):
             return super()._generate(messages, stop, run_manager, **kwargs)
 
     model = Broken(responses=[AIMessage(content="first"), AIMessage(content="second")])
-    model.profile = {"max_input_tokens": 20_000}
+    model.profile = {"max_input_tokens": sizes.window}
     agent = create_harness(model, root_dir=tmp_path, home=tmp_path)
     events: list[dict] = []
     cfg = {**thread_config("broken"), "callbacks": [CompactionWatcher(events.append)]}
@@ -168,7 +214,7 @@ def test_the_counts_read_like_the_footers_ctx():
     for the last answer, so they are in the units of the footer's ctx."""
     from langchain_core.messages.utils import count_tokens_approximately
 
-    engine, _tool = build_context_middleware(_model("x"), None)
+    engine, _tool = build_context_middleware(_model("x", window=20_000), None)
     talk = [HumanMessage(content="word " * 2_000), AIMessage(content="ok")]
     approximate = count_tokens_approximately(talk)
     assert engine._provider_scale(talk) == 1.0, "nothing reported: the approximation"
@@ -263,11 +309,12 @@ def _wait(app, seconds: float = 15.0) -> None:
         time.sleep(0.05)
 
 
-def test_a_compaction_inside_a_turn_leaves_its_line_under_the_turn(tmp_path, monkeypatch):
+def test_a_compaction_inside_a_turn_leaves_its_line_under_the_turn(tmp_path, monkeypatch, sizes):
     """A turn is redrawn in place while it runs: the closing line waits for its end, so it
     never comes between the answer and the turn's usage line."""
     app = _session(tmp_path, monkeypatch)
-    app.model_override = _model("first", "SUMMARY OF THE EARLIER TALK", "second")
+    app.model_override = _model("first", "SUMMARY OF THE EARLIER TALK", "second",
+                                window=sizes.window)
     app._rebuild_agent(model=app.model_override)
     app._on_submit(LONG)
     _wait(app)
@@ -292,7 +339,7 @@ def test_a_failed_compaction_leaves_a_red_line(tmp_path, monkeypatch):
     app._footer.shutdown()
 
 
-def test_compact_shows_the_row_at_once_and_one_closing_line(tmp_path, monkeypatch):
+def test_compact_shows_the_row_at_once_and_one_closing_line(tmp_path, monkeypatch, sizes):
     from deepagents.middleware.summarization import SummarizationToolMiddleware
 
     monkeypatch.setattr(SummarizationToolMiddleware, "_is_eligible_for_compaction",
@@ -304,7 +351,7 @@ def test_compact_shows_the_row_at_once_and_one_closing_line(tmp_path, monkeypatc
         AIMessage(content="THE SUMMARY"),
         AIMessage(content="Compacted."),
     ])
-    app.model_override.profile = {"max_input_tokens": 20_000}
+    app.model_override.profile = {"max_input_tokens": sizes.window}
     app._rebuild_agent(model=app.model_override)
     app._agent.update_state(thread_config(app._thread_id), {"messages": [
         HumanMessage(content=OLDER), AIMessage(content="b"), HumanMessage(content="c"),
@@ -380,3 +427,33 @@ def test_the_row_takes_its_colours_from_the_palette_at_each_repaint(tmp_path, mo
     finally:
         theme._detected = saved  # noqa: SLF001
         theme.reset_palette()
+
+
+def test_esc_takes_an_automatic_compactions_row_down_without_a_red_line(tmp_path, monkeypatch):
+    """Stopping the turn stops its compaction: the row goes at once, and the cancellation the
+    engine then reports is not a failure (the stop line says what happened)."""
+    app = _session(tmp_path, monkeypatch)
+    app._on_compaction({"phase": "start", "trigger": "auto", "messages": 40, "keep": 6,
+                        "tokens": 171_000})
+    assert app._compaction is not None
+    app._dismiss_user_panels()
+    assert app._compaction is None
+    app._on_compaction({"phase": "summarizing"})
+    app._on_compaction({"phase": "failed", "error": "CircleCancelled: Circle turn cancelled"})
+    text = "\n".join(app._transcript.snapshot())
+    assert "Compaction failed" not in text and app._compaction is None
+    app._footer.shutdown()
+
+
+def test_a_turn_error_is_called_a_compaction_failure_only_when_it_is_one(tmp_path, monkeypatch):
+    app = _session(tmp_path, monkeypatch)
+    app._held_notes = [("fail", "Compaction failed: RuntimeError: summary model down")]
+    app._on_error(TimeoutError("the endpoint did not answer in 45s"))
+    text = "\n".join(app._transcript.snapshot())
+    assert "Compaction failed: RuntimeError: summary model down" in text
+    assert "Compaction failed: TimeoutError" not in text and "did not answer" in text
+    app._held_notes = [("fail", "Compaction failed: RuntimeError: summary model down")]
+    app._on_error(RuntimeError("summary model down"))
+    last = app._transcript.snapshot()[-1]
+    assert "Compaction failed:" in last and "summary model down" in last
+    app._footer.shutdown()

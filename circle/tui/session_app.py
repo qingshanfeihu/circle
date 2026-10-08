@@ -1277,8 +1277,12 @@ class CircleSessionApp:
                 return
             if phase == "failed":
                 self._compaction = None
-                self._compaction_note(
-                    "fail", f"Compaction failed: {event.get('error') or 'unknown error'}")
+                error = str(event.get("error") or "unknown error")
+                if error.startswith("CircleCancelled"):
+                    # you stopped the turn: its stop line says so, nothing failed
+                    self._app.render()
+                    return
+                self._compaction_note("fail", f"Compaction failed: {error}")
                 return
         self._app.render()
 
@@ -5085,11 +5089,14 @@ class CircleSessionApp:
         elsewhere (a test's) has none, and the footer looks the name up itself."""
         name = self.settings.auth.model
         chat = getattr(self, "_chat_model", None)
-        window = (getattr(chat, "profile", None) or {}).get("max_input_tokens")
+        profile = getattr(chat, "profile", None) or {}
+        window = profile.get("max_input_tokens")
         kwargs: dict[str, Any] = {"model": name, "reasoning_effort": reasoning_effort_of(chat)}
         if isinstance(window, int) and not isinstance(window, bool) and window > 0:
             kwargs["tokens_budget"] = window
-            kwargs["tokens_budget_known"] = model_catalog.facts(name).window_known
+            source = profile.get("circle_window_source")
+            kwargs["tokens_budget_known"] = (source != "fallback" if source
+                                             else model_catalog.facts(name).window_known)
         self._footer.update(**kwargs)
 
     def _on_models_refreshed(self) -> None:
@@ -5364,9 +5371,12 @@ class CircleSessionApp:
             said = _format_llm_error(exc)
             if _refused_the_key(exc):
                 said += " · /login to change the key"
-            if any(kind == "fail" for kind, _text in self._held_notes):
+            reason = str(exc).strip()[:200]
+            failed = [n for n in self._held_notes if n[0] == "fail"
+                      and reason and reason in n[1]]
+            if failed:
                 # the compaction's failure is what ended the turn: one red line says both
-                self._held_notes = [n for n in self._held_notes if n[0] != "fail"]
+                self._held_notes = [n for n in self._held_notes if n not in failed]
                 said = f"Compaction failed: {said}"
             self._flush_held_notes()
             self._transcript.append_message(_error_line(said))
@@ -5640,7 +5650,11 @@ class CircleSessionApp:
         return session.handle_key(kp.key, kp.char)
 
     def _dismiss_user_panels(self) -> None:
-        """The turn was cancelled: nothing will resume it, so no panel waits on the user."""
+        """The turn was cancelled: nothing will resume it, so no panel waits on the user,
+        and a compaction it was running is not shown any more."""
+        progress = getattr(self, "_compaction", None)
+        if progress is not None and progress.automatic:
+            self._compaction = None
         self._card_defer = None
         self._ask_session = None
         self._ask_queue = []

@@ -33,6 +33,7 @@ class Terminal:
     def __init__(self, args, home, ws, tui=False):
         env = {'PATH':'/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8','TERM':'xterm-256color',
                'PYTHONUTF8':'1','CIRCLE_HOME':str(home),'CIRCLE_NO_UPDATE_CHECK':'1',
+               'CIRCLE_NO_MODELS_REFRESH':'1',
                'NO_PROXY':'localhost,127.0.0.1', 'COLORFGBG': '0;15'}
         if not tui: env['CIRCLE_NO_TUI']='1'
         self.pid, self.fd = pty.fork()

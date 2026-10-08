@@ -46,7 +46,7 @@ Read [Before you edit by hand](#before-you-edit-by-hand) first.
 | `mcp_servers` | list of objects | `[]` | MCP servers to connect. See [MCP](mcp.md). |
 | `extensions` | object | `{}` | `{"name": {"enabled": false}}` turns an extension off. See [Extensions](extensions.md). |
 | `credential_files` | list of strings | `[]` | File name patterns the model may not touch from the shell. See [Security](security.md#credential-files). |
-| `models` | object | `{}` | Per model: `{"glm-5.3": {"context_window": 1000000}}` sets the context window the footer shows and the automatic compaction uses, in place of the one from models.dev. The answer's limit is held to a quarter of it; [Models](models.md#cost-and-context-in-the-footer) says where compaction starts. See [Models](models.md#cost-and-context-in-the-footer). |
+| `models` | object | `{}` | Per model: `{"glm-5.3": {"context_window": 1000000}}` sets the context window the footer shows and the automatic compaction uses, in place of the one from models.dev. When the model asks for an answer limit, it is held to a quarter of it; [Models](models.md#cost-and-context-in-the-footer) says where compaction starts. `CIRCLE_MODEL_CTX` sets one window for every model. |
 | `update_check` | boolean | `true` | Once a day, when the full-screen interface starts, ask GitHub whether a newer release exists and say so in one line. `false` turns it off. See [Updating](cli.md#updating). |
 
 ## Project settings

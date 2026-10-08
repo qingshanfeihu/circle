@@ -192,18 +192,25 @@ def apply_context_window(model: BaseChatModel, settings: CircleSettings, model_n
     model_catalog.bind(settings)
     facts = model_catalog.facts(model_name)
     profile = dict(getattr(model, "profile", None) or {})
-    profile["max_input_tokens"] = facts.context_window
+    own = profile.get("circle_profile_window", profile.get("max_input_tokens"))
+    window, source = facts.context_window, facts.window_source
+    if source == "fallback" and isinstance(own, int) and not isinstance(own, bool) and own > 0:
+        # models.dev does not know it: the window langchain's own profile gives the model
+        window, source = own, "profile"
+        profile["circle_profile_window"] = own
+    profile["max_input_tokens"] = window
+    profile["circle_window_source"] = source
     if facts.output_limit:
         profile["max_output_tokens"] = facts.output_limit
     # The size asked for before any cap, so a window that grows later gives it back
     wanted = profile.get("circle_max_tokens") or getattr(model, "max_tokens", None)
     if isinstance(wanted, int) and not isinstance(wanted, bool) and wanted > 0:
         profile["circle_max_tokens"] = wanted
-        cap = min(wanted, max(1024, facts.context_window // _ANSWER_SHARE))
+        cap = min(wanted, max(1024, window // _ANSWER_SHARE))
         _assign(model, "max_tokens", cap)
         thinking = getattr(model, "thinking", None)
         if isinstance(thinking, dict) and int(thinking.get("budget_tokens") or 0) >= cap:
             # Anthropic wants the thinking budget below max_tokens
             _assign(model, "thinking", {**thinking, "budget_tokens": max(1024, cap // 2)})
     _assign(model, "profile", profile)
-    return facts.context_window
+    return window

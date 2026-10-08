@@ -11,9 +11,12 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 - **The model has `list_jobs` and `stop_job`**, and the `general-purpose` subagent `wait_jobs`.
 - **Extensions can wait for something slow** by returning `api.Watch` from a tool: Circle polls it off the model's turns and hands the result over as a notice. See [Build extensions](docs/extensions.md#waiting-for-something-slow).
 - **Print mode waits for the model's background jobs** after its answer, up to `CIRCLE_JOB_WAIT` seconds; JSON and RPC modes report jobs as events, and RPC mode has `list_jobs` and `stop_job`.
+- **Compaction shows itself while it runs.** A row above the input box follows the automatic compaction and `/compact` step by step with a progress bar, and one line stays when it is done: how many tokens before and after, how many messages were summarized and kept, and where the older messages were saved. A failed compaction leaves a red line. See [Compaction](docs/sessions.md#compaction).
+- **`models` in `settings.json` sets a model's context window**, and `CIRCLE_MODEL_CTX` sets every model's.
 
 ### Changed
 
+- **Context windows and prices come from [models.dev](https://models.dev).** A snapshot ships with Circle and a newer copy is fetched once a day in the background (`CIRCLE_NO_MODELS_REFRESH` turns that off). Circle takes the entry of the provider your `base_url` points at, and for a gateway or a proxy the model's own vendor's. The footer's cost is in US dollars at pay-as-you-go prices, a subscription's being its vendor's for reference; a window or a price Circle does not know reads `N/A`. The footer and the automatic compaction use the same window. See [Models](docs/models.md#cost-and-context-in-the-footer).
 - **A command's standard output and standard error come back together**, in the order they were written, instead of standard error after standard output with a `[stderr]` prefix.
 - **A command that runs past the default timeout is no longer ended**: it goes on as a background job. One the model gave its own `timeout` is still ended then.
 - **The Gemini prompt no longer tells the model to start servers with `&`.**

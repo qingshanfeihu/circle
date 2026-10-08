@@ -64,7 +64,12 @@ _SDK_HOSTS = {
 # The host of a connection that has no base URL (an OAuth sign-in)
 _PROTOCOL_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com"}
 # A subscription provider; its pay-as-you-go twin is the same id without this part
-_PLAN = re.compile(r"-(?:coding|token|step)-plan")
+_PLAN = re.compile(r"-(?:coding|code|token|step)-plan")
+# … or, where that id does not exist, this one (whose model ids may carry the vendor's prefix)
+_PLAN_TWINS = {"kimi-code-plan-cn": ("moonshotai-cn", "kimi-"),
+               "kimi-code-plan-global": ("moonshotai", "kimi-")}
+# Providers that are the model's own vendor: by name, their entry is the reference
+_VENDORS = tuple(dict.fromkeys(_SDK_HOSTS.values()))
 
 
 # ── the data ─────────────────────────────────────────────────────────────
@@ -121,9 +126,28 @@ def slim(raw: Any) -> dict[str, Any]:
     return {"schema": SCHEMA, "providers": providers}
 
 
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def _valid(data: Any) -> bool:
-    return (isinstance(data, Mapping) and data.get("schema") == SCHEMA
-            and isinstance(data.get("providers"), Mapping) and bool(data["providers"]))
+    """The shape ``slim`` writes, all the way down: a copy written by another version of
+    Circle, or damaged, is not used (the snapshot answers instead)."""
+    if not (isinstance(data, Mapping) and data.get("schema") == SCHEMA
+            and isinstance(data.get("providers"), Mapping) and data["providers"]):
+        return False
+    for provider in data["providers"].values():
+        if not (isinstance(provider, Mapping) and isinstance(provider.get("api", ""), str)
+                and isinstance(provider.get("models"), Mapping)):
+            return False
+        for entry in provider["models"].values():
+            if not isinstance(entry, Mapping):
+                return False
+            if any(key in entry and not _whole(entry[key]) for key in ("context", "output")):
+                return False
+            if "cost" in entry and not isinstance(entry["cost"], Mapping):
+                return False
+    return True
 
 
 def cache_path(home: Path | None = None) -> Path:
@@ -171,6 +195,17 @@ def _providers() -> dict[str, Any]:
             _store.providers = dict((data or {}).get("providers") or {})
             _store.source = source if data else ""
         return _store.providers
+
+
+def reset(home: Path | None = None) -> None:
+    """Forget what is loaded and read it again from ``home``'s copy or the snapshot (the
+    start of a session; each test, with a home of its own)."""
+    with _store.lock:
+        _store.providers = None
+        _store.source = ""
+        _store.home = home
+        _store.generation += 1
+        _facts_cache.clear()
 
 
 def set_catalog(data: Mapping[str, Any] | None, *, source: str = "test") -> None:
@@ -350,8 +385,11 @@ def _choose(providers: Mapping[str, Any], model: str, host: str
     window = sorted(found, key=order)[0]
     for pid, _entry in found:
         if _PLAN.search(pid):
-            twin = _PLAN.sub("", pid)
-            entry = _find((providers.get(twin) or {}).get("models") or {}, model)
+            twin, prefix = _PLAN_TWINS.get(pid, (_PLAN.sub("", pid), ""))
+            twin_models = (providers.get(twin) or {}).get("models") or {}
+            entry = _find(twin_models, model)
+            if entry is None and prefix:
+                entry = _find(twin_models, prefix + model)
             if entry is not None and _priced(entry):
                 return window, (twin, entry)
     if not _PLAN.search(window[0]) and "cost" in window[1]:
@@ -359,7 +397,31 @@ def _choose(providers: Mapping[str, Any], model: str, host: str
     return window, None
 
 
+def _by_name(providers: Mapping[str, Any], model: str
+             ) -> tuple[tuple[str, Mapping[str, Any]] | None, tuple[str, Mapping[str, Any]] | None]:
+    """For a host models.dev does not list (a gateway, a proxy, a server of your own): the
+    model by its name, the vendor's own entry first, a subscription's last."""
+    if not model:
+        return None, None
+    found = [(pid, entry) for pid, provider in providers.items()
+             if (entry := _find(provider.get("models") or {}, model)) is not None]
+    order = lambda item: (item[0] not in _VENDORS, bool(_PLAN.search(item[0])), item[0])  # noqa: E731
+    sized = sorted((item for item in found if isinstance(item[1].get("context"), int)), key=order)
+    paid = sorted((item for item in found if _priced(item[1])), key=order)
+    return (sized[0] if sized else None), (paid[0] if paid else None)
+
+
 _facts_cache: dict[tuple[str, Endpoint, int], ModelFacts] = {}
+
+
+def _env_window() -> int | None:
+    """``CIRCLE_MODEL_CTX``: one window for every model (a setting per model wins)."""
+    raw = (os.environ.get("CIRCLE_MODEL_CTX") or "").strip().replace("_", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def facts(model: str) -> ModelFacts:
@@ -371,11 +433,24 @@ def facts(model: str) -> ModelFacts:
         if cached is not None:
             return cached
         endpoint = _endpoint
-        window_item, price_item = _choose(_providers(), model, endpoint.host)
+        providers = _providers()
+        window_item, price_item = _choose(providers, model, endpoint.host)
+        if window_item is None or price_item is None:
+            # the host is not in models.dev, or does not list this model: go by its name
+            named_window, named_price = _by_name(providers, model)
+            if window_item is None:
+                window_item = named_window
+            if price_item is None and named_price is not None and (
+                    window_item is None or _PLAN.search(window_item[0])
+                    or window_item is named_window):
+                price_item = named_price
         overrides = dict(endpoint.windows)
         window_entry = window_item[1] if window_item else {}
+        every = _env_window()
         if model in overrides:
             window, known, origin = overrides[model], True, "settings"
+        elif every:
+            window, known, origin = every, True, "settings"
         elif isinstance(window_entry.get("context"), int):
             window, known, origin = int(window_entry["context"]), True, "models.dev"
         else:
