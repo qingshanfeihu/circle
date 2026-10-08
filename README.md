@@ -1,31 +1,51 @@
 # circle-next
 
-Circle 的 TypeScript 重写项目：基于 [Circle](https://github.com/qingshanfeihu/circle) 的产品能力重写内核，保持现有 TUI 和操作方式。
+A terminal coding agent for your own model endpoint, written in TypeScript.
 
-## 项目方向
+## Development
 
-- **主要语言：TypeScript。** 目标运行时不再依赖 Python；具体 Node.js 版本和构建工具在实现阶段确定。
-- **自有内核。** 重写模型调用循环、工具调度、审批、取消、会话持久化和上下文管理，不使用 LangChain、LangGraph 或 Deep Agents 作为运行内核。
-- **界面与操作保持兼容。** 保留 Circle 的布局、主题、状态信号、快捷键、斜杠命令、首次设置、审批和会话操作；底层语言变化不成为重新设计界面的理由。
-- **以现有项目为依据。** 逐项核实 Circle 的代码、测试和真实行为，再移植；不把文档规划当作已实现能力。
+Requires Node.js 24 or newer. Dependencies and the TypeScript compiler are installed locally and pinned in `package-lock.json`.
 
-## 当前状态
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
+node dist/cli.js --version
+```
 
-仓库已初始化，包含项目方向、架构规划、迁移验收要求和旧项目基线记录。**尚无可运行的 TypeScript 内核或 TUI，也没有安装、构建或测试命令。**
+Run from source with `npm run dev -- [options]`, or run the compiled CLI with `node dist/cli.js [options]`. Use an isolated `CIRCLE_HOME` while developing:
 
-迁移基线为 Circle **0.4.0**，提交 [`645ac43`](https://github.com/qingshanfeihu/circle/commit/645ac4357fa4e7977c2812b133be8d65c277bf0b)。本地源目录与 GitHub `main` 在初始化时一致；此提交是固定参考，不随上游自动变化。
+```bash
+CIRCLE_HOME=$(mktemp -d) npm run dev -- ~/code/my-project
+```
 
-## 文档
+The terminal interface asks for the API base URL, key, model and workspace trust. Configuration lives in `CIRCLE_HOME` (default `~/.circle`). API keys are stored separately from settings and are removed from tool subprocess environments.
 
-- [架构方向](docs/architecture.md)：自有内核边界与拟定模块划分。
-- [兼容要求与迁移计划](docs/migration.md)：TUI、操作、内核行为的验收清单。
-- [基线收据](docs/baseline.json)：参考提交、关键源文件与测试文件的 SHA-256。
-- [贡献指南](AGENTS.md)：已有贡献指南保持原样；其空目录说明记录了初始化前的状态。
+```bash
+node dist/cli.js -p "Summarize README.md" ~/code/my-project
+node dist/cli.js -c ~/code/my-project
+node dist/cli.js --mode json "List the TODOs" ~/code/my-project
+node dist/cli.js --mode rpc ~/code/my-project
+```
 
-## 开发原则
+Print and RPC mode require initialized settings and a trusted folder. Mutating tools require approval; headless callers use `--yolo` for ordinary writes and commands. Operations that always ask remain blocked in headless mode.
 
-先建立可复现的兼容测试，再替换对应模块。修改旧 Circle 的工作不属于本仓库的默认范围。开发与验收使用独立的数据目录，避免覆盖现有 `~/.circle` 设置、凭据或会话数据库。
+## Project layout
 
-初次引入实现时同时提交依赖清单、锁文件、格式化与检查配置、自动化测试和 CI，并在本页补充经过验证的命令。源码计划放在 `src/`，测试放在 `tests/`。
+- `src/`: CLI, independent agent runtime, tools, policy, sessions and terminal interface.
+- `src/ink/` and `src/tui/`: terminal input, themes, rendering and interaction.
+- `src/prompts/`: model, agent, command and tool instructions.
+- `tests/`: behavior tests using controlled models, local HTTP gateways and real filesystem/process effects.
+- `scripts/`: development and build tasks.
+- `docs/`: user and contributor documentation.
 
-Python 扩展、旧会话格式和安装升级路径需要明确的迁移方案；不承诺未经验证的二进制或插件兼容。许可证尚未选定。
+Use `npm run format` to format TypeScript and configuration, `npm run format:check` to check formatting, and `npm run check` for type checking, tests and compilation. CI is configured for Linux, macOS and Windows.
+
+## Status
+
+This is a development build, not the first stable release. The runtime and CLI execute turns, file tools, commands, approvals, session persistence, branching and streamed model responses without Python or an agent framework. The TUI is being validated against the established interaction style.
+
+MCP, extension compatibility, LSP, full command behavior, robust provider recovery, cross-platform packaging and one-command installation are still under development. Existing session databases are not migrated automatically. Keep development data separate from an existing installation.
+
+See [architecture](docs/architecture.md), [development](docs/development/README.md), and [known issues](docs/known-issues.md). License selection is pending.

@@ -8,3 +8,5 @@ coverage/
 .DS_Store
 .circle-next/
 *.log
+.reference/
+.tmp/

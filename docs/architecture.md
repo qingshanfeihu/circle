@@ -1,41 +1,23 @@
-# 架构方向
+# Architecture
 
-本文描述拟实现架构，当前没有运行代码。
+The application runs on Node.js 24 and uses TypeScript with strict compiler checks. The agent loop is owned by this repository; it does not depend on LangChain, LangGraph or Deep Agents.
 
-## 约束
+## Runtime
 
-TypeScript 是主要实现语言，最终应用运行不依赖 Python。LangChain、LangGraph 和 Deep Agents 不进入新内核依赖树。可以使用协议 SDK、数据库、终端渲染和进程管理库，但回合推进、状态所有权和工具执行由 Circle 自有内核负责。
+`src/cli.ts` parses run options and selects terminal, line, print, JSON or RPC mode. `src/runtime.ts` assembles a model, tools, policy, prompts and session. `src/harness.ts` advances model and tool steps, consumes steering messages before the next request, and starts follow-ups after a turn finishes.
 
-现有 TUI 的显示和操作是兼容目标。渲染库尚未选定；先以现有 Circle 的契约和参考终端输出确定行为，不能因为选用某个库而改变交互。
+`src/model.ts` adapts OpenAI-compatible and Anthropic-compatible endpoints through protocol SDKs. Text, thinking, tool calls and usage are normalized at this boundary. `src/types.ts` defines the messages and tool contracts used by the runtime.
 
-## 拟定模块
+## Effects and persistence
 
-| 路径 | 责任 |
-|---|---|
-| `src/core/` | 回合状态机、模型与工具循环、插话/后续队列、取消与终止 |
-| `src/providers/` | 模型协议适配、流式响应、工具调用解析、用量 |
-| `src/tools/` | 文件、命令、搜索与工具注册，标明副作用 |
-| `src/policy/` | 逐调用审批、会话规则、read-only、工作区信任、凭据保护 |
-| `src/sessions/` | 原始事件、消息、分支、上下文投影、持久化和导入导出 |
-| `src/tui/` | 现有屏幕布局、键位、输入、对话卡、弹窗和主题 |
-| `src/cli/` | 参数、TUI/line/print/JSON/RPC 入口及退出码 |
-| `src/integrations/` | MCP、skills、自定义命令、扩展和子代理接入 |
-| `tests/` | 内核行为、协议、兼容性、进程与终端验收 |
+`src/tools.ts` implements filesystem and command tools. `src/sandbox.ts` resolves host and workspace paths, strips secret environment variables, and terminates command process groups on cancellation. This is a policy boundary, not an operating-system sandbox.
 
-这些目录是规划，首次实现时再创建。
+`src/approvals.ts` classifies commands, keeps session rules and decides which calls require an answer. Read-only mode blocks tools with write, execution or unknown effects. `src/settings.ts` protects account settings from project overrides and writes credentials separately.
 
-## 内核与界面边界
+`src/checkpoint_store.ts` stores immutable message checkpoints and session branch heads in SQLite. Model summaries are projections; raw messages and tool output stay intact. The development database is `circle-next.sqlite`; old databases are not overwritten or automatically imported.
 
-内核发布带会话、回合和调用标识的类型化事件，界面消费事件并提交用户动作。TUI 不直接执行工具；所有入口，包括 MCP、扩展和子代理，经过同一执行策略。
+## Terminal
 
-回合状态需要区分模型流式输出、工具执行、等待用户、取消与结束。插话在下一次模型请求前消费，后续消息在当前回合结束后消费；重复事件不能重复触发工具副作用。
+`src/ink/` parses input and terminal colour reports, derives a readable palette, and renders components. `src/tui/` handles drafts, dialogs, pickers, commands, transcript views and model events. Colors come from the shared palette. UI words are short English labels; user and model content are retained as written.
 
-取消必须关闭模型请求、停止活动工具和子进程，并在确认终止后结束回合。审批结果绑定具体调用和参数；拒绝、取消与执行失败分别记录。
-
-保存原始会话事实；模型上下文和界面视图通过可重复的投影产生。压缩、折叠和裁剪不得覆盖原始工具结果。撤销、树和分支的语义以迁移契约为准，不能仅改变屏幕后宣称模型已回退。
-
-## 数据与兼容边界
-
-新存储格式采用显式版本。迁移旧 SQLite、配置或 JSONL 前，先备份并只读验证；使用独立测试数据目录。旧 Python 扩展不会自动变成 TypeScript 扩展，需要保留操作入口并另行设计接口及迁移方式。
-
-Node.js 版本、终端库、存储引擎和模型 SDK 尚未定案。选型须由兼容测试、跨平台运行和维护成本支撑，不在项目初始化阶段作未经验证的支持声明。
+`src/events.ts` isolates subscribers so a display failure cannot interrupt the runtime. The same runtime serves headless entry points. Integration and release modules are added with their corresponding behavior and platform tests.

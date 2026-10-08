@@ -1,0 +1,48 @@
+{
+  "name": "circle-next",
+  "version": "0.1.0-dev",
+  "private": true,
+  "description": "TypeScript rewrite of Circle with an independent agent core",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "circle": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "src/prompts",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsx scripts/copy-assets.ts",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "test": "tsx --test tests/*.test.ts",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"*.json\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"*.json\"",
+    "check": "npm run typecheck && npm test && npm run build",
+    "port:status": "tsx scripts/port-status.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qingshanfeihu/circle-next.git"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "prettier": "3.9.9",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.132.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "glob": "13.0.6",
+    "marked": "18.1.0",
+    "openai": "7.30.1",
+    "string-width": "8.3.0",
+    "strip-ansi": "7.2.0"
+  }
+}

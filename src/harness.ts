@@ -1,0 +1,244 @@
+import { randomUUID } from 'node:crypto';
+import type { ChatModel, Message, Tool, ToolCall, Usage } from './types.js';
+import { emptyUsage } from './types.js';
+import { EventBus } from './events.js';
+import { ApprovalPolicy } from './approvals.js';
+import { CheckpointStore, type Session } from './checkpoint_store.js';
+import { attachFiles } from './mentions.js';
+export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'prefix';
+export interface HarnessOptions {
+  model: ChatModel;
+  tools: Tool[];
+  store: CheckpointStore;
+  session: Session;
+  policy: ApprovalPolicy;
+  system: string;
+  bus?: EventBus;
+  approve?: (call: ToolCall, signal: AbortSignal) => Promise<ApprovalDecision>;
+  maxSteps?: number;
+  headless?: boolean;
+}
+export class Harness {
+  readonly bus: EventBus;
+  readonly sessionId: string;
+  tools: Tool[];
+  model: ChatModel;
+  system: string;
+  planMode = false;
+  private controller?: AbortController;
+  private steering: string[] = [];
+  private followUps: string[] = [];
+  private active?: Promise<{ answer: string; usage: Usage }>;
+  constructor(readonly options: HarnessOptions) {
+    this.sessionId = options.session.id;
+    this.bus = options.bus ?? new EventBus(this.sessionId);
+    this.tools = options.tools;
+    this.model = options.model;
+    this.system = options.system;
+    options.store.repairInterrupted(this.sessionId);
+  }
+  get busy(): boolean {
+    return Boolean(this.active);
+  }
+  get messages(): Message[] {
+    return this.options.store.messages(this.sessionId);
+  }
+  queue(message: string, mode: 'steer' | 'followUp' = 'steer'): void {
+    (mode === 'steer' ? this.steering : this.followUps).push(message);
+  }
+  clearQueue(): { steering: string[]; followUp: string[] } {
+    const result = {
+      steering: this.steering.splice(0),
+      followUp: this.followUps.splice(0),
+    };
+    return result;
+  }
+  async cancel(): Promise<void> {
+    this.followUps = [];
+    this.steering = [];
+    this.controller?.abort(new Error('Interrupted'));
+    try {
+      await this.active;
+    } catch {
+      /* run_error and persisted results record the stop. */
+    }
+  }
+  private save(message: Message): void {
+    this.options.store.append(this.sessionId, [message]);
+  }
+  async run(prompt: string): Promise<{ answer: string; usage: Usage }> {
+    if (this.active) throw new Error('a turn is already running');
+    this.controller = new AbortController();
+    this.active = this.runQueued(prompt, this.controller.signal);
+    try {
+      return await this.active;
+    } finally {
+      this.active = undefined;
+      this.controller = undefined;
+    }
+  }
+  private async runQueued(
+    prompt: string,
+    signal: AbortSignal,
+  ): Promise<{ answer: string; usage: Usage }> {
+    const total = emptyUsage();
+    let answer = '';
+    let next: string | undefined = prompt;
+    while (next !== undefined) {
+      const result = await this.runTurn(next, signal);
+      answer = result.answer;
+      for (const key of Object.keys(total) as (keyof Usage)[])
+        total[key] += result.usage[key];
+      next = this.followUps.shift();
+    }
+    return { answer, usage: total };
+  }
+  private async runTurn(
+    prompt: string,
+    signal: AbortSignal,
+  ): Promise<{ answer: string; usage: Usage }> {
+    const start = Date.now();
+    const usage = emptyUsage();
+    let answer = '';
+    this.save({
+      id: randomUUID(),
+      role: 'user',
+      content: attachFiles(prompt, this.options.session.workspace),
+      display: prompt,
+    });
+    const session = this.options.store.get(this.sessionId)!;
+    if (!session.title)
+      this.options.store.rename(
+        this.sessionId,
+        prompt.split('\n')[0]!.slice(0, 100),
+      );
+    this.bus.emit('run_start', { payload: { message: prompt } });
+    try {
+      for (let step = 0; step < (this.options.maxSteps ?? 100); step++) {
+        signal.throwIfAborted();
+        for (const message of this.steering.splice(0)) {
+          this.save({
+            id: randomUUID(),
+            role: 'user',
+            content: attachFiles(message, session.workspace),
+            display: message,
+          });
+          this.bus.emit('steer', { payload: { message } });
+        }
+        this.bus.emit('llm_start');
+        const response = await this.model.complete({
+          system:
+            this.system +
+            (this.planMode
+              ? '\nRead-only mode: inspect and plan; do not change files or run commands.'
+              : ''),
+          messages: this.options.store.projectedMessages(this.sessionId),
+          tools: this.tools,
+          signal,
+          token: (text, thinking) =>
+            this.bus.emit('llm_token', {
+              payload: { text, thinking: Boolean(thinking) },
+            }),
+        });
+        signal.throwIfAborted();
+        this.save(response.message);
+        for (const key of Object.keys(usage) as (keyof Usage)[])
+          usage[key] += response.usage[key];
+        this.bus.emit('llm_end', {
+          payload: { message: response.message },
+          usage: { ...response.usage },
+        });
+        const calls = response.message.tool_calls ?? [];
+        if (!calls.length) {
+          answer = response.message.content;
+          if (!answer.trim()) throw new Error('model ended without an answer');
+          if (this.steering.length) continue;
+          this.bus.emit('run_end', {
+            payload: { answer },
+            usage: { ...usage },
+            elapsed_ms: Date.now() - start,
+          });
+          return { answer, usage };
+        }
+        for (const call of calls) {
+          let content = '';
+          let status: 'success' | 'error' = 'success';
+          this.bus.emit('tool_call', { payload: { ...call } });
+          try {
+            signal.throwIfAborted();
+            const tool = this.tools.find((tool) => tool.name === call.name);
+            if (!tool) throw new Error(`tool is not available: ${call.name}`);
+            if (this.planMode && tool.effect !== 'read')
+              throw new Error('read-only mode: this tool cannot run');
+            const found = this.options.policy.review(call.name, call.args);
+            if (found.verdict === 'DENY')
+              throw new Error(found.message || found.reason);
+            if (
+              tool.effect !== 'read' &&
+              (this.options.policy.needsApproval(
+                call.name,
+                call.args,
+                this.sessionId,
+              ) ||
+                (this.options.headless && found.verdict === 'ASK_FORCED'))
+            ) {
+              this.bus.emit('tool_waiting', {
+                payload: { ...call, reason: found.reason },
+              });
+              if (!this.options.approve)
+                throw new Error(
+                  found.verdict === 'ASK_FORCED'
+                    ? 'not run: this operation always asks'
+                    : 'not run: needs --yolo or approval',
+                );
+              const decision = await this.options.approve(call, signal);
+              signal.throwIfAborted();
+              if (
+                !this.options.policy.remember(
+                  this.sessionId,
+                  call.name,
+                  call.args,
+                  decision,
+                )
+              )
+                throw new Error('The user rejected this tool call.');
+            }
+            signal.throwIfAborted();
+            this.bus.emit('tool_start', { payload: { ...call } });
+            content = await tool.run(call.args, {
+              signal,
+              sessionId: this.sessionId,
+            });
+          } catch (error) {
+            status = 'error';
+            content = error instanceof Error ? error.message : String(error);
+          }
+          this.save({
+            id: randomUUID(),
+            role: 'tool',
+            content,
+            tool_call_id: call.id,
+            name: call.name,
+            status,
+          });
+          this.bus.emit('tool_result', {
+            payload: { id: call.id, name: call.name, status, output: content },
+          });
+          this.bus.emit('tool_end', { payload: { id: call.id, status } });
+        }
+        signal.throwIfAborted();
+      }
+      throw new Error('maximum model steps reached');
+    } catch (error) {
+      this.bus.emit('run_error', {
+        payload: {
+          message: error instanceof Error ? error.message : String(error),
+          interrupted: signal.aborted,
+        },
+        usage: { ...usage },
+        elapsed_ms: Date.now() - start,
+      });
+      throw error;
+    }
+  }
+}
