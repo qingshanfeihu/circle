@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-08
+
 ### Changed
 
 - **`/login` asks how to sign in.** Without a word it lists the ways in. **API URL + KEY** asks for the base URL, the key (shown as dots; pasting works) and the model, as setup does, and switches the session to them without a restart; nothing is saved before a model is picked. OAuth is listed as `not available yet`. The endpoint row of `/settings` opens it. See [Change the endpoint or the key](docs/models.md#change-the-endpoint-or-the-key).
