@@ -97,7 +97,8 @@ def test_a_background_command_still_asks_for_approval(tmp_path):
 @posix_only
 def test_a_finished_job_reaches_the_model_in_the_running_turn(tmp_path):
     model = Recording(responses=[
-        _call("execute", {"command": "echo hello", "background": True}, "e1"),
+        # it ends a second later, while the sleep after it waits (even on a busy machine)
+        _call("execute", {"command": "sleep 1; echo hello", "background": True}, "e1"),
         _call("execute", {"command": "sleep 20"}, "e2"),
         AIMessage(content="it said hello")])
     agent, jobs = _harness(tmp_path, model)
