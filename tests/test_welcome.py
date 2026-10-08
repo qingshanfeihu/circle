@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage
 
-from circle import session_index
+from circle import __version__, session_index
 from circle.ink import theme
 from circle.ink.components.dialog_card import CardLine, CardOption, CardSpec, card_rows
 from circle.ink.components.transcript import Transcript
@@ -494,4 +494,4 @@ def test_the_header_takes_the_identity_once_the_welcome_scrolls_away(tmp_path: P
     app._transcript.scroll_to(None)  # noqa: SLF001
     app._sync_dialog_frame()  # noqa: SLF001
     header = ANSI.sub("", app._header_text.value)  # noqa: SLF001
-    assert "circle 0.3.1 · m1" in header and "for shortcuts" in header
+    assert f"circle {__version__} · m1" in header and "for shortcuts" in header
