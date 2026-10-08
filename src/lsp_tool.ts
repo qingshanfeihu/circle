@@ -206,6 +206,7 @@ export class LspClient {
     method: string,
     params: Record<string, unknown>,
     signal: AbortSignal,
+    timeoutMs = this.timeout,
   ): Promise<unknown> {
     signal.throwIfAborted();
     const id = this.nextId++;
@@ -228,7 +229,7 @@ export class LspClient {
         );
       const timer = setTimeout(
         () => finish(new Error(`timeout waiting for LSP response: ${method}`)),
-        this.timeout,
+        timeoutMs,
       );
       const cleanup = (): void => {
         clearTimeout(timer);

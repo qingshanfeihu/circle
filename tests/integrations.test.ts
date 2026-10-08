@@ -381,7 +381,7 @@ test('LSP reads fragmented byte frames, opens documents by notification and time
       args: [resolve('tests/fixtures/lsp-server.ts')],
     },
     root,
-    200,
+    5000,
   );
   if (previous === undefined) delete process.env.LSP_TEST_LOG;
   else process.env.LSP_TEST_LOG = previous;
@@ -404,7 +404,10 @@ test('LSP reads fragmented byte frames, opens documents by notification and time
     undefined,
   );
   const started = Date.now();
-  await assert.rejects(client.request('never/respond', {}, signal), /timeout/);
+  await assert.rejects(
+    client.request('never/respond', {}, signal, 200),
+    /timeout/,
+  );
   assert.ok(Date.now() - started < 1500);
   await client.close();
 });
