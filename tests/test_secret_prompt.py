@@ -133,6 +133,29 @@ def test_timeout_shreds_everything(home: Path, tmp_path: Path) -> None:
     assert leftovers == []
 
 
+def test_an_answer_that_arrives_while_the_lock_is_awaited_past_the_deadline_is_late(
+    home: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """The deadline is checked again once the lock is held: on a slow disk the wait for it can
+    end after the deadline, with an answer written meanwhile (seen on a Windows runner)."""
+    req = create_request(home, question="q", key="K", target_file=str(tmp_path / "e"))
+    real_lock = secret_prompt._lock_file  # noqa: SLF001
+    waits: list[int] = []
+
+    def slow_lock(fh, msvcrt=None) -> None:
+        if not waits:
+            waits.append(1)
+            submit_answer(home, req["id"], "late-secret")  # lands during the wait
+            time.sleep(0.4)  # past the 0.2 s deadline
+        real_lock(fh)
+
+    monkeypatch.setattr(secret_prompt, "_lock_file", slow_lock)
+    with pytest.raises(SecretPromptTimeout):
+        poll_answer(home, req["id"], timeout_s=0.2)
+    leftovers = [p for p in requests_dir(home).iterdir() if p.name != ".lock"]
+    assert leftovers == []
+
+
 def test_answer_size_limit(home: Path) -> None:
     req = create_request(home, question="q", key="K", target_file="/tmp/e")
     with pytest.raises(SecretPromptError):

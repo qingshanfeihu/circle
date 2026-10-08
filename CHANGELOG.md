@@ -17,6 +17,7 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 - **Open lists kept their old colours** when the terminal switched between dark and light under the `auto` theme. They are drawn again at once.
 - **Pasting while a list was open put the text in the input box behind it.** It goes into the list's search, or into the line the list asks for.
 - `circle --help` said `--init` resets `settings.json`. It replaces the endpoint, key and model and keeps the rest.
+- **A secret entered just as its request timed out could still be taken** when the disk was slow, as on some Windows machines. It is now shredded with the request, as a late answer always was.
 
 ## 0.3.0 - 2026-10-06
 

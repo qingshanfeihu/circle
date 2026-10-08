@@ -212,6 +212,10 @@ def poll_answer(
     path = _answer_path(home, request_id)
     while time.monotonic() < deadline:
         with _locked(home):
+            if time.monotonic() >= deadline:
+                # Getting the lock took past the deadline (opening the lock file can be slow
+                # on Windows): an answer there now came late and is shredded with the request
+                break
             raw = _consume_answer_locked(home, request_id, path)
             if raw is not None:
                 if not raw:
