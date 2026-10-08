@@ -54,6 +54,12 @@ export class InputParser {
   close(): void {
     if (this.timer) clearTimeout(this.timer);
   }
+  reset(): void {
+    this.close();
+    this.buffer = '';
+    this.paste = null;
+    this.stray = 0;
+  }
   feed(data: string): InputEvent[] {
     if (this.timer) {
       clearTimeout(this.timer);

@@ -36,7 +36,9 @@ import { InputParser, type InputEvent } from '../ink/parse_keypress.js';
 import { ThemeWatch } from '../ink/theme_watch.js';
 import { Picker, type PickerItem } from '../ink/components/picker.js';
 import { welcomeRows } from '../ink/components/welcome.js';
-import { renderScreen, type ScreenState } from './render.js';
+import { renderScreen, transcriptRows, type ScreenState } from './render.js';
+import { InputHistory } from './input_history.js';
+import { TranscriptFind } from './transcript_find.js';
 import { InteractionQueue } from './interaction_queue.js';
 import { installExitGuard } from '../exit_guard.js';
 import {
@@ -77,15 +79,14 @@ export class SessionApp {
   private questionCard?: QuestionCard;
   private secretReady?: SecretRequest;
   private ended = false;
+  private externalEditor = false;
   private animation?: NodeJS.Timeout;
   private flashTimer?: NodeJS.Timeout;
   private done!: (code: number) => void;
   private completion: Promise<number>;
   private previousSession = '';
   private lastEscape = 0;
-  private history: string[] = [];
-  private historyIndex = 0;
-  private draftBeforeHistory = '';
+  private history: InputHistory;
   private off?: () => void;
   private offSignals?: () => void;
   private jobWakeAt = 0;
@@ -93,6 +94,7 @@ export class SessionApp {
   private jobWakeSnoozed = false;
   private interactions = new InteractionQueue(
     (background) =>
+      !this.externalEditor &&
       !this.state.dialog &&
       (!background ||
         (!this.state.draft &&
@@ -112,10 +114,12 @@ export class SessionApp {
   private frameRows: string[] = [];
   private shared?: string;
   private dataListener = (data: string): void => {
+    if (this.externalEditor) return;
     for (const event of this.input.feed(data)) this.handle(event);
   };
   private resizeListener = (): void => this.repaint();
   private signalListener = (): void => {
+    if (this.externalEditor) return;
     if (this.backgroundCard) return;
     this.jobWakeSnoozed = true;
     if (this.runtime?.busy) void this.runtime.cancel();
@@ -153,20 +157,15 @@ export class SessionApp {
     };
     this.theme = new ThemeWatch(
       settings.theme,
-      (text) => process.stdout.write(text),
+      (text) => {
+        if (!this.externalEditor) process.stdout.write(text);
+      },
       () => this.repaint(),
     );
     this.completion = new Promise((resolve) => {
       this.done = resolve;
     });
-    try {
-      this.history = readFileSync(join(home, 'history'), 'utf8')
-        .split('\n')
-        .filter(Boolean);
-    } catch {
-      /* No history yet. */
-    }
-    this.historyIndex = this.history.length;
+    this.history = InputHistory.forHome(home);
   }
   start(): void {
     process.stdin.setRawMode(true);
@@ -193,7 +192,7 @@ export class SessionApp {
     this.repaint();
   }
   private repaint(): void {
-    if (this.ended) return;
+    if (this.ended || this.externalEditor) return;
     if (this.runtime) {
       this.state.messages = this.runtime.harness.messages;
       this.state.todos = this.runtime.todos;
@@ -727,7 +726,7 @@ export class SessionApp {
     return decisions[choices.indexOf(answer)] || 'reject';
   }
   private handle(event: InputEvent): void {
-    if (this.ended) return;
+    if (this.ended || this.externalEditor) return;
     this.theme.feed(event);
     if (event.type === 'color' || event.type === 'scheme') return;
     if (event.type === 'mouse') {
@@ -780,7 +779,19 @@ export class SessionApp {
       return;
     }
     if (event.type === 'paste') {
-      if (this.questionCard) {
+      if (this.state.find && !this.state.dialog) {
+        this.state.find.query += event.text;
+        this.state.find.refresh(
+          transcriptRows(this.state, process.stdout.columns || 80),
+        );
+      } else if (this.history.query !== undefined && !this.state.dialog) {
+        const match = this.history.update(this.history.query + event.text);
+        if (match !== undefined) this.setDraft(match);
+        this.state.historySearch = {
+          query: this.history.query!,
+          match: match !== undefined,
+        };
+      } else if (this.questionCard) {
         this.questionCard.paste(event.text);
         this.state.dialog = this.questionCard.state();
       } else if (this.state.dialog?.input !== undefined)
@@ -791,6 +802,79 @@ export class SessionApp {
     }
     const key = this.remap[event.key] || event.key;
     const char = event.char;
+    if (!this.state.dialog && !this.state.picker && this.state.find) {
+      const find = this.state.find;
+      if (['escape', 'ctrl+c', 'ctrl+f'].includes(key))
+        this.state.find = undefined;
+      else if (['enter', 'down', 'shift+enter', 'up'].includes(key))
+        find.next(key === 'up' || key === 'shift+enter');
+      else if (key === 'backspace' || char) {
+        find.query =
+          key === 'backspace'
+            ? Array.from(find.query).slice(0, -1).join('')
+            : find.query + char;
+        const messages =
+          this.state.agentDetail?.messages ?? this.state.messages;
+        find.refresh(
+          transcriptRows(
+            {
+              ...this.state,
+              messages,
+              notices: [],
+              streaming: '',
+              thinking: '',
+            },
+            process.stdout.columns || 80,
+          ),
+        );
+      }
+      this.repaint();
+      return;
+    }
+    if (
+      !this.state.dialog &&
+      !this.state.picker &&
+      this.history.query !== undefined
+    ) {
+      if (key === 'escape' || key === 'ctrl+c') {
+        this.setDraft(this.history.endSearch(true));
+        this.state.historySearch = undefined;
+        this.repaint();
+        return;
+      }
+      if (key === 'ctrl+r' || key === 'backspace' || char) {
+        const query =
+          key === 'backspace'
+            ? Array.from(this.history.query).slice(0, -1).join('')
+            : this.history.query + char;
+        const match =
+          key === 'ctrl+r' ? this.history.next() : this.history.update(query);
+        if (match !== undefined) this.setDraft(match);
+        this.state.historySearch = {
+          query: this.history.query!,
+          match: match !== undefined,
+        };
+        this.repaint();
+        return;
+      }
+      this.history.endSearch(false);
+      this.state.historySearch = undefined;
+    }
+    if (!this.state.dialog && !this.state.picker && key === 'ctrl+f') {
+      this.state.find = new TranscriptFind();
+      this.repaint();
+      return;
+    }
+    if (!this.state.dialog && !this.state.picker && key === 'ctrl+r') {
+      const match = this.history.beginSearch(this.state.draft);
+      if (match !== undefined) this.setDraft(match);
+      this.state.historySearch = {
+        query: this.history.query!,
+        match: match !== undefined,
+      };
+      this.repaint();
+      return;
+    }
     if (
       !this.state.dialog &&
       !this.state.picker &&
@@ -942,13 +1026,7 @@ export class SessionApp {
       const message = this.state.draft.trim();
       if (message) {
         this.setDraft('');
-        this.history.push(message);
-        this.historyIndex = this.history.length;
-        mkdirSync(this.home, { recursive: true });
-        writeFileSync(
-          join(this.home, 'history'),
-          this.history.slice(-1000).join('\n') + '\n',
-        );
+        this.history.add(message);
         void this.submit(message).catch((error) => this.fail(error));
       }
     } else if (key === 'tab') this.completeDraft();
@@ -971,16 +1049,9 @@ export class SessionApp {
     else if (key === 'end' || key === 'ctrl+e')
       this.state.draftCursor = Array.from(this.state.draft).length;
     else if (key === 'up' || key === 'down') {
-      if (this.historyIndex === this.history.length)
-        this.draftBeforeHistory = this.state.draft;
-      this.historyIndex = Math.max(
-        0,
-        Math.min(
-          this.history.length,
-          this.historyIndex + (key === 'up' ? -1 : 1),
-        ),
-      );
-      this.setDraft(this.history[this.historyIndex] || this.draftBeforeHistory);
+      const value =
+        key === 'up' ? this.history.up(this.state.draft) : this.history.down();
+      if (value !== undefined) this.setDraft(value);
     } else if (key === 'pageup')
       this.state.scroll += Math.max(1, (process.stdout.rows || 24) - 8);
     else if (key === 'pagedown')
@@ -1524,6 +1595,7 @@ export class SessionApp {
     });
   }
   private async editor(): Promise<void> {
+    if (this.externalEditor) throw new Error('an editor is already running');
     const words = splitArguments(
       process.env.VISUAL ||
         process.env.EDITOR ||
@@ -1531,12 +1603,19 @@ export class SessionApp {
     );
     const directory = mkdtempSync(join(tmpdir(), 'circle-editor-'));
     const path = join(directory, 'draft.md');
-    writeFileSync(path, this.state.draft);
+    writeFileSync(path, this.state.draft, { mode: 0o600 });
+    this.externalEditor = true;
+    process.stdin.off('data', this.dataListener);
+    this.input.reset();
+    process.stdin.pause();
     process.stdin.setRawMode(false);
-    process.stdout.write('\x1b[?25h\x1b[?1049l');
+    process.stdout.write(
+      '\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l',
+    );
     try {
       await new Promise<void>((resolveEditor, reject) => {
         const child = spawn(words[0]!, [...words.slice(1), path], {
+          cwd: this.workspace,
           stdio: 'inherit',
         });
         child.once('error', reject);
@@ -1549,9 +1628,17 @@ export class SessionApp {
       this.setDraft(readFileSync(path, 'utf8'));
     } finally {
       rmSync(directory, { recursive: true, force: true });
-      process.stdin.setRawMode(true);
-      process.stdout.write('\x1b[?1049h\x1b[?25l');
-      this.repaint();
+      this.externalEditor = false;
+      if (!this.ended) {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', this.dataListener);
+        process.stdout.write(
+          '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h',
+        );
+        this.screen.invalidate();
+        this.repaint();
+      }
     }
   }
   exit(code: number): void {

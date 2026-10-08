@@ -7,6 +7,11 @@ import type { Picker } from '../ink/components/picker.js';
 import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
 import type { CompactionProgress } from '../compaction.js';
 import type { SubagentView } from './subagents.js';
+import { TranscriptFind, highlightMatches } from './transcript_find.js';
+import {
+  markdownRows,
+  terminalText,
+} from '../ink/components/markdown_renderer.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
@@ -41,6 +46,8 @@ export interface ScreenState {
   subagents?: SubagentView[];
   selectedAgent?: string;
   agentDetail?: SubagentView;
+  find?: TranscriptFind;
+  historySearch?: { query: string; match: boolean };
   renderToolResult?: (message: Message) => string[] | undefined;
 }
 export function transcriptRows(state: ScreenState, width: number): string[] {
@@ -60,8 +67,11 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
     content: string,
     style = '',
     base = p.text,
+    markdown = false,
   ): void => {
-    const lines = wrap(content, width - 3);
+    const lines = markdown
+      ? markdownRows(content, width - 3, { base, background: style })
+      : wrap(terminalText(content), width - 3);
     rows.push(
       ...lines.map(
         (line, index) =>
@@ -93,8 +103,9 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
           state.showThinking ? message.thinking : 'Thought · ctrl+t',
           p.think_bg,
           p.dim,
+          state.showThinking,
         );
-      if (message.content) block('⏺', message.content);
+      if (message.content) block('⏺', message.content, '', p.text, true);
       for (const call of message.tool_calls ?? []) {
         const result = messages.find(
           (message) =>
@@ -140,7 +151,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
         rows.push('');
         continue;
       }
-      const lines = wrap(message.content, width - 5);
+      const lines = wrap(terminalText(message.content), width - 5);
       const shown = state.showTools ? lines : lines.slice(0, 3);
       rows.push(...shown.map((line) => '   ' + p.dim + '⎿ ' + line + p.reset));
       if (lines.length > shown.length)
@@ -159,8 +170,9 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       state.showThinking ? state.thinking : 'Thinking · ctrl+t',
       p.think_bg,
       p.dim,
+      state.showThinking,
     );
-  if (state.streaming) block('⏺', state.streaming);
+  if (state.streaming) block('⏺', state.streaming, '', p.text, true);
   for (const note of state.notices)
     block(
       note.startsWith('✖') ? '✖' : ' ',
@@ -368,6 +380,13 @@ export function renderScreen(
       ? ''
       : ` · ctx ${formatTokens(state.contextInput)}/${state.contextWindow ? `${formatWindow(state.contextWindow)} (${Math.min(999, Math.round((state.contextInput / state.contextWindow) * 100))}%)` : 'N/A'}`;
   const footer = ` ↑ ${formatTokens(state.usage.input_tokens)} · ↓ ${formatTokens(state.usage.output_tokens)}${state.costText ? ` · ${state.costText}` : ''} · cache ${(state.usage.input_tokens ? (state.usage.cache_read_tokens / state.usage.input_tokens) * 100 : 0).toFixed(1)}%${context}`;
+  const searchStatus =
+    state.find?.status ??
+    (state.historySearch
+      ? `reverse-i-search: ${state.historySearch.query}▏${state.historySearch.match ? '' : ' · no matches'}`
+      : undefined);
+  if (searchStatus)
+    bottom.push(p.dim + pad(truncate(searchStatus, width), width) + p.reset);
   const right = state.flash
     ? truncate(state.flash, Math.max(1, Math.floor(width / 2)))
     : '';
@@ -431,7 +450,20 @@ export function renderScreen(
     ];
   }
   const available = Math.max(1, height - bottom.length - 1);
-  const end = Math.max(available, transcript.length - state.scroll);
+  state.find?.updateRows(transcript);
+  const end =
+    state.find?.row !== undefined
+      ? Math.min(
+          transcript.length,
+          state.find.row + Math.max(1, Math.floor((available * 2) / 3)),
+        )
+      : Math.max(available, transcript.length - state.scroll);
+  if (state.find?.query)
+    transcript = transcript.map((row, index) =>
+      index === state.find!.row
+        ? highlightMatches(row, state.find!.query)
+        : row,
+    );
   rows.push(...transcript.slice(Math.max(0, end - available), end));
   while (rows.length < height - bottom.length) rows.push('');
   rows.push(...bottom);

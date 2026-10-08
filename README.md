@@ -48,4 +48,4 @@ This is a development build, not the first stable release. The runtime and CLI e
 
 MCP, TypeScript/JavaScript extensions and LSP are connected through the runtime. [Background jobs](docs/background-jobs.md) support shell commands, subagents and completion notices. Indexed legacy sessions are imported read-only into the native database; original databases remain unchanged. Full command and terminal parity, provider profiles, cross-platform packaging and one-command installation remain under development. Use isolated data while developing.
 
-See [architecture](docs/architecture.md), [development](docs/development/README.md), and [known issues](docs/known-issues.md). License selection is pending.
+See [terminal controls](docs/terminal.md), [architecture](docs/architecture.md), [development](docs/development/README.md), and [known issues](docs/known-issues.md). License selection is pending.

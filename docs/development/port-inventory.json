@@ -320,7 +320,7 @@
       "bytes": 24740,
       "category": "source",
       "target": "src/ink/components/markdown_renderer.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/ink/components/picker.py",
@@ -1248,7 +1248,7 @@
       "bytes": 4743,
       "category": "source",
       "target": "src/tui/input_history.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/tui/message_model.py",
