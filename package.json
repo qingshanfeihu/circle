@@ -25,7 +25,9 @@
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"*.json\"",
     "check": "npm run typecheck && npm test && npm run build",
-    "port:status": "tsx scripts/port-status.ts"
+    "port:status": "tsx scripts/port-status.ts",
+    "release:build": "tsx scripts/build-release.ts",
+    "release:smoke": "tsx scripts/smoke-release.ts"
   },
   "repository": {
     "type": "git",

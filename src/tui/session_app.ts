@@ -63,7 +63,8 @@ import {
 } from '../commands.js';
 import { loadSkillBody } from '../skills.js';
 import { complete } from '../mentions.js';
-export const VERSION = '0.1.0-dev';
+import { VERSION } from '../version.js';
+export { VERSION } from '../version.js';
 interface DialogPending {
   complete: (answer: string) => void;
   abort?: () => void;

@@ -10,3 +10,4 @@ coverage/
 *.log
 .reference/
 .tmp/
+release/

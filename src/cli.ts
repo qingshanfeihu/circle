@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  realpathSync,
+} from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { circleHome, normalizeWorkspace } from './paths.js';
@@ -19,7 +25,8 @@ import {
 import { resolveEndpoint } from './probe.js';
 import { EFFORT_LEVELS } from './model.js';
 import { installExitGuard } from './exit_guard.js';
-export const VERSION = '0.1.0-dev';
+import { VERSION } from './version.js';
+export { VERSION } from './version.js';
 export class UsageError extends Error {}
 export interface CliOptions {
   version: boolean;
@@ -290,6 +297,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   let runtime: import('./runtime.js').AgentRuntime | undefined;
   let offSignals: (() => void) | undefined;
   try {
+    if (argv[0] === 'update') {
+      const { updateInstalled } = await import('./update.js');
+      return await updateInstalled(argv.slice(1));
+    }
     const options = parseCli(argv);
     if (options.version) {
       process.stdout.write(VERSION + '\n');
@@ -443,6 +454,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 }
 if (
   process.argv[1] &&
-  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  existsSync(process.argv[1]) &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
 )
   process.exitCode = await main();

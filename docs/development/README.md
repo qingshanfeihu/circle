@@ -12,6 +12,8 @@ Install Node.js 24+, then run `npm ci`. The compiler is local: `npx tsc --versio
 | `npm run format` | Format TypeScript and root JSON configuration |
 | `npm run format:check` | Check formatting |
 | `npm run port:status` | Inspect the development migration inventory |
+| `npm run release:build` | Build a runtime-inclusive package for the current target |
+| `npm run release:smoke` | Exercise relocation, install, upgrade, checksum rejection and a real tool turn |
 
 Use a scratch `CIRCLE_HOME` for every test or interactive development run. Tests create temporary workspaces, local mock gateways and fake credentials; they never need a real model account.
 
