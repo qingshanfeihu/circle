@@ -14,7 +14,9 @@ The application runs on Node.js 24 and uses TypeScript with strict compiler chec
 
 `src/approvals.ts` classifies commands, keeps session rules and decides which calls require an answer. Read-only mode blocks tools with write, execution or unknown effects. `src/settings.ts` protects account settings from project overrides and writes credentials separately.
 
-`src/checkpoint_store.ts` stores immutable message checkpoints and session branch heads in SQLite. Model summaries are projections; raw messages and tool output stay intact. Append-only context versions attach summary and pruning decisions to checkpoint ancestry, so alternate branches retain their own projections. `src/context_middleware.ts` offloads large results, compacts balanced prefixes and recovers missing artifacts from the unchanged raw history. The development database is `circle-next.sqlite`; old databases are not overwritten or automatically imported.
+`src/checkpoint_store.ts` stores immutable message checkpoints and session branch heads in SQLite. Model summaries are projections; raw messages and tool output stay intact. Append-only context versions attach summary and pruning decisions to checkpoint ancestry, so alternate branches retain their own projections. `src/context_middleware.ts` offloads large results, compacts balanced prefixes and recovers missing artifacts from the unchanged raw history. The native database is `circle-next.sqlite`. `src/migration.ts` imports indexed legacy sessions read-only with source receipts, retaining the original databases and never replaying tools.
+
+`src/jobs.ts` owns background command processes, subagents, output files and conversation-specific notices. Foreground commands can be promoted without respawning. Notices enter checkpoints before model requests; the TUI, print and RPC runners decide when to resume an idle conversation. Child-owned processes are stopped before the child report completes. `src/tui/interaction_queue.ts` serializes complete approval/question card lifecycles.
 
 ## Terminal
 

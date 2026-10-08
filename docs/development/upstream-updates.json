@@ -78,19 +78,22 @@
       "path": "circle/job_agents.py",
       "change": "A",
       "sha256": "27ea8fa37323c02ad996945c7a62151f3757201cdc8a042f458936d1c606bda5",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/runtime.ts"
     },
     {
       "path": "circle/job_tools.py",
       "change": "A",
       "sha256": "b4a3bdec04db990c073884fcf6bfb8afb72b351561cffe0a07b3c70115e0b4f3",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/tools.ts"
     },
     {
       "path": "circle/jobs.py",
       "change": "A",
       "sha256": "989f72a44708f5d62f5c1ecb3c14ba30af9fb13787d98493be9a328b816211a3",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/jobs.ts"
     },
     {
       "path": "circle/keybindings.py",
@@ -108,7 +111,8 @@
       "path": "circle/middleware/job_notice.py",
       "change": "A",
       "sha256": "6f40a000e8c4d3d56150a60b754dedd185acf19744b97c95be710dcfb23bb54c",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/harness.ts"
     },
     {
       "path": "circle/middleware/loop_guard.py",
@@ -162,7 +166,8 @@
       "path": "circle/prompts/tools/list_jobs.md",
       "change": "A",
       "sha256": "7b752f55fa2ea7d880b0d9e3c3f9640cb11dfdb0fa83d823418808b7309ae69e",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/prompts/tools/list_jobs.md"
     },
     {
       "path": "circle/prompts/tools/stop_job.md",
@@ -174,7 +179,8 @@
       "path": "circle/prompts/tools/wait_jobs.md",
       "change": "A",
       "sha256": "99aa9d292de8177ff6009a2f8d5d64a7b839deb10ce639e1ec95d771da6b9039",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/prompts/tools/wait_jobs.md"
     },
     {
       "path": "circle/rpc.py",
@@ -216,7 +222,8 @@
       "path": "circle/tui/job_rows.py",
       "change": "A",
       "sha256": "65122c44a705ba7cdeeb35736c4142439ea10622ef66b712a16de02b153a1353",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/tui/render.ts"
     },
     {
       "path": "circle/tui/message_model.py",
@@ -264,7 +271,8 @@
       "path": "docs/background-jobs.md",
       "change": "A",
       "sha256": "a2ce034482a3659296419c8d070bdce59a6014d258bd9c0023c48170fda1ce4f",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "docs/background-jobs.md"
     },
     {
       "path": "docs/cli.md",

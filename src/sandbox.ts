@@ -63,7 +63,11 @@ export class Sandbox {
     const top = virtual.split('/')[0];
     if (
       this.offloadRoot &&
-      ['conversation_history', 'large_tool_results'].includes(top ?? '')
+      [
+        'conversation_history',
+        'large_tool_results',
+        'background_jobs',
+      ].includes(top ?? '')
     )
       full = resolve(this.offloadRoot, virtual);
     else
@@ -84,6 +88,20 @@ export class Sandbox {
       throw new Error(
         `Denied by approval policy: '${name}' is a credential file`,
       );
+  }
+  checkMutablePath(path: string): void {
+    this.checkCredentialPath(path);
+    if (this.offloadRoot) {
+      const rel = relative(
+        resolvedTarget(resolve(this.offloadRoot, 'background_jobs')),
+        resolvedTarget(path),
+      );
+      if (
+        rel === '' ||
+        (rel !== '..' && !rel.startsWith('..' + sep) && !/^[A-Za-z]:/.test(rel))
+      )
+        throw new Error('Background job output is read-only');
+    }
   }
   async execute(
     command: string,

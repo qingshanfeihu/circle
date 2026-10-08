@@ -19,6 +19,7 @@ export const ACTIONS: Record<string, string> = {
   find: 'ctrl+f',
   'history.search': 'ctrl+r',
   'secret.enter': 'ctrl+s',
+  'command.background': 'ctrl+b',
   newline: 'ctrl+j',
 };
 export function loadRemap(home = circleHome()): {

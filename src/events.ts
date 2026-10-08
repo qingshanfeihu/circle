@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 export type EventKind =
+  | 'job_started'
+  | 'job_updated'
+  | 'job_ended'
   | 'run_start'
   | 'run_end'
   | 'run_error'

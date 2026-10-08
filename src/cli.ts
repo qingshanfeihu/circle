@@ -18,6 +18,7 @@ import {
 } from './run_options.js';
 import { resolveEndpoint } from './probe.js';
 import { EFFORT_LEVELS } from './model.js';
+import { installExitGuard } from './exit_guard.js';
 export const VERSION = '0.1.0-dev';
 export class UsageError extends Error {}
 export interface CliOptions {
@@ -287,6 +288,7 @@ async function pipedText(timeout: number, limit = 8_000_000): Promise<string> {
 }
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let runtime: import('./runtime.js').AgentRuntime | undefined;
+  let offSignals: (() => void) | undefined;
   try {
     const options = parseCli(argv);
     if (options.version) {
@@ -404,6 +406,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     for (const problem of problems) process.stderr.write(problem + '\n');
     const { AgentRuntime } = await import('./runtime.js');
     runtime = new AgentRuntime({ ...runtimeOptions, headless: true });
+    offSignals = installExitGuard(runtime);
     for (const error of runtime.migration.errors)
       process.stderr.write(
         `Could not migrate ${error.thread || 'legacy data'}: ${error.message}\n`,
@@ -434,6 +437,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     );
     return error instanceof UsageError ? 2 : 1;
   } finally {
+    offSignals?.();
     await runtime?.close();
   }
 }

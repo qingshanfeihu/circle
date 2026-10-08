@@ -14,11 +14,14 @@ import { Sandbox } from './sandbox.js';
 import { loadToolPrompt } from './system_prompt.js';
 import { applyPatch } from './apply_patch.js';
 import { QUESTION_SCHEMA } from './questions.js';
+import { JobRegistry, jobLine, jobNotice } from './jobs.js';
 export interface Todo {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
 }
 export interface ToolHooks {
+  jobs?: JobRegistry;
+  jobOwner?: (context: ToolContext) => import('./jobs.js').JobOwner;
   todos?: (todos: Todo[]) => void;
   question?: (
     args: Record<string, unknown>,
@@ -112,7 +115,7 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
     ),
     async (args) => {
       const path = sandbox.resolvePath(string(args, 'file_path', 'path'));
-      sandbox.checkCredentialPath(path);
+      sandbox.checkMutablePath(path);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, string(args, 'content'));
       return `Wrote ${path}`;
@@ -132,7 +135,7 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
     ),
     async (args) => {
       const path = sandbox.resolvePath(string(args, 'file_path', 'path'));
-      sandbox.checkCredentialPath(path);
+      sandbox.checkMutablePath(path);
       if (!read.has(path))
         throw new Error('read_file must be called before editing this file');
       const content = readFileSync(path, 'utf8');
@@ -239,11 +242,46 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
     schema(
       {
         command: text('Shell command'),
-        timeout: integer('Timeout in seconds'),
+        timeout: integer(
+          'Timeout in seconds; 0 disables a background deadline',
+          0,
+        ),
+        background: {
+          type: 'boolean',
+          description:
+            'Run as a background job; a notice arrives when it ends. Do not poll or sleep.',
+        },
       },
       ['command'],
     ),
     async (args, context) => {
+      if (hooks.jobs) {
+        const owner = hooks.jobOwner?.(context) ?? {
+          sessionId: context.sessionId,
+          startedBy: 'model' as const,
+        };
+        const command = string(args, 'command');
+        if (args.background === true) {
+          context.signal.throwIfAborted();
+          const job = hooks.jobs.startShell(
+            command,
+            owner,
+            args.timeout === undefined ? undefined : Number(args.timeout),
+          );
+          return `In background: ${jobLine(job)}. A notice will arrive when it ends; do not poll or sleep.`;
+        }
+        const result = await hooks.jobs.execute(
+          command,
+          owner,
+          context.signal,
+          args.timeout === undefined ? undefined : Number(args.timeout),
+        );
+        return result.job
+          ? result.output
+          : `${result.output}\nExit code: ${result.exit_code}`;
+      }
+      if (args.background === true)
+        throw new Error('background commands are not available here');
       const result = await sandbox.execute(
         string(args, 'command'),
         context.signal,
@@ -252,6 +290,74 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
       return `${result.output}\nExit code: ${result.exit_code}`;
     },
   );
+  if (hooks.jobs) {
+    add('list_jobs', 'read', schema({}), async (_args, context) => {
+      const owner = hooks.jobOwner?.(context) ?? {
+        sessionId: context.sessionId,
+      };
+      const mine = hooks.jobs!.list(owner.sessionId);
+      const others = hooks
+        .jobs!.list()
+        .filter(
+          (job) =>
+            job.sessionId !== owner.sessionId && job.status === 'running',
+        );
+      return (
+        (mine.map(jobLine).join('\n') ||
+          'No background jobs in this conversation.') +
+        (others.length
+          ? `\n${others.length} more running in other conversations.`
+          : '')
+      );
+    });
+    add(
+      'stop_job',
+      'read',
+      schema({ job_id: text('Job id, such as j3') }, ['job_id']),
+      async (args) => {
+        const id = string(args, 'job_id');
+        await hooks.jobs!.stop(id);
+        return `Stopped ${id}.`;
+      },
+    );
+    tools.at(-1)!.approval = false;
+    add(
+      'wait_jobs',
+      'read',
+      schema(
+        {
+          job_ids: { type: 'array', items: { type: 'string' } },
+          timeout_s: { type: 'integer', minimum: 1, maximum: 600 },
+        },
+        ['job_ids'],
+      ),
+      async (args, context) => {
+        const jobs = await hooks.jobs!.wait(
+          args.job_ids as string[],
+          Number(args.timeout_s) || 300,
+          context.signal,
+        );
+        const ended = jobs.filter((job) => job.status !== 'running');
+        const owner = hooks.jobOwner?.(context) ?? {
+          sessionId: context.sessionId,
+        };
+        hooks.jobs!.takeNotices(
+          owner.sessionId,
+          ended.map((job) => job.id),
+        );
+        return ended.length
+          ? ended.map(jobNotice).join('\n\n') +
+              (jobs.some((job) => job.status === 'running')
+                ? '\nStill running: ' +
+                  jobs
+                    .filter((job) => job.status === 'running')
+                    .map((job) => job.id)
+                    .join(', ')
+                : '')
+          : 'Still running: ' + jobs.map(jobLine).join('\n');
+      },
+    );
+  }
   add(
     'write_todos',
     'read',
@@ -304,6 +410,11 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
         {
           description: text('Subagent task'),
           subagent_type: text('general-purpose or explore'),
+          background: {
+            type: 'boolean',
+            description:
+              'Run the subagent as a background job and return immediately',
+          },
         },
         ['description'],
       ),
@@ -364,7 +475,7 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
     async (args, context) => {
       context.signal.throwIfAborted();
       const path = sandbox.resolvePath(string(args, 'file_path', 'path'));
-      sandbox.checkCredentialPath(path);
+      sandbox.checkMutablePath(path);
       rmSync(path, { recursive: true });
       return `Deleted ${path}`;
     },

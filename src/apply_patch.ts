@@ -24,7 +24,7 @@ export function applyPatch(patch: string, sandbox: Sandbox): string {
   const seen = new Set<string>();
   let i = 0;
   const add = (change: Change): void => {
-    sandbox.checkCredentialPath(change.path);
+    sandbox.checkMutablePath(change.path);
     if (seen.has(change.path))
       throw new Error('a path appears more than once in the patch');
     seen.add(change.path);
@@ -37,7 +37,7 @@ export function applyPatch(patch: string, sandbox: Sandbox): string {
     if (!header) throw new Error('invalid patch header');
     const kind = header[1]!;
     const path = sandbox.resolvePath(header[2]!);
-    sandbox.checkCredentialPath(path);
+    sandbox.checkMutablePath(path);
     const original = existsSync(path) ? readFileSync(path, 'utf8') : null;
     if (kind === 'Delete File') {
       if (original === null) throw new Error('cannot delete a missing file');

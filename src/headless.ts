@@ -1,10 +1,20 @@
 import { createInterface } from 'node:readline';
 import type { AgentRuntime } from './runtime.js';
 import type { CircleEvent } from './events.js';
+import { setTimeout as delay } from 'node:timers/promises';
 export function jsonEvent(
   event: CircleEvent,
 ): Record<string, unknown> | undefined {
   const data = event.payload;
+  if (event.kind.startsWith('job_')) return { type: event.kind, ...data };
+  if (event.tags.subagent)
+    return {
+      type: 'subagent_event',
+      event: event.kind,
+      ...data,
+      tags: event.tags,
+      usage: event.usage,
+    };
   if (event.kind === 'run_start')
     return { type: 'turn_start', message: data.message };
   if (event.kind === 'llm_end') {
@@ -39,7 +49,7 @@ export function jsonEvent(
 export async function runPrint(
   runtime: AgentRuntime,
   prompts: string[],
-  options: { json?: boolean; verbose?: boolean } = {},
+  options: { json?: boolean; verbose?: boolean; waitJobs?: boolean } = {},
 ): Promise<number> {
   const off = runtime.bus.subscribe((event) => {
     const record = jsonEvent(event);
@@ -50,7 +60,9 @@ export async function runPrint(
         `${event.payload.name}(${JSON.stringify(event.payload.args)})\n`,
       );
   });
+  const waiting = new AbortController();
   const cancel = (): void => {
+    waiting.abort(new Error('Interrupted'));
     void runtime.harness.cancel();
   };
   process.on('SIGINT', cancel);
@@ -68,11 +80,39 @@ export async function runPrint(
       const result = await runtime.harness.run(prompt);
       if (!options.json) process.stdout.write(result.answer + '\n');
     }
+    if (options.waitJobs !== false) {
+      for (const job of runtime.jobs
+        .list()
+        .filter((job) => job.kind === 'adopted' && job.status === 'running'))
+        await runtime.jobs.stop(job.id, 'exit');
+      const configured = Number(process.env.CIRCLE_JOB_WAIT ?? 1800);
+      const deadline =
+        Date.now() +
+        (Number.isFinite(configured) && configured >= 0 ? configured : 1800) *
+          1000;
+      let wakes = 0;
+      while (Date.now() < deadline) {
+        waiting.signal.throwIfAborted();
+        if (runtime.jobs.hasNotices(runtime.session.id, true)) {
+          if (wakes++ >= 10) break;
+          await delay(1000, undefined, { signal: waiting.signal });
+          const answer = await runtime.runJobNotices();
+          if (answer !== undefined && !options.json)
+            process.stdout.write(answer + '\n');
+        } else if (
+          !runtime.jobs
+            .list(runtime.session.id)
+            .some((job) => job.status === 'running' && job.startedBy !== 'user')
+        )
+          break;
+        else await delay(50, undefined, { signal: waiting.signal });
+      }
+    }
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`✖ ${message}\n`);
-    return message === 'Interrupted' ? 130 : 1;
+    return waiting.signal.aborted || message === 'Interrupted' ? 130 : 1;
   } finally {
     off();
     process.off('SIGINT', cancel);
@@ -81,19 +121,38 @@ export async function runPrint(
 export async function runLine(runtime: AgentRuntime): Promise<number> {
   const input = createInterface({ input: process.stdin, terminal: false });
   let code = 0;
-  for await (const line of input) {
-    if (['/exit', '/quit', '/q'].includes(line.trim())) break;
-    if (line.trim() === '/help') {
-      process.stdout.write('/help · /exit\n');
-      continue;
-    }
-    if (/^\/[A-Za-z-]+(?:\s|$)/.test(line)) {
+  const interrupt = (): void => {
+    code = 130;
+    input.close();
+    void runtime.harness.cancel();
+  };
+  process.on('SIGINT', interrupt);
+  const off = runtime.bus.subscribe((event) => {
+    if (event.kind === 'job_ended')
       process.stderr.write(
-        'This command works in the full-screen interface only.\n',
+        `Background job ${String((event.payload.job as { id: string }).id)} ended.\n`,
       );
-      continue;
+  });
+  try {
+    for await (const line of input) {
+      if (['/exit', '/quit', '/q'].includes(line.trim())) break;
+      if (line.trim() === '/help') {
+        process.stdout.write('/help · /exit\n');
+        continue;
+      }
+      if (/^\/[A-Za-z-]+(?:\s|$)/.test(line)) {
+        process.stderr.write(
+          'This command works in the full-screen interface only.\n',
+        );
+        continue;
+      }
+      if (line.trim())
+        code = await runPrint(runtime, [line], { waitJobs: false });
     }
-    if (line.trim()) code = await runPrint(runtime, [line]);
+  } finally {
+    off();
+    input.close();
+    process.off('SIGINT', interrupt);
   }
   return code;
 }

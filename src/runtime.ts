@@ -27,6 +27,7 @@ import { migrateLegacy } from './migration.js';
 import type { MigrationReport } from './legacy_sessions.js';
 import { askQuestions } from './questions.js';
 import type { SecretRequest } from './secret_prompt.js';
+import { JobRegistry, jobLine, type Job } from './jobs.js';
 const BUILTIN_TOOL_NAMES = new Set([
   'ls',
   'read_file',
@@ -46,6 +47,9 @@ const BUILTIN_TOOL_NAMES = new Set([
   'apply_patch',
   'plan_enter',
   'plan_exit',
+  'list_jobs',
+  'stop_job',
+  'wait_jobs',
 ]);
 const EXPLORE_TOOLS = new Set([
   'ls',
@@ -56,7 +60,14 @@ const EXPLORE_TOOLS = new Set([
   'websearch',
   'lsp',
   'skill',
+  'list_jobs',
+  'stop_job',
+  'wait_jobs',
 ]);
+export interface InteractionContext {
+  jobId?: string;
+  name?: string;
+}
 export interface RuntimeOptions {
   workspace: string;
   home: string;
@@ -69,12 +80,21 @@ export interface RuntimeOptions {
   model?: ChatModel;
   extraTools?: Tool[];
   headless?: boolean;
-  approve?: (call: ToolCall, signal: AbortSignal) => Promise<ApprovalDecision>;
+  approve?: (
+    call: ToolCall,
+    signal: AbortSignal,
+    origin?: InteractionContext,
+  ) => Promise<ApprovalDecision>;
   question?: (
     args: Record<string, unknown>,
     signal: AbortSignal,
+    origin?: InteractionContext,
   ) => Promise<string>;
-  secret?: (request: SecretRequest, signal: AbortSignal) => Promise<void>;
+  secret?: (
+    request: SecretRequest,
+    signal: AbortSignal,
+    origin?: InteractionContext,
+  ) => Promise<void>;
 }
 export class AgentRuntime {
   readonly migration: MigrationReport;
@@ -82,6 +102,9 @@ export class AgentRuntime {
   readonly store: CheckpointStore;
   readonly bus = new EventBus();
   readonly sandbox: Sandbox;
+  readonly jobs: JobRegistry;
+  private closing = false;
+  private closingPromise?: Promise<void>;
   readonly policy;
   readonly runOptions: RunOptions;
   readonly skills;
@@ -129,6 +152,12 @@ export class AgentRuntime {
       options.home,
       this.sandbox.credentialFiles,
       (path) => this.sandbox.resolvePath(path),
+    );
+    this.jobs = new JobRegistry(this.sandbox, (kind, job) =>
+      this.bus.emit(kind, {
+        payload: { job },
+        tags: { session_id: job.sessionId },
+      }),
     );
     this.skills = discoverSkills(options.workspace, options.home);
     this.mcp = new McpManager(options.workspace);
@@ -205,6 +234,7 @@ export class AgentRuntime {
             .join('\n')
         : '');
     let tools = buildTools(this.sandbox, {
+      jobs: this.jobs,
       todos: (todos) => {
         this.todos = todos;
         this.bus.emit('todo_list', { payload: { todos } });
@@ -258,6 +288,8 @@ export class AgentRuntime {
       },
       compact: async (hint, context) => this.compact(hint, context.signal),
       task: async (args, context) => {
+        const parentHarness = this.harness;
+        const parentSessionId = context.sessionId;
         const name = String(args.subagent_type || 'general-purpose');
         const custom = this.extensions
           .subagents(this.allTools)
@@ -272,21 +304,46 @@ export class AgentRuntime {
                 custom.spec.model,
               ),
             )
-          : this.harness.model;
+          : parentHarness.model;
         const session = this.store.create(
           this.options.workspace,
           childModel.model,
           String(args.description || '').slice(0, 80),
         );
         const childBus = new EventBus(session.id);
-        childBus.subscribe((event) =>
+        let backgroundJob: Job | undefined;
+        let backgroundLog: ((text: string) => void) | undefined;
+        const interact = async <T>(
+          action: (origin: InteractionContext) => Promise<T>,
+        ): Promise<T> => {
+          if (backgroundJob)
+            this.jobs.activity(backgroundJob.id, 'waiting for you');
+          try {
+            return await action({ jobId: backgroundJob?.id, name });
+          } finally {
+            if (backgroundJob) this.jobs.activity(backgroundJob.id, 'working');
+          }
+        };
+        childBus.subscribe((event) => {
+          if (event.kind === 'tool_call')
+            backgroundLog?.(
+              `${event.payload.name}(${JSON.stringify(event.payload.args)})`,
+            );
+          if (event.kind === 'llm_end')
+            backgroundLog?.(
+              String((event.payload.message as Message)?.content || ''),
+            );
           this.bus.emit(event.kind, {
             payload: event.payload,
             usage: event.usage,
-            tags: { subagent: session.id, name },
-            parent_run_id: this.session.id,
-          }),
-        );
+            tags: {
+              subagent: session.id,
+              name,
+              ...(backgroundJob ? { job_id: backgroundJob.id } : {}),
+            },
+            parent_run_id: parentSessionId,
+          });
+        });
         const childTools = (custom?.tools ?? this.allTools).filter(
           (tool) =>
             tool.name !== 'task' &&
@@ -297,6 +354,35 @@ export class AgentRuntime {
               custom !== undefined ||
               EXPLORE_TOOLS.has(tool.name)),
         );
+        const jobTools = buildTools(this.sandbox, {
+          jobs: this.jobs,
+          jobOwner: () => ({
+            sessionId: parentSessionId,
+            parent: backgroundJob?.id ?? session.id,
+            startedBy: 'model',
+          }),
+          question: (args, context) =>
+            askQuestions(
+              this.options.home,
+              this.sandbox,
+              args,
+              context.signal,
+              {
+                ask: this.options.question
+                  ? (args, signal) =>
+                      interact((origin) =>
+                        this.options.question!(args, signal, origin),
+                      )
+                  : undefined,
+                secret: this.options.secret
+                  ? (request, signal) =>
+                      interact((origin) =>
+                        this.options.secret!(request, signal, origin),
+                      )
+                  : undefined,
+              },
+            ),
+        });
         const ownedChildTools = childTools.map((tool) =>
           tool.name === 'write_todos'
             ? {
@@ -308,7 +394,15 @@ export class AgentRuntime {
                   return 'Updated todo list.';
                 },
               }
-            : tool,
+            : [
+                  'execute',
+                  'list_jobs',
+                  'stop_job',
+                  'wait_jobs',
+                  'question',
+                ].includes(tool.name)
+              ? jobTools.find((jobTool) => jobTool.name === tool.name)!
+              : tool,
         );
         const child = new Harness({
           model: childModel,
@@ -327,11 +421,16 @@ export class AgentRuntime {
                 'utf8',
               )) +
             '\n' +
-            this.harness.system,
+            parentHarness.system,
           bus: childBus,
-          approve: this.options.approve,
+          approve: this.options.approve
+            ? (call, signal) =>
+                interact((origin) =>
+                  this.options.approve!(call, signal, origin),
+                )
+            : undefined,
           headless: this.options.headless,
-          approvalSessionId: this.session.id,
+          approvalSessionId: parentSessionId,
           parentPlanMode: () => this.harness.planMode,
           toolBoundary: (tool, args, context) =>
             this.extensionToolBoundary(tool, args, context),
@@ -346,22 +445,41 @@ export class AgentRuntime {
             ),
         });
         child.planMode = name === 'explore';
-        const abort = (): void => {
-          void child.cancel();
+        const runChild = async (signal: AbortSignal): Promise<string> => {
+          const abort = (): void => {
+            void child.cancel();
+          };
+          signal.addEventListener('abort', abort, { once: true });
+          try {
+            signal.throwIfAborted();
+            return (await child.run(String(args.description || ''))).answer;
+          } finally {
+            signal.removeEventListener('abort', abort);
+            await this.jobs.stopOwned(backgroundJob?.id ?? session.id);
+          }
         };
-        context.signal.addEventListener('abort', abort, { once: true });
-        try {
+        if (args.background === true) {
           context.signal.throwIfAborted();
-          return (await child.run(String(args.description || ''))).answer;
-        } finally {
-          context.signal.removeEventListener('abort', abort);
+          const job = this.jobs.startAgent(
+            `${name}: ${String(args.description || '')}`,
+            { sessionId: parentSessionId, startedBy: 'model' },
+            async (signal, log, job) => {
+              backgroundJob = job;
+              backgroundLog = log;
+              return runChild(signal);
+            },
+          );
+          return `In background: ${jobLine(job)}. The subagent report will arrive as a notice; do not poll or sleep.`;
         }
+        return runChild(context.signal);
       },
     });
     tools.push(this.lsp.tool());
     tools.push(...(this.options.extraTools ?? []));
     this.coreTools = tools;
-    tools = this.withIntegrationTools(tools);
+    tools = this.withIntegrationTools(
+      tools.filter((tool) => tool.name !== 'wait_jobs'),
+    );
     return new Harness({
       model: this.extensions.model(model),
       tools,
@@ -373,6 +491,11 @@ export class AgentRuntime {
       headless: this.options.headless,
       approve: this.options.approve,
       beforeRun: (signal) => this.initialize(signal),
+      beforeStep: () => {
+        const messages = this.jobs.takeNotices(this.harness.sessionId);
+        if (messages.length)
+          this.store.append(this.harness.sessionId, messages);
+      },
       toolBoundary: (tool, args, context) =>
         this.extensionToolBoundary(tool, args, context),
       prepareMessages: (signal) =>
@@ -482,7 +605,9 @@ export class AgentRuntime {
         await host.load();
         signal?.throwIfAborted();
         this.extensions = host;
-        this.harness.tools = this.withIntegrationTools(base);
+        this.harness.tools = this.withIntegrationTools(
+          base.filter((tool) => tool.name !== 'wait_jobs'),
+        );
         const subagents = new Map<string, string>([
           ['general-purpose', 'General coding tasks.'],
           ['explore', 'Read-only project exploration.'],
@@ -645,13 +770,36 @@ export class AgentRuntime {
     if (typeof header.title === 'string')
       this.store.rename(this.session.id, header.title);
   }
-  async close(): Promise<void> {
+  async close(saveJobNotes = true): Promise<void> {
+    if (this.closingPromise) return this.closingPromise;
+    this.closing = true;
+    this.closingPromise = this.closeResources(saveJobNotes);
+    return this.closingPromise;
+  }
+  private async closeResources(saveJobNotes: boolean): Promise<void> {
     this.compactionController?.abort(new Error('Interrupted'));
     await this.activeCompaction?.catch(() => {});
     await this.harness.cancel();
+    const stopped = await this.jobs.close();
+    for (const sessionId of saveJobNotes
+      ? new Set(stopped.map((job) => job.sessionId))
+      : []) {
+      const notices = this.jobs.takeNotices(sessionId);
+      if (notices.length && this.store.get(sessionId))
+        this.store.append(sessionId, notices);
+    }
     await this.integrationsReady?.catch(() => {});
     await this.mcp.close();
     await this.lsp.close();
     this.store.close();
+  }
+  async runJobNotices(): Promise<string | undefined> {
+    if (
+      this.closing ||
+      this.harness.busy ||
+      !this.jobs.hasNotices(this.session.id, true)
+    )
+      return undefined;
+    return (await this.harness.run()).answer;
   }
 }

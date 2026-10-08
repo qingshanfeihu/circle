@@ -37,6 +37,8 @@ import { ThemeWatch } from '../ink/theme_watch.js';
 import { Picker, type PickerItem } from '../ink/components/picker.js';
 import { welcomeRows } from '../ink/components/welcome.js';
 import { renderScreen, type ScreenState } from './render.js';
+import { InteractionQueue } from './interaction_queue.js';
+import { installExitGuard } from '../exit_guard.js';
 import { currentBranch } from '../git_info.js';
 import { loadRemap, ACTIONS } from '../keybindings.js';
 import { emptyUsage, type ToolCall } from '../types.js';
@@ -78,12 +80,27 @@ export class SessionApp {
   private historyIndex = 0;
   private draftBeforeHistory = '';
   private off?: () => void;
+  private offSignals?: () => void;
+  private jobWakeAt = 0;
+  private jobWakeCount = 0;
+  private jobWakeSnoozed = false;
+  private interactions = new InteractionQueue(
+    (background) =>
+      !this.state.dialog &&
+      (!background ||
+        (!this.state.draft &&
+          !this.state.picker &&
+          !this.runtime?.harness.busy)),
+  );
+  private backgroundCard = false;
   private shared?: string;
   private dataListener = (data: string): void => {
     for (const event of this.input.feed(data)) this.handle(event);
   };
   private resizeListener = (): void => this.repaint();
   private signalListener = (): void => {
+    if (this.backgroundCard) return;
+    this.jobWakeSnoozed = true;
     if (this.runtime?.harness.busy) void this.runtime.harness.cancel();
     else this.exit(0);
   };
@@ -146,7 +163,14 @@ export class SessionApp {
     );
     this.theme.start();
     this.animation = setInterval(() => {
-      if (this.state.busy || this.state.waiting) this.repaint();
+      if (
+        this.state.busy ||
+        this.state.waiting ||
+        this.runtime?.jobs.list().some((job) => job.status === 'running') ||
+        this.state.jobDetail
+      )
+        this.repaint();
+      this.wakeJobs();
     }, 160);
     this.repaint();
   }
@@ -161,6 +185,9 @@ export class SessionApp {
         this.runtime.session.id,
       );
       this.state.busy = this.runtime.harness.busy;
+      this.state.jobs = this.runtime.jobs.list();
+      if (this.state.jobDetail)
+        this.state.jobDetail = this.runtime.jobs.get(this.state.jobDetail.id);
       this.state.renderToolResult = (message) => {
         const renderer = this.runtime!.extensions.renderer(message.name || '');
         if (!renderer) return undefined;
@@ -300,18 +327,91 @@ export class SessionApp {
     this.runtime = new AgentRuntime({
       ...options,
       settings: this.settings,
-      approve: (call, signal) => this.approve(call, signal),
-      question: async (args, signal) => {
-        if (!Array.isArray(args.questions))
-          throw new Error('invalid questions');
-        const answers: string[][] = [];
-        for (const question of args.questions as Question[])
-          answers.push(await this.askQuestion(question, signal));
-        return JSON.stringify(answers);
-      },
-      secret: (request, signal) => this.enterSecret(request, signal),
+      approve: (call, signal, origin) =>
+        this.interactions.run(
+          async () => {
+            this.backgroundCard = Boolean(origin?.jobId);
+            try {
+              return await this.approve(
+                call,
+                signal,
+                origin?.jobId ? `${origin.jobId} ${origin.name} · ` : '',
+              );
+            } finally {
+              this.backgroundCard = false;
+            }
+          },
+          signal,
+          Boolean(origin?.jobId),
+        ),
+      question: (args, signal, origin) =>
+        this.interactions.run(
+          async () => {
+            this.backgroundCard = Boolean(origin?.jobId);
+            try {
+              if (!Array.isArray(args.questions))
+                throw new Error('invalid questions');
+              const answers: string[][] = [];
+              for (const question of args.questions as Question[])
+                answers.push(
+                  await this.askQuestion(
+                    {
+                      ...question,
+                      header: origin?.jobId
+                        ? `${origin.jobId} ${question.header}`
+                        : question.header,
+                    },
+                    signal,
+                  ),
+                );
+              return JSON.stringify(answers);
+            } finally {
+              this.backgroundCard = false;
+            }
+          },
+          signal,
+          Boolean(origin?.jobId),
+        ),
+      secret: (request, signal, origin) =>
+        this.interactions.run(
+          async () => {
+            this.backgroundCard = Boolean(origin?.jobId);
+            try {
+              await this.enterSecret(
+                {
+                  ...request,
+                  question:
+                    (origin?.jobId ? `${origin.jobId} · ` : '') +
+                    request.question,
+                },
+                signal,
+              );
+            } finally {
+              this.backgroundCard = false;
+            }
+          },
+          signal,
+          Boolean(origin?.jobId),
+        ),
+    });
+    this.offSignals?.();
+    this.offSignals = installExitGuard(this.runtime, (code) => {
+      void this.close().then(
+        () => process.exit(code),
+        () => process.exit(code),
+      );
     });
     this.off = this.runtime.bus.subscribe((event) => {
+      if (event.kind === 'job_ended') this.jobWakeAt = Date.now() + 1000;
+      if (event.tags.subagent) {
+        if (event.kind === 'llm_end')
+          for (const key of Object.keys(
+            this.state.usage,
+          ) as (keyof typeof this.state.usage)[])
+            this.state.usage[key] += event.usage?.[key] ?? 0;
+        this.repaint();
+        return;
+      }
       if (event.kind === 'run_start') {
         this.state.started = Date.now();
         this.state.hiddenTurns = 0;
@@ -370,6 +470,30 @@ export class SessionApp {
         `Could not migrate ${error.thread || 'legacy data'}: ${error.message}`,
       );
     this.repaint();
+  }
+  private wakeJobs(): void {
+    const runtime = this.runtime;
+    if (
+      !runtime ||
+      this.ended ||
+      this.jobWakeSnoozed ||
+      this.jobWakeCount >= 10 ||
+      runtime.harness.busy ||
+      this.state.waiting ||
+      this.state.picker ||
+      this.state.jobDetail ||
+      this.state.draft ||
+      Date.now() < this.jobWakeAt ||
+      !runtime.jobs.hasNotices(runtime.session.id, true)
+    )
+      return;
+    this.jobWakeCount++;
+    void runtime
+      .runJobNotices()
+      .catch(() => {
+        this.jobWakeSnoozed = true;
+      })
+      .finally(() => this.repaint());
   }
   private async askQuestion(
     question: Question,
@@ -470,6 +594,7 @@ export class SessionApp {
   private async approve(
     call: ToolCall,
     signal: AbortSignal,
+    titlePrefix = '',
   ): Promise<ApprovalDecision> {
     const review = this.runtime!.policy.review(call.name, call.args);
     const choices = ['allow this call'];
@@ -485,7 +610,7 @@ export class SessionApp {
     choices.push('reject');
     decisions.push('reject');
     const answer = await this.askChoice(
-      'approval',
+      titlePrefix + 'approval',
       `${call.name}\n${JSON.stringify(call.args, null, 2)}`,
       choices,
       signal,
@@ -530,7 +655,34 @@ export class SessionApp {
     }
     const key = this.remap[event.key] || event.key;
     const char = event.char;
+    if (this.state.jobDetail && !this.state.dialog) {
+      const job = this.state.jobDetail;
+      if (key === 'escape') {
+        this.state.jobDetail = undefined;
+        void this.command('jobs', '');
+      } else if (key === 'ctrl+d')
+        void (async () => {
+          if (job.status === 'running') {
+            if (
+              (await this.askChoice(`stop ${job.id}`, job.title, [
+                'stop job',
+                'keep running',
+              ])) === 'stop job'
+            )
+              await this.runtime!.jobs.stop(job.id, 'user');
+          } else {
+            this.runtime!.jobs.remove(job.id);
+            this.state.jobDetail = undefined;
+            await this.command('jobs', '');
+          }
+          this.repaint();
+        })().catch((error) => this.fail(error));
+      else if (key === 'ctrl+b') this.runtime?.jobs.backgroundForeground();
+      this.repaint();
+      return;
+    }
     if (this.state.dialog) {
+      if (key === 'ctrl+c' && this.backgroundCard) return;
       const dialog = this.state.dialog;
       if (this.questionCard) {
         const answer = this.questionCard.handle(key, char);
@@ -585,9 +737,11 @@ export class SessionApp {
       return;
     }
     if (key === 'ctrl+c') {
+      this.jobWakeSnoozed = true;
       if (this.runtime?.harness.busy) void this.runtime.harness.cancel();
       else this.setDraft('');
     } else if (key === 'escape') {
+      this.jobWakeSnoozed = true;
       if (this.runtime?.harness.busy) void this.runtime.harness.cancel();
       else if (
         !this.state.draft &&
@@ -596,6 +750,13 @@ export class SessionApp {
       )
         void this.command(this.settings.double_escape, '');
       this.lastEscape = Date.now();
+    } else if (key === 'ctrl+b') {
+      const count = this.runtime?.jobs.backgroundForeground() ?? 0;
+      this.flash(
+        count
+          ? `Moved ${count} command${count === 1 ? '' : 's'} to background`
+          : 'No foreground command',
+      );
     } else if (key === 'ctrl+o') {
       this.state.showTools = !this.state.showTools;
       this.flash(this.state.showTools ? 'Tools expanded' : 'Tools folded');
@@ -707,6 +868,8 @@ export class SessionApp {
       return;
     }
     if (!this.runtime) return;
+    this.jobWakeSnoozed = false;
+    this.jobWakeCount = 0;
     if (this.runtime.harness.busy) {
       this.runtime.harness.queue(message);
       this.flash('Queued steering');
@@ -746,6 +909,28 @@ export class SessionApp {
     if (!runtime) return;
     if (name === 'exit') {
       this.exit(0);
+      return;
+    }
+    if (name === 'jobs') {
+      const jobs = runtime.jobs.list();
+      if (args) {
+        const job = runtime.jobs.get(args.trim());
+        if (!job) throw new Error('unknown job');
+        this.state.jobDetail = job;
+        this.repaint();
+      } else if (!jobs.length) this.notice('No background jobs');
+      else
+        this.picker(
+          'Jobs',
+          jobs.map((job) => ({
+            key: job.id,
+            label: `${job.id} · ${job.status} · ${job.title}`,
+          })),
+          async (item) => {
+            this.state.jobDetail = runtime.jobs.get(item.key);
+            this.repaint();
+          },
+        );
       return;
     }
     if (name === 'help') {
@@ -902,6 +1087,7 @@ export class SessionApp {
       return;
     }
     if (name === 'tree' || name === 'fork') {
+      this.jobWakeSnoozed = true;
       if (runtime.harness.busy) throw new Error('a turn is running');
       const tree = runtime.store.tree(runtime.session.id);
       const choices = tree
@@ -1220,6 +1406,9 @@ export class SessionApp {
   async close(): Promise<void> {
     this.ended = true;
     this.off?.();
+    this.offSignals?.();
+    this.interactions.close();
+    this.pending?.abort?.();
     this.input.close();
     this.theme.close();
     if (this.animation) clearInterval(this.animation);

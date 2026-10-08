@@ -15,6 +15,7 @@ export const BUILTIN_SLASH: SlashCommand[] = [
   { name: 'init', description: 'Analyze repo and write AGENTS.md' },
   { name: 'trust', description: 'Trust this workspace' },
   { name: 'settings', description: 'Show current settings' },
+  { name: 'jobs', description: 'View background jobs and their output' },
   { name: 'themes', description: 'Show or set auto, dark, or light theme' },
   { name: 'mcp', description: 'List or reload MCP servers and tools' },
   {

@@ -120,6 +120,31 @@ test('screen rows respect width, short dialogs keep options, and read-only wins 
   assert.match(rendered, /reject/);
   assert.match(rendered, /\+\d+ lines/);
 });
+test('background job rows stay below the input and use the shared terminal palette without leaking command escapes', () => {
+  const screen = state();
+  screen.jobs = [
+    {
+      id: 'j1',
+      kind: 'shell',
+      title: '\x1b]52;c;c2VjcmV0\x07npm test',
+      sessionId: 'session',
+      status: 'running',
+      reason: '',
+      started: Date.now(),
+      outputPath: '/missing-output',
+      virtualPath: '/background_jobs/test/job.log',
+    },
+  ];
+  for (const height of [8, 24]) {
+    const rows = renderScreen(screen, 60, height);
+    assert.equal(rows.length, height);
+    const plain = rows.map(stripAnsi);
+    const jobHeader = plain.findIndex((row) => row.includes('Jobs · 1'));
+    assert.ok(jobHeader > plain.findIndex((row) => row.includes('╰')));
+    assert.ok(rows.every((row) => !row.includes('\x1b]52;')));
+    assert.ok(rows.every((row) => stringWidth(row) === 60));
+  }
+});
 test('CLI preserves print flag placement and rejects conflicting saved-session options', () => {
   const options = parseCli(
     ['-p', '-c', 'hello', '.', '--tools', 'read,grep'],

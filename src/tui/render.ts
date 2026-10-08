@@ -4,6 +4,7 @@ import type { Message, Usage } from '../types.js';
 import type { Todo } from '../tools.js';
 import { dialogRows, type DialogState } from '../ink/components/dialog_card.js';
 import type { Picker } from '../ink/components/picker.js';
+import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
@@ -29,12 +30,16 @@ export interface ScreenState {
   dialog?: DialogState;
   picker?: Picker;
   hiddenTurns: number;
+  jobs?: Job[];
+  jobDetail?: Job;
   renderToolResult?: (message: Message) => string[] | undefined;
 }
 export function transcriptRows(state: ScreenState, width: number): string[] {
   const p = palette();
   const rows: string[] = [...state.welcome, ''];
-  let messages = state.messages.filter((message) => !message.internal);
+  let messages = state.messages.filter(
+    (message) => !message.internal || message.internal === 'job_notice',
+  );
   let hide = state.hiddenTurns;
   while (hide-- > 0) {
     let index = messages.length - 1;
@@ -59,7 +64,18 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
     );
   };
   for (const message of messages) {
-    if (message.role === 'user')
+    if (message.internal === 'job_notice')
+      block(
+        '◆',
+        plainJobOutput(message.display ?? '').replace(/^◆ /gm, ''),
+        '',
+        / failed · /.test(message.display ?? '')
+          ? p.red
+          : / done · /.test(message.display ?? '')
+            ? p.green
+            : p.dim,
+      );
+    else if (message.role === 'user')
       block('›', message.display ?? message.content, '', p.blue);
     else if (message.role === 'assistant') {
       if (message.thinking)
@@ -155,6 +171,38 @@ export function renderScreen(
     bottom.push(
       ...state.picker.rows(width, Math.max(3, Math.floor(height / 3))),
     );
+  const jobs = (state.jobs ?? []).filter((job) => job.status === 'running');
+  const jobRows: string[] = [];
+  const maxJobs = Math.max(
+    0,
+    Math.min(4, Math.floor((height - (state.todos.length ? 14 : 6)) / 2)),
+  );
+  if (!state.dialog && !state.picker && jobs.length && maxJobs) {
+    jobRows.push(p.dim + pad(` Jobs · ${jobs.length}`, width) + p.reset);
+    for (const job of jobs.slice(0, maxJobs)) {
+      let activity = job.detail ?? '';
+      if (job.kind !== 'agent')
+        try {
+          activity = outputTail(job.outputPath, 2048, 1);
+        } catch {
+          /* Output may have been removed externally. */
+        }
+      jobRows.push(
+        p.dim +
+          pad(
+            ` ${statusLight(job.detail === 'waiting for you' ? 'wait' : 'running')} ${job.id} ${truncate(plainJobOutput(job.title), Math.max(6, Math.floor(width / 2)))} · ${elapsed(job)}`,
+            width,
+          ) +
+          p.reset,
+      );
+      if (activity)
+        jobRows.push(
+          p.faint +
+            pad('   ' + truncate(plainJobOutput(activity), width - 3), width) +
+            p.reset,
+        );
+    }
+  }
   if (!state.dialog && state.todos.length) {
     const current = Math.max(
       0,
@@ -245,6 +293,7 @@ export function renderScreen(
         frame('╯'),
     );
   }
+  bottom.push(...jobRows);
   const footer = ` ↑ ${state.usage.input_tokens} · ↓ ${state.usage.output_tokens} · cache ${state.usage.input_tokens ? Math.round((state.usage.cache_read_tokens / state.usage.input_tokens) * 100) : 0}%`;
   const right = state.flash
     ? truncate(state.flash, Math.max(1, Math.floor(width / 2)))
@@ -265,7 +314,28 @@ export function renderScreen(
       (width >= 60 ? '  ? for shortcuts' : '') +
       p.reset,
   ];
-  const transcript = transcriptRows(state, width);
+  let transcript = transcriptRows(state, width);
+  if (state.jobDetail) {
+    const job = state.jobDetail;
+    let output = '';
+    try {
+      output = outputTail(job.outputPath, 64_000, Math.max(20, height * 2));
+    } catch {
+      output = 'Output is unavailable.';
+    }
+    transcript = [
+      p.text +
+        ` ${job.id} · ${job.status} · ${plainJobOutput(job.title)}` +
+        p.reset,
+      p.faint +
+        ` ${job.virtualPath} · ${elapsed(job)} · esc back · ctrl+d ${job.status === 'running' ? 'stop' : 'remove'}` +
+        p.reset,
+      '',
+      ...wrap(plainJobOutput(output), width).map(
+        (row) => p.dim + row + p.reset,
+      ),
+    ];
+  }
   const available = Math.max(1, height - bottom.length - 1);
   const end = Math.max(available, transcript.length - state.scroll);
   rows.push(...transcript.slice(Math.max(0, end - available), end));

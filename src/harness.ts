@@ -20,6 +20,7 @@ export interface HarnessOptions {
   maxSteps?: number;
   headless?: boolean;
   beforeRun?: (signal: AbortSignal) => Promise<void>;
+  beforeStep?: () => void;
   toolBoundary?: (
     tool: Tool,
     args: Record<string, unknown>,
@@ -84,7 +85,7 @@ export class Harness {
   private save(message: Message): void {
     this.options.store.append(this.sessionId, [message]);
   }
-  async run(prompt: string): Promise<{ answer: string; usage: Usage }> {
+  async run(prompt?: string): Promise<{ answer: string; usage: Usage }> {
     if (this.active) throw new Error('a turn is already running');
     this.controller = new AbortController();
     this.active = this.runQueued(prompt, this.controller.signal);
@@ -96,7 +97,7 @@ export class Harness {
     }
   }
   private async runQueued(
-    prompt: string,
+    prompt: string | undefined,
     signal: AbortSignal,
   ): Promise<{ answer: string; usage: Usage }> {
     await this.options.beforeRun?.(signal);
@@ -104,30 +105,31 @@ export class Harness {
     const total = emptyUsage();
     let answer = '';
     let next: string | undefined = prompt;
-    while (next !== undefined) {
+    do {
       const result = await this.runTurn(next, signal);
       answer = result.answer;
       for (const key of Object.keys(total) as (keyof Usage)[])
         total[key] += result.usage[key];
       next = this.followUps.shift();
-    }
+    } while (next !== undefined);
     return { answer, usage: total };
   }
   private async runTurn(
-    prompt: string,
+    prompt: string | undefined,
     signal: AbortSignal,
   ): Promise<{ answer: string; usage: Usage }> {
     const start = Date.now();
     const usage = emptyUsage();
     let answer = '';
-    this.save({
-      id: randomUUID(),
-      role: 'user',
-      content: attachFiles(prompt, this.options.session.workspace),
-      display: prompt,
-    });
+    if (prompt !== undefined)
+      this.save({
+        id: randomUUID(),
+        role: 'user',
+        content: attachFiles(prompt, this.options.session.workspace),
+        display: prompt,
+      });
     const session = this.options.store.get(this.sessionId)!;
-    if (!session.title)
+    if (!session.title && prompt !== undefined)
       this.options.store.rename(
         this.sessionId,
         prompt.split('\n')[0]!.slice(0, 100),
@@ -145,6 +147,7 @@ export class Harness {
           });
           this.bus.emit('steer', { payload: { message } });
         }
+        this.options.beforeStep?.();
         this.bus.emit('llm_start');
         const response = await this.model.complete({
           system:

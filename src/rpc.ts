@@ -28,154 +28,204 @@ export async function runRpc(
     if (record) send(record);
   });
   const input = createInterface({ input: io.input, terminal: false });
+  let code = 0;
+  const interrupt = (): void => {
+    code = 130;
+    input.close();
+    void runtime.harness.cancel();
+  };
+  process.on('SIGINT', interrupt);
   let running: Promise<void> | undefined;
-  for await (const line of input) {
-    let command: Record<string, unknown>;
-    try {
-      command = JSON.parse(line);
-      if (!command || typeof command !== 'object' || Array.isArray(command))
-        throw new Error('not an object');
-    } catch {
-      send({
-        type: 'response',
-        command: 'parse',
-        success: false,
-        error: 'invalid JSON command',
-      });
-      continue;
-    }
-    const type = String(command.type || '');
-    const response = (data?: unknown): void =>
-      send({
-        type: 'response',
-        command: type,
-        success: true,
-        ...(command.id !== undefined ? { id: command.id } : {}),
-        ...(data !== undefined ? { data } : {}),
-      });
-    try {
-      if (['prompt', 'steer', 'follow_up'].includes(type)) {
-        if (typeof command.message !== 'string' || !command.message.trim())
-          throw new Error('message is required');
-        if (runtime.harness.busy) {
-          const mode =
-            type === 'steer'
-              ? 'steer'
-              : type === 'follow_up'
-                ? 'followUp'
-                : command.streamingBehavior;
-          if (mode !== 'steer' && mode !== 'followUp')
-            throw new Error('streamingBehavior must be steer or followUp');
-          runtime.harness.queue(command.message, mode);
-          response({ disposition: 'queued' });
-        } else {
-          response({ disposition: 'started' });
-          running = runtime.harness
-            .run(command.message)
-            .then(
-              () => {},
-              () => {},
-            )
-            .finally(() => send({ type: 'agent_settled' }));
-        }
-      } else if (type === 'abort') {
-        await runtime.harness.cancel();
-        response();
-      } else if (type === 'clear_queue') response(runtime.harness.clearQueue());
-      else if (type === 'new_session') {
-        await runtime.newSession();
-        response({ cancelled: false, sessionId: runtime.session.id });
-      } else if (type === 'get_state')
-        response({
-          model: runtime.harness.model.model,
-          thinkingLevel: runtime.thinkingLevel,
-          isStreaming: runtime.harness.busy,
-          sessionId: runtime.session.id,
-          sessionName: runtime.store.get(runtime.session.id)?.title,
-          messageCount: runtime.harness.messages.length,
-          pendingMessageCount: runtime.harness.pendingMessageCount,
+  let snoozed = false;
+  let wakeCount = 0;
+  let ended = false;
+  const wake = setInterval(() => {
+    if (
+      ended ||
+      snoozed ||
+      wakeCount >= 10 ||
+      runtime.harness.busy ||
+      !runtime.jobs.hasNotices(runtime.session.id, true)
+    )
+      return;
+    wakeCount++;
+    running = runtime
+      .runJobNotices()
+      .then(
+        () => {},
+        () => {
+          snoozed = true;
+        },
+      )
+      .finally(() => send({ type: 'agent_settled' }));
+  }, 1000);
+  wake.unref();
+  try {
+    for await (const line of input) {
+      let command: Record<string, unknown>;
+      try {
+        command = JSON.parse(line);
+        if (!command || typeof command !== 'object' || Array.isArray(command))
+          throw new Error('not an object');
+      } catch {
+        send({
+          type: 'response',
+          command: 'parse',
+          success: false,
+          error: 'invalid JSON command',
         });
-      else if (type === 'get_messages')
-        response({ messages: runtime.harness.messages });
-      else if (type === 'get_last_assistant_text')
-        response({
-          text:
-            runtime.harness.messages
-              .filter((message) => message.role === 'assistant')
-              .at(-1)?.content || '',
+        continue;
+      }
+      const type = String(command.type || '');
+      const response = (data?: unknown): void =>
+        send({
+          type: 'response',
+          command: type,
+          success: true,
+          ...(command.id !== undefined ? { id: command.id } : {}),
+          ...(data !== undefined ? { data } : {}),
         });
-      else if (type === 'get_session_stats') {
-        const stats = runtime.stats();
-        const messages = runtime.harness.messages;
-        response({
-          sessionId: runtime.session.id,
-          userMessages: messages.filter(
-            (message) => message.role === 'user' && !message.internal,
-          ).length,
-          assistantMessages: messages.filter(
-            (message) => message.role === 'assistant',
-          ).length,
-          toolCalls: stats.toolCalls,
-          toolResults: messages.filter((message) => message.role === 'tool')
-            .length,
-          totalMessages: stats.messages,
-          tokens: {
-            input: stats.usage.input_tokens,
-            output: stats.usage.output_tokens,
-            total: stats.usage.input_tokens + stats.usage.output_tokens,
-          },
-        });
-      } else if (type === 'get_available_models') {
-        const settings = runtime.options.settings;
-        const credentials = loadCredentials(runtime.options.home);
-        const discovered = await resolveEndpoint(
-          settings.auth.base_url,
-          credentials[settings.auth.api_key_ref] || '',
-          { protocol: settings.auth.protocol },
-        );
-        if (discovered.status === 'failed') throw new Error(discovered.detail);
-        response({ models: discovered.models });
-      } else if (type === 'set_model') {
-        runtime.setModel(String(command.modelId || command.model || ''));
-        response({ model: runtime.harness.model.model });
-      } else if (type === 'set_thinking_level') {
-        runtime.setThinkingLevel(String(command.level || ''));
-        response({ level: runtime.thinkingLevel });
-      } else if (type === 'export_html') {
-        const session = runtime.store.get(runtime.session.id)!;
-        const path = resolve(
-          runtime.options.workspace,
-          String(command.outputPath || session.id + '.html'),
-        );
-        writeFileSync(
-          path,
-          toHtml(runtime.harness.messages, {
-            thread_id: session.id,
-            title: session.title,
-            workspace: session.workspace,
+      try {
+        if (['prompt', 'steer', 'follow_up'].includes(type)) {
+          if (typeof command.message !== 'string' || !command.message.trim())
+            throw new Error('message is required');
+          snoozed = false;
+          wakeCount = 0;
+          if (runtime.harness.busy) {
+            const mode =
+              type === 'steer'
+                ? 'steer'
+                : type === 'follow_up'
+                  ? 'followUp'
+                  : command.streamingBehavior;
+            if (mode !== 'steer' && mode !== 'followUp')
+              throw new Error('streamingBehavior must be steer or followUp');
+            runtime.harness.queue(command.message, mode);
+            response({ disposition: 'queued' });
+          } else {
+            response({ disposition: 'started' });
+            running = runtime.harness
+              .run(command.message)
+              .then(
+                () => {},
+                () => {},
+              )
+              .finally(() => send({ type: 'agent_settled' }));
+          }
+        } else if (type === 'abort') {
+          snoozed = true;
+          await runtime.harness.cancel();
+          response();
+        } else if (type === 'clear_queue')
+          response(runtime.harness.clearQueue());
+        else if (type === 'new_session') {
+          snoozed = true;
+          await runtime.newSession();
+          response({ cancelled: false, sessionId: runtime.session.id });
+        } else if (type === 'get_state')
+          response({
             model: runtime.harness.model.model,
-          }),
-        );
-        response({ path });
-      } else if (type === 'set_session_name') {
-        const name = String(command.name || '')
-          .trim()
-          .replace(/\s+/g, ' ');
-        if (!name) throw new Error('name is required');
-        runtime.store.rename(runtime.session.id, name);
-        response();
-      } else throw new Error(`unknown command: ${type}`);
-    } catch (error) {
-      send({
-        type: 'response',
-        command: type,
-        success: false,
-        ...(command.id !== undefined ? { id: command.id } : {}),
-        error: error instanceof Error ? error.message : String(error),
-      });
+            thinkingLevel: runtime.thinkingLevel,
+            isStreaming: runtime.harness.busy,
+            sessionId: runtime.session.id,
+            sessionName: runtime.store.get(runtime.session.id)?.title,
+            messageCount: runtime.harness.messages.length,
+            pendingMessageCount: runtime.harness.pendingMessageCount,
+          });
+        else if (type === 'get_messages')
+          response({ messages: runtime.harness.messages });
+        else if (type === 'get_jobs') response({ jobs: runtime.jobs.list() });
+        else if (type === 'stop_job') {
+          await runtime.jobs.stop(String(command.job_id), 'user');
+          response();
+        } else if (type === 'background')
+          response({ moved: runtime.jobs.backgroundForeground() });
+        else if (type === 'get_last_assistant_text')
+          response({
+            text:
+              runtime.harness.messages
+                .filter((message) => message.role === 'assistant')
+                .at(-1)?.content || '',
+          });
+        else if (type === 'get_session_stats') {
+          const stats = runtime.stats();
+          const messages = runtime.harness.messages;
+          response({
+            sessionId: runtime.session.id,
+            userMessages: messages.filter(
+              (message) => message.role === 'user' && !message.internal,
+            ).length,
+            assistantMessages: messages.filter(
+              (message) => message.role === 'assistant',
+            ).length,
+            toolCalls: stats.toolCalls,
+            toolResults: messages.filter((message) => message.role === 'tool')
+              .length,
+            totalMessages: stats.messages,
+            tokens: {
+              input: stats.usage.input_tokens,
+              output: stats.usage.output_tokens,
+              total: stats.usage.input_tokens + stats.usage.output_tokens,
+            },
+          });
+        } else if (type === 'get_available_models') {
+          const settings = runtime.options.settings;
+          const credentials = loadCredentials(runtime.options.home);
+          const discovered = await resolveEndpoint(
+            settings.auth.base_url,
+            credentials[settings.auth.api_key_ref] || '',
+            { protocol: settings.auth.protocol },
+          );
+          if (discovered.status === 'failed')
+            throw new Error(discovered.detail);
+          response({ models: discovered.models });
+        } else if (type === 'set_model') {
+          runtime.setModel(String(command.modelId || command.model || ''));
+          response({ model: runtime.harness.model.model });
+        } else if (type === 'set_thinking_level') {
+          runtime.setThinkingLevel(String(command.level || ''));
+          response({ level: runtime.thinkingLevel });
+        } else if (type === 'export_html') {
+          const session = runtime.store.get(runtime.session.id)!;
+          const path = resolve(
+            runtime.options.workspace,
+            String(command.outputPath || session.id + '.html'),
+          );
+          writeFileSync(
+            path,
+            toHtml(runtime.harness.messages, {
+              thread_id: session.id,
+              title: session.title,
+              workspace: session.workspace,
+              model: runtime.harness.model.model,
+            }),
+          );
+          response({ path });
+        } else if (type === 'set_session_name') {
+          const name = String(command.name || '')
+            .trim()
+            .replace(/\s+/g, ' ');
+          if (!name) throw new Error('name is required');
+          runtime.store.rename(runtime.session.id, name);
+          response();
+        } else throw new Error(`unknown command: ${type}`);
+      } catch (error) {
+        send({
+          type: 'response',
+          command: type,
+          success: false,
+          ...(command.id !== undefined ? { id: command.id } : {}),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+  } finally {
+    ended = true;
+    clearInterval(wake);
+    input.close();
+    process.off('SIGINT', interrupt);
   }
   await running;
   off();
-  return 0;
+  return code;
 }
