@@ -28,6 +28,14 @@ import type { MigrationReport } from './legacy_sessions.js';
 import { askQuestions } from './questions.js';
 import type { SecretRequest } from './secret_prompt.js';
 import { JobRegistry, jobLine, type Job } from './jobs.js';
+import { ModelCatalog } from './model_catalog.js';
+import {
+  priceCall,
+  messageCosts,
+  UsageCostTotals,
+  type CostSummary,
+} from './pricing.js';
+import { addUsage, emptyUsage } from './types.js';
 const BUILTIN_TOOL_NAMES = new Set([
   'ls',
   'read_file',
@@ -78,6 +86,7 @@ export interface RuntimeOptions {
   continue?: boolean;
   fork?: string;
   model?: ChatModel;
+  catalog?: ModelCatalog;
   extraTools?: Tool[];
   headless?: boolean;
   approve?: (
@@ -103,6 +112,7 @@ export class AgentRuntime {
   readonly bus = new EventBus();
   readonly sandbox: Sandbox;
   readonly jobs: JobRegistry;
+  readonly catalog: ModelCatalog;
   private closing = false;
   private closingPromise?: Promise<void>;
   readonly policy;
@@ -131,6 +141,7 @@ export class AgentRuntime {
     };
     options = this.options;
     this.runOptions = options.run ?? defaultRunOptions();
+    this.catalog = options.catalog ?? new ModelCatalog(options.home);
     this.store = new CheckpointStore(
       this.runOptions.no_session ? undefined : options.home,
     );
@@ -163,6 +174,10 @@ export class AgentRuntime {
     this.mcp = new McpManager(options.workspace);
     this.lsp = new LspManager(this.sandbox);
     this.context = new ContextManager(this.store, this.sandbox.offloadRoot!, {
+      progress: (event) =>
+        this.bus.emit('compaction', { payload: { ...event } }),
+      priceUsage: (model, usage) =>
+        priceCall(this.catalog.facts(model, this.options.settings), usage),
       notice: (event) =>
         this.bus.emit('info', { payload: { model_notice: event } }),
     });
@@ -194,6 +209,10 @@ export class AgentRuntime {
     this.harness = this.createHarness(options.model);
     this.todos = restoredTodos(this.harness.messages);
     this.bus.setRunId(this.session.id);
+    if (!options.model)
+      void this.catalog.refreshIfStale(() =>
+        this.bus.emit('info', { payload: { model_catalog_refreshed: true } }),
+      );
     this.bus.subscribe((event) => {
       if (event.kind === 'run_start')
         this.extensions.emit('turn_start', {
@@ -217,7 +236,13 @@ export class AgentRuntime {
     const model =
       modelOverride ??
       this.baseModel ??
-      new GatewayModel(this.options.settings, this.options.home);
+      new GatewayModel(
+        this.options.settings,
+        this.options.home,
+        undefined,
+        {},
+        this.catalog,
+      );
     this.baseModel = model;
     const system =
       buildSystemPrompt(
@@ -302,6 +327,8 @@ export class AgentRuntime {
                 this.options.settings,
                 this.options.home,
                 custom.spec.model,
+                {},
+                this.catalog,
               ),
             )
           : parentHarness.model;
@@ -310,6 +337,13 @@ export class AgentRuntime {
           childModel.model,
           String(args.description || '').slice(0, 80),
         );
+        const parentState = this.store.contextState(parentSessionId);
+        this.store.setContextState(parentSessionId, {
+          ...parentState,
+          subagentSessionIds: [
+            ...new Set([...(parentState.subagentSessionIds ?? []), session.id]),
+          ],
+        });
         const childBus = new EventBus(session.id);
         let backgroundJob: Job | undefined;
         let backgroundLog: ((text: string) => void) | undefined;
@@ -431,6 +465,8 @@ export class AgentRuntime {
             : undefined,
           headless: this.options.headless,
           approvalSessionId: parentSessionId,
+          priceUsage: (model, usage) =>
+            priceCall(this.catalog.facts(model, this.options.settings), usage),
           parentPlanMode: () => this.harness.planMode,
           toolBoundary: (tool, args, context) =>
             this.extensionToolBoundary(tool, args, context),
@@ -490,7 +526,12 @@ export class AgentRuntime {
       bus: this.bus,
       headless: this.options.headless,
       approve: this.options.approve,
-      beforeRun: (signal) => this.initialize(signal),
+      priceUsage: (model, usage) =>
+        priceCall(this.catalog.facts(model, this.options.settings), usage),
+      beforeRun: async (signal) => {
+        if (this.activeCompaction) throw new Error('a compaction is running');
+        await this.initialize(signal);
+      },
       beforeStep: () => {
         const messages = this.jobs.takeNotices(this.harness.sessionId);
         if (messages.length)
@@ -645,7 +686,7 @@ export class AgentRuntime {
     await this.integrationsReady;
   }
   async reloadIntegrations(): Promise<void> {
-    if (this.harness.busy) throw new Error('reload after the current turn');
+    if (this.busy) throw new Error('reload after the current turn');
     this.options.settings = loadSettings(this.options.home);
     this.integrationsReady = undefined;
     await this.initialize();
@@ -665,12 +706,14 @@ export class AgentRuntime {
     ]);
   }
   setModel(model: string): void {
-    if (this.harness.busy) throw new Error('a turn is running');
+    if (this.busy) throw new Error('a turn is running');
     if (!model.trim()) throw new Error('model ID is required');
     this.baseModel = new GatewayModel(
       this.options.settings,
       this.options.home,
       model,
+      {},
+      this.catalog,
     );
     this.harness.model = this.extensions.model(this.baseModel);
     this.harness.system = buildSystemPrompt(
@@ -687,7 +730,7 @@ export class AgentRuntime {
       : this.options.settings.default_thinking;
   }
   setThinkingLevel(level: string): void {
-    if (this.harness.busy) throw new Error('a turn is running');
+    if (this.busy) throw new Error('a turn is running');
     if (!(EFFORT_LEVELS as readonly string[]).includes(level))
       throw new Error('unknown thinking depth');
     if (this.baseModel instanceof GatewayModel) this.baseModel.effort = level;
@@ -697,13 +740,53 @@ export class AgentRuntime {
     messages: number;
     toolCalls: number;
     usage: import('./types.js').Usage;
+    costs: CostSummary;
   } {
     const messages = this.harness.messages;
-    const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 };
+    const usage = emptyUsage();
     for (const message of messages)
-      if (message.usage)
-        for (const key of Object.keys(usage) as (keyof typeof usage)[])
-          usage[key] += message.usage[key];
+      if (message.usage) addUsage(usage, message.usage);
+    const costs = messageCosts(messages);
+    const compactions = new UsageCostTotals();
+    const state = this.store.contextState(this.session.id);
+    for (const id of state.subagentSessionIds ?? []) {
+      if (!this.store.get(id)) continue;
+      const messages = this.store.messages(id);
+      for (const message of messages)
+        if (message.usage) {
+          addUsage(usage, message.usage);
+          compactions.add(message.cost);
+        }
+      const childState = this.store.contextState(id);
+      const calls =
+        childState.compactionCalls ??
+        (childState.summary?.usage
+          ? [
+              {
+                usage: childState.summary.usage,
+                cost: childState.summary.response?.cost,
+              },
+            ]
+          : []);
+      for (const call of calls) {
+        addUsage(usage, call.usage);
+        compactions.add(call.cost);
+      }
+    }
+    const calls =
+      state.compactionCalls ??
+      (state.summary?.usage
+        ? [{ usage: state.summary.usage, cost: state.summary.response?.cost }]
+        : []);
+    for (const call of calls) {
+      addUsage(usage, call.usage);
+      compactions.add(call.cost);
+    }
+    const summary = compactions.snapshot();
+    for (const [currency, amount] of Object.entries(summary.amounts))
+      costs.amounts[currency] = (costs.amounts[currency] ?? 0) + amount;
+    costs.calls += summary.calls;
+    costs.unpriced_calls += summary.unpriced_calls;
     return {
       messages: messages.length,
       toolCalls: messages.reduce(
@@ -711,6 +794,7 @@ export class AgentRuntime {
         0,
       ),
       usage,
+      costs,
     };
   }
   async compact(hint = '', signal?: AbortSignal): Promise<string> {
@@ -720,6 +804,7 @@ export class AgentRuntime {
         this.harness.model,
         signal,
         hint,
+        { system: this.harness.system, tools: this.harness.tools },
       );
     if (this.activeCompaction || this.harness.busy)
       throw new Error('a turn is running');
@@ -729,6 +814,7 @@ export class AgentRuntime {
       this.harness.model,
       this.compactionController.signal,
       hint,
+      { system: this.harness.system, tools: this.harness.tools },
     );
     try {
       return await this.activeCompaction;
@@ -737,8 +823,15 @@ export class AgentRuntime {
       this.compactionController = undefined;
     }
   }
+  get busy(): boolean {
+    return this.harness.busy || Boolean(this.activeCompaction);
+  }
+  async cancel(): Promise<void> {
+    this.compactionController?.abort(new Error('Interrupted'));
+    await Promise.allSettled([this.activeCompaction, this.harness.cancel()]);
+  }
   async newSession(): Promise<void> {
-    if (this.harness.busy) throw new Error('a turn is running');
+    if (this.busy) throw new Error('a turn is running');
     this.session = this.store.create(
       this.options.workspace,
       this.harness.model.model,
@@ -753,7 +846,7 @@ export class AgentRuntime {
     });
   }
   async switchSession(id: string): Promise<void> {
-    if (this.harness.busy) throw new Error('a turn is running');
+    if (this.busy) throw new Error('a turn is running');
     let session = this.store.find(id);
     if (!session) throw new Error('unknown session');
     if (session.workspace !== this.options.workspace)
@@ -777,6 +870,7 @@ export class AgentRuntime {
     return this.closingPromise;
   }
   private async closeResources(saveJobNotes: boolean): Promise<void> {
+    await this.catalog.close();
     this.compactionController?.abort(new Error('Interrupted'));
     await this.activeCompaction?.catch(() => {});
     await this.harness.cancel();
@@ -796,7 +890,7 @@ export class AgentRuntime {
   async runJobNotices(): Promise<string | undefined> {
     if (
       this.closing ||
-      this.harness.busy ||
+      this.busy ||
       !this.jobs.hasNotices(this.session.id, true)
     )
       return undefined;

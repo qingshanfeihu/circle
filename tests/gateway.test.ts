@@ -255,7 +255,11 @@ test('CLI runs two real HTTP requests with a file side effect and resumes persis
         ['--import', 'tsx', 'src/cli.ts', ...args],
         {
           cwd: process.cwd(),
-          env: { ...process.env, CIRCLE_HOME: home },
+          env: {
+            ...process.env,
+            CIRCLE_HOME: home,
+            CIRCLE_NO_MODELS_REFRESH: '1',
+          },
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       );

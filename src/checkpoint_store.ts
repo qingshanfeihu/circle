@@ -22,6 +22,13 @@ export interface Checkpoint {
   created: number;
 }
 export interface ContextState {
+  subagentSessionIds?: string[];
+  compactionCalls?: {
+    id: string;
+    model: string;
+    usage: import('./types.js').Usage;
+    cost?: import('./pricing.js').PriceReceipt;
+  }[];
   summary?: {
     cutoffMessageId: string;
     text: string;

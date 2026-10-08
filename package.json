@@ -2,7 +2,7 @@
   "name": "circle-next",
   "version": "0.1.0-dev",
   "private": true,
-  "description": "TypeScript rewrite of Circle with an independent agent core",
+  "description": "Terminal coding agent with an independent TypeScript runtime",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
@@ -13,7 +13,8 @@
   "files": [
     "dist",
     "src/prompts",
-    "docs"
+    "docs",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsx scripts/copy-assets.ts",

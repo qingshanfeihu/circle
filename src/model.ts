@@ -27,6 +27,10 @@ import {
 } from './model_guard.js';
 import { parseToolInput } from './tool_call_compat.js';
 import { isRecord } from './settings.js';
+import { circleHome } from './paths.js';
+import { ModelCatalog, type ModelFacts } from './model_catalog.js';
+import { modelProfile, fitEffort, THINKING_BUDGET } from './model_profiles.js';
+import { priceCall } from './pricing.js';
 export const EFFORT_LEVELS = [
   'minimal',
   'low',
@@ -43,13 +47,16 @@ export class GatewayModel implements ChatModel {
   private readonly dropped = new Set<string>();
   private sentParameters = new Set<string>();
   private readonly guard: ModelGuard;
+  readonly catalog: ModelCatalog;
   constructor(
     readonly settings: CircleSettings,
     home?: string,
     modelOverride?: string,
     guardOptions: GuardOptions = {},
+    catalog?: ModelCatalog,
   ) {
     this.model = modelOverride || settings.auth.model;
+    this.catalog = catalog ?? new ModelCatalog(circleHome(home));
     if (!this.model)
       throw new Error('no model name in settings; re-run circle --init');
     const credentials = loadCredentials(home);
@@ -73,16 +80,60 @@ export class GatewayModel implements ChatModel {
       process.env.CIRCLE_REASONING_EFFORT ||
       settings.default_thinking ||
       (this.anthropic ? 'xhigh' : '');
+    if (
+      this.effort &&
+      !(EFFORT_LEVELS as readonly string[]).includes(this.effort)
+    )
+      this.effort = this.anthropic ? 'xhigh' : '';
     this.guard = new ModelGuard(
       (parameter) => this.dropParameter(parameter),
       guardOptions,
     );
   }
   async complete(request: ModelRequest): Promise<ModelResponse> {
-    return this.guard.execute(request, (current) =>
+    const response = await this.guard.execute(request, (current) =>
       this.anthropic
         ? this.completeAnthropic(current)
         : this.completeOpenAI(current),
+    );
+    response.message.cost = priceCall(
+      this.catalog.facts(
+        response.message.model || this.model,
+        this.settings,
+        modelProfile(this.settings.auth.protocol, this.model)?.max_input_tokens,
+      ),
+      response.usage,
+    );
+    return response;
+  }
+  get modelFacts(): ModelFacts {
+    return this.catalog.facts(
+      this.model,
+      this.settings,
+      modelProfile(this.settings.auth.protocol, this.model)?.max_input_tokens,
+    );
+  }
+  get contextWindow(): number {
+    return this.modelFacts.contextWindow;
+  }
+  get outputBudget(): number | undefined {
+    if (!this.anthropic) return undefined;
+    const profile = modelProfile('anthropic', this.model);
+    const legacy =
+      this.model.toLowerCase().split('/').at(-1)?.startsWith('claude') &&
+      profile &&
+      !profile.reasoning_effort_levels?.length;
+    const desired =
+      legacy && this.effort
+        ? (THINKING_BUDGET[this.effort] ?? 16000) + 8192
+        : 32000;
+    return Math.max(
+      1,
+      Math.min(
+        desired,
+        Math.floor(this.contextWindow / 4),
+        this.modelFacts.outputLimit ?? profile?.max_output_tokens ?? Infinity,
+      ),
     );
   }
   get downgrades(): Record<string, string> {
@@ -172,11 +223,13 @@ export class GatewayModel implements ChatModel {
     let content = '';
     let thinking = '';
     let finish = '';
+    let servedModel = this.model;
     const calls = new Map<number, { id: string; name: string; args: string }>();
     const usage = emptyUsage();
     let guardedStop = false;
     try {
       for await (const chunk of stream) {
+        if (chunk.model) servedModel = chunk.model;
         if (chunk.usage) {
           usage.input_tokens = Math.max(
             usage.input_tokens,
@@ -251,6 +304,7 @@ export class GatewayModel implements ChatModel {
       message: {
         id: randomUUID(),
         role: 'assistant',
+        model: servedModel,
         content,
         thinking,
         tool_calls,
@@ -326,7 +380,7 @@ export class GatewayModel implements ChatModel {
       model: this.model,
       system,
       messages,
-      max_tokens: 32000,
+      max_tokens: this.outputBudget ?? 32000,
     };
     if (request.tools.length)
       body.tools = request.tools.map((tool) => ({
@@ -335,12 +389,30 @@ export class GatewayModel implements ChatModel {
         input_schema: { ...tool.parameters, type: 'object' },
       }));
     if (this.effort) {
-      body.thinking = { type: 'adaptive' };
-      body.output_config = {
-        effort: this.effort as NonNullable<
-          MessageCreateParamsNonStreaming['output_config']
-        >['effort'],
-      };
+      const profile = modelProfile('anthropic', this.model);
+      const claude = this.model
+        .toLowerCase()
+        .split('/')
+        .at(-1)
+        ?.startsWith('claude');
+      if (claude && profile && !profile.reasoning_effort_levels?.length) {
+        const requested = THINKING_BUDGET[this.effort] ?? 16000;
+        const budget =
+          requested >= body.max_tokens
+            ? Math.max(1024, Math.floor(body.max_tokens / 2))
+            : requested;
+        if (budget < body.max_tokens)
+          body.thinking = { type: 'enabled', budget_tokens: budget };
+      } else {
+        if (claude) body.thinking = { type: 'adaptive' };
+        body.output_config = {
+          effort: (profile?.reasoning_effort_levels?.length
+            ? fitEffort(this.effort, profile.reasoning_effort_levels)
+            : this.effort) as NonNullable<
+            MessageCreateParamsNonStreaming['output_config']
+          >['effort'],
+        };
+      }
     }
     this.configureBody(body as unknown as Record<string, unknown>);
     const stream = this.anthropic!.messages.stream(body, {
@@ -402,6 +474,7 @@ export class GatewayModel implements ChatModel {
       message: {
         id: randomUUID(),
         role: 'assistant',
+        model: final.model,
         content,
         thinking,
         tool_calls,
@@ -413,9 +486,21 @@ export class GatewayModel implements ChatModel {
           : {}),
       },
       usage: {
-        input_tokens: final.usage.input_tokens,
+        input_tokens:
+          final.usage.input_tokens +
+          (final.usage.cache_read_input_tokens ?? 0) +
+          (final.usage.cache_creation_input_tokens ?? 0),
         output_tokens: final.usage.output_tokens,
         cache_read_tokens: final.usage.cache_read_input_tokens ?? 0,
+        ...(final.usage.cache_creation_input_tokens
+          ? { cache_write_tokens: final.usage.cache_creation_input_tokens }
+          : {}),
+        ...(final.usage.cache_creation?.ephemeral_1h_input_tokens
+          ? {
+              cache_write_1h_tokens:
+                final.usage.cache_creation.ephemeral_1h_input_tokens,
+            }
+          : {}),
       },
     };
     if (!final.stop_reason && !guardedStop)

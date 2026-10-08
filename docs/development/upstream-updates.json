@@ -18,7 +18,8 @@
       "path": "circle/compaction.py",
       "change": "A",
       "sha256": "33b5a9f6c8d1d9d441affded4ada44339d630f3e382f9ebd9eccbbfd5d19e093",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/compaction.ts"
     },
     {
       "path": "circle/context_middleware.py",
@@ -30,7 +31,8 @@
       "path": "circle/data/models_dev.json.gz",
       "change": "A",
       "sha256": "4b47f1fb4c63c8ea71f722de501495894fbd321079dea15550b16e36c4059ba5",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/data/models_dev.json.gz"
     },
     {
       "path": "circle/display_lexicon.py",
@@ -130,13 +132,15 @@
       "path": "circle/model.py",
       "change": "M",
       "sha256": "eba3718fdbc72f047651f8ce38a4cc04a9f85c47eeb15ce2f86dec2da290644f",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/model.ts"
     },
     {
       "path": "circle/model_catalog.py",
       "change": "A",
       "sha256": "c97b24d131aa30010f7cfcc4a5f97daeed465cd5e96fd3ae4328df77d46cc1e8",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/model_catalog.ts"
     },
     {
       "path": "circle/plan_backend.py",
@@ -148,7 +152,8 @@
       "path": "circle/pricing.py",
       "change": "M",
       "sha256": "b400b89a788bf850c35c10d63c2b829c416ed8c0738eed5593ff2e08fa5bc11a",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "src/pricing.ts"
     },
     {
       "path": "circle/prompts/session/gemini.md",
@@ -434,7 +439,8 @@
       "path": "tests/test_compaction_progress.py",
       "change": "A",
       "sha256": "35a94f955023badde5541990bcbd7b18cee02217e93143c4c731a15e3581e82e",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "tests/compaction-progress.test.ts"
     },
     {
       "path": "tests/test_footer_meters.py",
@@ -488,7 +494,8 @@
       "path": "tests/test_model_catalog.py",
       "change": "A",
       "sha256": "c7f1bdddd8bdb940b1f52af1db0ed0fdd9ba0a3cc3126d8635fbf15b800328fb",
-      "acceptance": "pending"
+      "acceptance": "in-progress",
+      "target": "tests/model-catalog.test.ts"
     },
     {
       "path": "tests/test_progress_handler.py",

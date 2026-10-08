@@ -1,0 +1,25 @@
+{
+  "catalog": {
+    "source": "https://models.dev/api.json",
+    "sha256": "4b47f1fb4c63c8ea71f722de501495894fbd321079dea15550b16e36c4059ba5"
+  },
+  "profiles": [
+    {
+      "provider": "openai",
+      "source": "models.dev derived provider profile data",
+      "sha256": "228dd36d0b68dce6dd4848e9bd00bf802d2f67de8bb9fe19179b7595e3e070c4",
+      "models": 46
+    },
+    {
+      "provider": "anthropic",
+      "source": "models.dev derived provider profile data",
+      "sha256": "f96c3c299064a41556c4a34b339ef9fa3b6d38f7a9577e8f32987cdabd8a4d39",
+      "models": 14
+    }
+  ],
+  "note": "Static model metadata only; no Python or framework code is loaded at runtime.",
+  "profileBundle": {
+    "path": "src/data/provider_profiles.json.gz",
+    "sha256": "1d58e9ea68abc9ac9f1a2b038dc11025b7e7804dd410fc44d9657fe24bafce99"
+  }
+}

@@ -5,6 +5,7 @@ import type { Todo } from '../tools.js';
 import { dialogRows, type DialogState } from '../ink/components/dialog_card.js';
 import type { Picker } from '../ink/components/picker.js';
 import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
+import type { CompactionProgress } from '../compaction.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
@@ -32,6 +33,10 @@ export interface ScreenState {
   hiddenTurns: number;
   jobs?: Job[];
   jobDetail?: Job;
+  compaction?: CompactionProgress;
+  contextInput?: number;
+  contextWindow?: number;
+  costText?: string;
   renderToolResult?: (message: Message) => string[] | undefined;
 }
 export function transcriptRows(state: ScreenState, width: number): string[] {
@@ -246,7 +251,11 @@ export function renderScreen(
     bottom.push(...dialogRows(state.dialog, width, Math.max(5, height - 3)));
   else {
     const elapsed = ((Date.now() - state.started) / 1000).toFixed(1);
-    const label = state.busy ? ` Brewing… · ${elapsed}s ` : '';
+    const label = state.compaction
+      ? ` ${truncate(state.compaction.row(width), width - 5)} `
+      : state.busy
+        ? ` Brewing… · ${elapsed}s `
+        : '';
     const frame = (text: string): string => {
       if (!state.busy) return p.outline + text + p.reset;
       return (
@@ -294,7 +303,17 @@ export function renderScreen(
     );
   }
   bottom.push(...jobRows);
-  const footer = ` ↑ ${state.usage.input_tokens} · ↓ ${state.usage.output_tokens} · cache ${state.usage.input_tokens ? Math.round((state.usage.cache_read_tokens / state.usage.input_tokens) * 100) : 0}%`;
+  const formatTokens = (value: number): string =>
+    value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
+  const formatWindow = (value: number): string =>
+    value >= 1_000_000
+      ? `${(value / 1_000_000).toFixed(1)}M`
+      : formatTokens(value);
+  const context =
+    state.contextInput === undefined
+      ? ''
+      : ` · ctx ${formatTokens(state.contextInput)}/${state.contextWindow ? `${formatWindow(state.contextWindow)} (${Math.min(999, Math.round((state.contextInput / state.contextWindow) * 100))}%)` : 'N/A'}`;
+  const footer = ` ↑ ${formatTokens(state.usage.input_tokens)} · ↓ ${formatTokens(state.usage.output_tokens)}${state.costText ? ` · ${state.costText}` : ''} · cache ${(state.usage.input_tokens ? (state.usage.cache_read_tokens / state.usage.input_tokens) * 100 : 0).toFixed(1)}%${context}`;
   const right = state.flash
     ? truncate(state.flash, Math.max(1, Math.floor(width / 2)))
     : '';

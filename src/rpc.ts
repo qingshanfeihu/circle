@@ -32,7 +32,7 @@ export async function runRpc(
   const interrupt = (): void => {
     code = 130;
     input.close();
-    void runtime.harness.cancel();
+    void runtime.cancel();
   };
   process.on('SIGINT', interrupt);
   let running: Promise<void> | undefined;
@@ -44,7 +44,7 @@ export async function runRpc(
       ended ||
       snoozed ||
       wakeCount >= 10 ||
-      runtime.harness.busy ||
+      runtime.busy ||
       !runtime.jobs.hasNotices(runtime.session.id, true)
     )
       return;
@@ -114,7 +114,7 @@ export async function runRpc(
           }
         } else if (type === 'abort') {
           snoozed = true;
-          await runtime.harness.cancel();
+          await runtime.cancel();
           response();
         } else if (type === 'clear_queue')
           response(runtime.harness.clearQueue());
@@ -126,7 +126,7 @@ export async function runRpc(
           response({
             model: runtime.harness.model.model,
             thinkingLevel: runtime.thinkingLevel,
-            isStreaming: runtime.harness.busy,
+            isStreaming: runtime.busy,
             sessionId: runtime.session.id,
             sessionName: runtime.store.get(runtime.session.id)?.title,
             messageCount: runtime.harness.messages.length,
@@ -167,6 +167,7 @@ export async function runRpc(
               output: stats.usage.output_tokens,
               total: stats.usage.input_tokens + stats.usage.output_tokens,
             },
+            costs: stats.costs,
           });
         } else if (type === 'get_available_models') {
           const settings = runtime.options.settings;

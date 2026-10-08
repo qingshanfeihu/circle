@@ -8,6 +8,8 @@ The application runs on Node.js 24 and uses TypeScript with strict compiler chec
 
 `src/model.ts` adapts OpenAI-compatible and Anthropic-compatible endpoints through protocol SDKs. Text, thinking, tool calls and usage are normalized at this boundary. `src/model_guard.ts` controls per-kind retries, rejected parameters, stalled streams, repetition and missing finish signals. `src/tool_call_compat.ts` repairs unambiguous read-only calls and validates arguments before effects. `src/types.ts` defines the messages and tool contracts used by the runtime.
 
+`src/model_catalog.ts` loads a packaged metadata snapshot or a private account cache, matches the configured endpoint and refreshes stale data without blocking startup. `src/model_profiles.ts` fits known model capabilities from static data. `src/pricing.ts` freezes per-call rates and amounts; summaries and child sessions retain their own receipts. `src/compaction.ts` supplies progress events and terminal labels for automatic and manual summaries.
+
 ## Effects and persistence
 
 `src/tools.ts` implements filesystem and command tools. `src/sandbox.ts` resolves host and workspace paths, strips secret environment variables, and terminates command process groups on cancellation. This is a policy boundary, not an operating-system sandbox.

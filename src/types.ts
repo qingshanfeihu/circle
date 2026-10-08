@@ -9,10 +9,14 @@ export interface Usage {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  cache_write_tokens?: number;
+  cache_write_1h_tokens?: number;
 }
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'system';
+  model?: string;
+  request_model?: string;
   content: string;
   thinking?: string;
   tool_calls?: ToolCall[];
@@ -22,6 +26,7 @@ export interface Message {
   display?: string;
   provider_content?: unknown[];
   usage?: Usage;
+  cost?: import('./pricing.js').PriceReceipt;
   internal?: string;
   truncated?: boolean;
   recoverable?: boolean;
@@ -62,6 +67,8 @@ export interface ModelResponse {
 export interface ChatModel {
   model: string;
   contextWindow?: number;
+  outputBudget?: number;
+  modelFacts?: import('./model_catalog.js').ModelFacts;
   complete(request: ModelRequest): Promise<ModelResponse>;
 }
 export const emptyUsage = (): Usage => ({
@@ -69,3 +76,15 @@ export const emptyUsage = (): Usage => ({
   output_tokens: 0,
   cache_read_tokens: 0,
 });
+export function addUsage(target: Usage, source: Usage): void {
+  for (const key of [
+    'input_tokens',
+    'output_tokens',
+    'cache_read_tokens',
+    'cache_write_tokens',
+    'cache_write_1h_tokens',
+  ] as const) {
+    if (source[key] !== undefined)
+      target[key] = (target[key] ?? 0) + source[key]!;
+  }
+}

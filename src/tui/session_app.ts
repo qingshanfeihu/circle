@@ -39,6 +39,12 @@ import { welcomeRows } from '../ink/components/welcome.js';
 import { renderScreen, type ScreenState } from './render.js';
 import { InteractionQueue } from './interaction_queue.js';
 import { installExitGuard } from '../exit_guard.js';
+import {
+  CompactionProgress,
+  compactionDone,
+  type CompactionEvent,
+} from '../compaction.js';
+import { formatCosts } from '../pricing.js';
 import { currentBranch } from '../git_info.js';
 import { loadRemap, ACTIONS } from '../keybindings.js';
 import { emptyUsage, type ToolCall } from '../types.js';
@@ -101,7 +107,7 @@ export class SessionApp {
   private signalListener = (): void => {
     if (this.backgroundCard) return;
     this.jobWakeSnoozed = true;
-    if (this.runtime?.harness.busy) void this.runtime.harness.cancel();
+    if (this.runtime?.busy) void this.runtime.cancel();
     else this.exit(0);
   };
   constructor(
@@ -184,7 +190,31 @@ export class SessionApp {
       this.state.autoMode = this.runtime.policy.yoloEnabled(
         this.runtime.session.id,
       );
-      this.state.busy = this.runtime.harness.busy;
+      this.state.busy = this.runtime.busy;
+      const stats = this.runtime.stats();
+      this.state.usage = stats.usage;
+      const facts =
+        this.runtime.harness.model.modelFacts ??
+        this.runtime.catalog.facts(
+          this.runtime.harness.model.model,
+          this.runtime.options.settings,
+          this.runtime.harness.model.contextWindow,
+        );
+      this.state.contextWindow = facts.windowKnown
+        ? facts.contextWindow
+        : undefined;
+      const lastAnswer = this.runtime.harness.messages
+        .filter((message) => message.role === 'assistant' && message.usage)
+        .at(-1);
+      this.state.contextInput =
+        !lastAnswer?.request_model ||
+        lastAnswer.request_model === this.runtime.harness.model.model
+          ? lastAnswer?.usage?.input_tokens
+          : undefined;
+      this.state.costText = formatCosts(
+        [stats.costs],
+        facts.rates?.input !== undefined && facts.rates.output !== undefined,
+      );
       this.state.jobs = this.runtime.jobs.list();
       if (this.state.jobDetail)
         this.state.jobDetail = this.runtime.jobs.get(this.state.jobDetail.id);
@@ -402,6 +432,19 @@ export class SessionApp {
       );
     });
     this.off = this.runtime.bus.subscribe((event) => {
+      if (event.kind === 'compaction') {
+        const progress = event.payload as unknown as CompactionEvent;
+        if (progress.sessionId === this.runtime?.session.id) {
+          if (progress.phase === 'start')
+            this.state.compaction = new CompactionProgress(progress.trigger);
+          this.state.compaction?.apply(progress);
+          if (progress.phase === 'done') {
+            this.state.compaction = undefined;
+            this.notice(compactionDone(progress));
+          }
+          if (progress.phase === 'error') this.state.compaction = undefined;
+        }
+      }
       if (event.kind === 'job_ended') this.jobWakeAt = Date.now() + 1000;
       if (event.tags.subagent) {
         if (event.kind === 'llm_end')
@@ -453,9 +496,7 @@ export class SessionApp {
           this.state.streaming = '';
           this.state.thinking = '';
           this.flash('Retrying model request');
-        } else if (notice.event === 'compacted')
-          this.notice(`Compacted ${notice.messages} messages`);
-        else if (notice.event === 'output_budget_exhausted')
+        } else if (notice.event === 'output_budget_exhausted')
           this.notice('✖ Model output budget exhausted before an answer');
         else if (notice.event === 'missing_finish' && notice.truncated)
           this.notice('Model response may be truncated');
@@ -478,7 +519,7 @@ export class SessionApp {
       this.ended ||
       this.jobWakeSnoozed ||
       this.jobWakeCount >= 10 ||
-      runtime.harness.busy ||
+      runtime.busy ||
       this.state.waiting ||
       this.state.picker ||
       this.state.jobDetail ||
@@ -738,11 +779,11 @@ export class SessionApp {
     }
     if (key === 'ctrl+c') {
       this.jobWakeSnoozed = true;
-      if (this.runtime?.harness.busy) void this.runtime.harness.cancel();
+      if (this.runtime?.busy) void this.runtime.cancel();
       else this.setDraft('');
     } else if (key === 'escape') {
       this.jobWakeSnoozed = true;
-      if (this.runtime?.harness.busy) void this.runtime.harness.cancel();
+      if (this.runtime?.busy) void this.runtime.cancel();
       else if (
         !this.state.draft &&
         Date.now() - this.lastEscape < 600 &&
@@ -1201,8 +1242,10 @@ export class SessionApp {
       return;
     }
     if (name === 'compact') {
-      if (runtime.harness.busy) throw new Error('a turn is running');
-      this.notice(await runtime.compact(args));
+      if (runtime.busy) throw new Error('a turn is running');
+      const result = await runtime.compact(args);
+      if (result === 'Nothing to compact yet') this.notice(result);
+      this.repaint();
       return;
     }
     if (name === 'init') {

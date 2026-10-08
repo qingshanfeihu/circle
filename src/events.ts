@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 export type EventKind =
+  | 'compaction'
   | 'job_started'
   | 'job_updated'
   | 'job_ended'

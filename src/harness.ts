@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatModel, Message, Tool, ToolCall, Usage } from './types.js';
-import { emptyUsage } from './types.js';
+import { emptyUsage, addUsage } from './types.js';
 import { EventBus } from './events.js';
 import { ApprovalPolicy } from './approvals.js';
 import { CheckpointStore, type Session } from './checkpoint_store.js';
@@ -21,6 +21,10 @@ export interface HarnessOptions {
   headless?: boolean;
   beforeRun?: (signal: AbortSignal) => Promise<void>;
   beforeStep?: () => void;
+  priceUsage?: (
+    model: string,
+    usage: Usage,
+  ) => import('./pricing.js').PriceReceipt;
   toolBoundary?: (
     tool: Tool,
     args: Record<string, unknown>,
@@ -108,8 +112,7 @@ export class Harness {
     do {
       const result = await this.runTurn(next, signal);
       answer = result.answer;
-      for (const key of Object.keys(total) as (keyof Usage)[])
-        total[key] += result.usage[key];
+      addUsage(total, result.usage);
       next = this.followUps.shift();
     } while (next !== undefined);
     return { answer, usage: total };
@@ -170,11 +173,21 @@ export class Harness {
             }),
         });
         signal.throwIfAborted();
-        this.save({ ...response.message, usage: response.usage });
-        for (const key of Object.keys(usage) as (keyof Usage)[])
-          usage[key] += response.usage[key];
+        const message = {
+          ...response.message,
+          request_model: this.model.model,
+          usage: response.usage,
+          cost:
+            response.message.cost ??
+            this.options.priceUsage?.(
+              response.message.model || this.model.model,
+              response.usage,
+            ),
+        };
+        this.save(message);
+        addUsage(usage, response.usage);
         this.bus.emit('llm_end', {
-          payload: { message: response.message },
+          payload: { message },
           usage: { ...response.usage },
         });
         const calls = response.message.tool_calls ?? [];

@@ -35,6 +35,7 @@ export interface CircleSettings {
   update_check: boolean;
   default_thinking: string;
   enabled_models: string[];
+  models: Record<string, Record<string, unknown>>;
   double_escape: 'tree' | 'fork' | 'none';
   hide_thinking: boolean;
   [key: string]: unknown;
@@ -59,6 +60,7 @@ export const defaultSettings = (): CircleSettings => ({
   update_check: true,
   default_thinking: '',
   enabled_models: [],
+  models: {},
   double_escape: 'tree',
   hide_thinking: false,
 });
@@ -96,6 +98,12 @@ export function loadSettingsFromDict(
     : {};
   settings.credential_files = strings(raw.credential_files);
   settings.enabled_models = strings(raw.enabled_models);
+  settings.models = Object.fromEntries(
+    Object.entries(isRecord(raw.models) ? raw.models : {}).flatMap(
+      ([name, entry]) =>
+        isRecord(entry) ? [[name, structuredClone(entry)]] : [],
+    ),
+  );
   settings.update_check =
     raw.update_check === undefined ? true : Boolean(raw.update_check);
   settings.default_thinking = String(raw.default_thinking || '')

@@ -13,12 +13,19 @@ import {
 import { planReminder } from './middleware/plan_tail.js';
 import { loopReminder } from './middleware/loop_guard.js';
 import { isRecord } from './settings.js';
+import type { CompactionEvent } from './compaction.js';
+import { redact } from './redact.js';
 export interface ContextOptions {
   contextWindow?: number;
   autoCompact?: boolean;
   offloadChars?: number;
   prune?: PruneOptions;
   notice?: (event: ModelNotice) => void;
+  progress?: (event: CompactionEvent) => void;
+  priceUsage?: (
+    model: string,
+    usage: Usage,
+  ) => import('./pricing.js').PriceReceipt;
 }
 export function messageTokens(messages: Message[]): number {
   return messages.reduce(
@@ -201,17 +208,25 @@ export class ContextManager {
       state = next;
     }
     let projected = this.project(sessionId);
-    const parsed = Number(process.env.CIRCLE_CONTEXT_WINDOW || 200000);
+    const parsed = Number(process.env.CIRCLE_CONTEXT_WINDOW || 128000);
     const window =
       this.options.contextWindow ??
       model.contextWindow ??
-      (Number.isFinite(parsed) && parsed > 0 ? parsed : 200000);
+      (Number.isFinite(parsed) && parsed > 0 ? parsed : 128000);
     const estimate =
       tokenLen(system) +
       tokenLen(JSON.stringify(tools.map(({ run: _run, ...tool }) => tool))) +
       messageTokens(projected);
-    if ((this.options.autoCompact ?? true) && estimate >= window * 0.85) {
-      await this.compact(sessionId, model, signal);
+    const budget = window * 0.95 - (model.outputBudget ?? 0);
+    if (
+      (this.options.autoCompact ?? true) &&
+      (estimate >= window * 0.85 || estimate > budget)
+    ) {
+      await this.compact(sessionId, model, signal, '', {
+        system,
+        tools,
+        trigger: estimate >= window * 0.85 ? 'auto' : 'overflow',
+      });
       projected = this.project(sessionId);
     }
     return projected;
@@ -221,11 +236,28 @@ export class ContextManager {
     model: ChatModel,
     signal: AbortSignal,
     hint = '',
+    frame: {
+      system?: string;
+      tools?: Tool[];
+      trigger?: CompactionEvent['trigger'];
+    } = {},
   ): Promise<string> {
     signal.throwIfAborted();
     const visible = this.project(sessionId);
-    if (visible.length < 8) return 'Nothing to compact yet';
+    if (visible.length < 2) return 'Nothing to compact yet';
     let end = visible.length - 6;
+    if (model.contextWindow) {
+      const keepTokens = model.contextWindow * 0.1;
+      let kept = 0;
+      end = visible.length;
+      while (end > 0) {
+        const size = messageTokens([visible[end - 1]!]);
+        if (kept + size > keepTokens) break;
+        kept += size;
+        end--;
+      }
+      end = Math.min(end, visible.length - 1);
+    }
     while (end > 0) {
       try {
         this.store.requireBalancedTools(visible.slice(0, end));
@@ -234,58 +266,141 @@ export class ContextManager {
         end--;
       }
     }
-    if (!end) return 'Nothing to compact yet';
+    if (end <= 0) return 'Nothing to compact yet';
     const prefix = visible.slice(0, end);
-    const response = await model.complete({
-      system:
-        'Summarize the conversation so another coding agent can continue. Preserve exact goals, constraints, decisions, paths, completed results and unresolved tasks. Use these headings: Goal, Decisions, Files & paths, Open tasks, Notes. Reply with the summary only. ' +
-        hint,
-      messages: [
-        { id: randomUUID(), role: 'user', content: JSON.stringify(prefix) },
-      ],
-      tools: [],
-      signal,
-      token: () => {},
-      notice: this.options.notice,
+    const initialHead = this.store.get(sessionId)!.head;
+    const started = Date.now();
+    const trigger = frame.trigger ?? 'tool';
+    const overhead =
+      tokenLen(frame.system ?? '') +
+      tokenLen(
+        JSON.stringify(
+          (frame.tools ?? []).map(({ run: _run, ...tool }) => tool),
+        ),
+      );
+    const tokensBefore = overhead + messageTokens(visible);
+    const emit = (
+      phase: CompactionEvent['phase'],
+      extra: Partial<CompactionEvent> = {},
+    ): void => {
+      try {
+        this.options.progress?.({ sessionId, phase, trigger, ...extra });
+      } catch {
+        /* Displays cannot interrupt compaction. */
+      }
+    };
+    emit('start', {
+      tokens_before: tokensBefore,
+      summarized: prefix.length,
+      kept: visible.length - end,
     });
-    signal.throwIfAborted();
-    if (!response.message.content.trim() || response.message.truncated)
-      throw new Error('summary did not complete');
-    const cutoffId = visible[end - 1]!.id;
-    const raw = this.store.messages(sessionId);
-    const cutoff = raw.findIndex((message) => message.id === cutoffId);
-    if (cutoff < 0)
-      throw new Error('summary boundary is no longer on the active branch');
-    const name =
-      createHash('sha256')
-        .update(sessionId + ':' + cutoffId)
-        .digest('hex')
-        .slice(0, 24) + '.jsonl';
-    const folder = join(this.root, 'conversation_history');
-    mkdirSync(folder, { recursive: true });
-    const path = join(folder, name);
-    const bytes =
-      raw
-        .slice(0, cutoff + 1)
-        .map((message) => JSON.stringify(message))
-        .join('\n') + '\n';
-    if (existsSync(path)) {
-      if (!readFileSync(path).equals(Buffer.from(bytes)))
-        throw new Error('summary history does not match raw conversation');
-    } else writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' });
-    const state = this.store.contextState(sessionId);
-    this.store.setContextState(sessionId, {
-      ...state,
-      summary: {
-        cutoffMessageId: cutoffId,
-        text: response.message.content,
-        historyPath: '/conversation_history/' + name,
-        usage: response.usage,
-        response: response.message,
-        model: model.model,
-      },
-    });
-    this.options.notice?.({ event: 'compacted', messages: cutoff + 1 });
-    return `Compacted ${cutoff + 1} messages. Raw history retained.`;
+    try {
+      const stateBefore = this.store.contextState(sessionId);
+      const cutoffMessage = visible[end - 1]!;
+      const cutoffId =
+        cutoffMessage.internal === 'summary'
+          ? stateBefore.summary?.cutoffMessageId
+          : cutoffMessage.id;
+      const raw = this.store.messages(sessionId);
+      const cutoff = raw.findIndex((message) => message.id === cutoffId);
+      if (cutoff < 0)
+        throw new Error('summary boundary is no longer on the active branch');
+      const name =
+        createHash('sha256')
+          .update(sessionId + ':' + cutoffId)
+          .digest('hex')
+          .slice(0, 24) + '.jsonl';
+      const folder = join(this.root, 'conversation_history');
+      mkdirSync(folder, { recursive: true });
+      const path = join(folder, name);
+      const bytes =
+        raw
+          .slice(0, cutoff + 1)
+          .map((message) => JSON.stringify(message))
+          .join('\n') + '\n';
+      emit('saving');
+      if (existsSync(path)) {
+        if (!readFileSync(path).equals(Buffer.from(bytes)))
+          throw new Error('summary history does not match raw conversation');
+      } else writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' });
+      const virtualPath = '/conversation_history/' + name;
+      emit('saved', { file: virtualPath });
+      signal.throwIfAborted();
+      emit('summarizing');
+      let chunks = 0;
+      const response = await model.complete({
+        system:
+          'Summarize the conversation so another coding agent can continue. Preserve exact goals, constraints, decisions, paths, completed results and unresolved tasks. Use these headings: Goal, Decisions, Files & paths, Open tasks, Notes. Reply with the summary only. ' +
+          hint,
+        messages: [
+          { id: randomUUID(), role: 'user', content: JSON.stringify(prefix) },
+        ],
+        tools: [],
+        signal,
+        token: () => {
+          chunks++;
+          if (chunks === 1 || chunks % 8 === 0) emit('chunks', { chunks });
+        },
+        notice: this.options.notice,
+      });
+      signal.throwIfAborted();
+      if (!response.message.content.trim() || response.message.truncated)
+        throw new Error('summary did not complete');
+      emit('summarized', { chunks });
+      if (this.store.get(sessionId)?.head !== initialHead)
+        throw new Error('conversation changed during compaction');
+      const state = this.store.contextState(sessionId);
+      response.message.cost ??= this.options.priceUsage?.(
+        response.message.model || model.model,
+        response.usage,
+      );
+      const priorCalls =
+        state.compactionCalls ??
+        (state.summary?.usage
+          ? [
+              {
+                id: 'legacy-' + state.summary.cutoffMessageId,
+                model: state.summary.model ?? '',
+                usage: state.summary.usage,
+                cost: state.summary.response?.cost,
+              },
+            ]
+          : []);
+      this.store.setContextState(sessionId, {
+        ...state,
+        compactionCalls: [
+          ...priorCalls,
+          {
+            id: randomUUID(),
+            model: response.message.model || model.model,
+            usage: response.usage,
+            cost: response.message.cost,
+          },
+        ],
+        summary: {
+          cutoffMessageId: cutoffId!,
+          text: response.message.content,
+          historyPath: virtualPath,
+          usage: response.usage,
+          response: response.message,
+          model: model.model,
+        },
+      });
+      emit('done', {
+        tokens_before: tokensBefore,
+        tokens_after: overhead + messageTokens(this.project(sessionId)),
+        summarized: prefix.length,
+        kept: visible.length - end,
+        file: virtualPath,
+        seconds: (Date.now() - started) / 1000,
+      });
+      this.options.notice?.({ event: 'compacted', messages: cutoff + 1 });
+      return `Compacted ${cutoff + 1} messages. Raw history retained.`;
+    } catch (error) {
+      emit('error', {
+        message: redact(error instanceof Error ? error.message : String(error)),
+      });
+      throw error;
+    }
   }
 }

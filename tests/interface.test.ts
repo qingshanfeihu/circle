@@ -17,6 +17,7 @@ import {
   truncate,
 } from '../src/ink/string_width.js';
 import { renderScreen, type ScreenState } from '../src/tui/render.js';
+import { CompactionProgress } from '../src/compaction.js';
 import { emptyUsage } from '../src/types.js';
 import { parseCli, UsageError } from '../src/cli.js';
 import { substituteArguments } from '../src/commands.js';
@@ -144,6 +145,30 @@ test('background job rows stay below the input and use the shared terminal palet
     assert.ok(rows.every((row) => !row.includes('\x1b]52;')));
     assert.ok(rows.every((row) => stringWidth(row) === 60));
   }
+});
+test('compaction and cost/context footer rows retain the established labels and never show a percentage for an unknown window', () => {
+  const screen = state();
+  screen.contextInput = 12_000;
+  screen.costText = 'N/A';
+  const unknown = renderScreen(screen, 120, 24).map(stripAnsi).join('\n');
+  assert.match(unknown, /ctx 12.0k\/N\/A/);
+  assert.ok(!unknown.split('ctx')[1]!.includes('%'));
+  screen.contextWindow = 1_000_000;
+  screen.costText = '$0.0030';
+  const known = renderScreen(screen, 120, 24).map(stripAnsi).join('\n');
+  assert.match(known, /ctx 12.0k\/1.0M \(1%\)/);
+  assert.match(known, /\$0.0030/);
+  screen.busy = true;
+  screen.compaction = new CompactionProgress('tool');
+  screen.compaction.apply({
+    sessionId: 'session',
+    phase: 'summarizing',
+    trigger: 'tool',
+  });
+  assert.match(
+    renderScreen(screen, 120, 24).map(stripAnsi).join('\n'),
+    /compacting.*summarizing/,
+  );
 });
 test('CLI preserves print flag placement and rejects conflicting saved-session options', () => {
   const options = parseCli(

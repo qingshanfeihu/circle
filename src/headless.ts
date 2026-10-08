@@ -6,6 +6,7 @@ export function jsonEvent(
   event: CircleEvent,
 ): Record<string, unknown> | undefined {
   const data = event.payload;
+  if (event.kind === 'compaction') return { type: 'compaction', ...data };
   if (event.kind.startsWith('job_')) return { type: event.kind, ...data };
   if (event.tags.subagent)
     return {
@@ -63,7 +64,7 @@ export async function runPrint(
   const waiting = new AbortController();
   const cancel = (): void => {
     waiting.abort(new Error('Interrupted'));
-    void runtime.harness.cancel();
+    void runtime.cancel();
   };
   process.on('SIGINT', cancel);
   if (options.json)
@@ -124,7 +125,7 @@ export async function runLine(runtime: AgentRuntime): Promise<number> {
   const interrupt = (): void => {
     code = 130;
     input.close();
-    void runtime.harness.cancel();
+    void runtime.cancel();
   };
   process.on('SIGINT', interrupt);
   const off = runtime.bus.subscribe((event) => {
