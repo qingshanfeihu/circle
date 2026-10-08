@@ -18,4 +18,6 @@ Print mode waits for job results for `CIRCLE_JOB_WAIT` seconds (default 1800; `0
 
 Leaving stops jobs and records their cancellation in affected conversations. Terminal termination signals also clean up jobs. Reopening a conversation retains notices and never reruns commands. Old output folders are removed after a day when their owning process has ended.
 
-Process groups on macOS/Linux and `taskkill /T` on Windows cover ordinary subprocess trees. Detached daemons and forcibly killing the application remain outside this guarantee. Windows adoption of processes whose shell has already exited, extension watches and remaining interaction parity are tracked in [known issues](known-issues.md).
+Extension tools can return a [Watch](extensions.md#waiting-for-slow-work) for asynchronous status checks. A bare foreground `sleep` ends when a job in its conversation finishes; commands containing other work continue normally. Repeated polling prompts a reminder to await the automatic notice. After compaction, a hidden reminder names running jobs omitted from the summary.
+
+Process groups on macOS/Linux and `taskkill /T` on Windows cover ordinary subprocess trees. Detached daemons and forcibly killing the application remain outside this guarantee. Windows adoption of processes whose shell has already exited and remaining interaction parity are tracked in [known issues](known-issues.md).

@@ -18,6 +18,7 @@ import { shellEnvironment, type Sandbox } from './sandbox.js';
 import { redact } from './redact.js';
 import type { Message } from './types.js';
 import stripAnsi from 'strip-ansi';
+import { Watch, pollWatch, stopWatch } from './watch.js';
 export function plainJobOutput(text: string): string {
   return text
     .split('\n')
@@ -46,8 +47,10 @@ export interface Job extends JobOwner {
   outputPath: string;
   virtualPath: string;
   detail?: string;
+  source?: string;
 }
 interface Entry {
+  watch?: Watch;
   job?: Job;
   owner: JobOwner;
   command: string;
@@ -93,9 +96,14 @@ export function outputTail(
     const buffer = Buffer.alloc(Math.min(size, maxBytes));
     const count = readSync(fd, buffer, 0, buffer.length, start);
     // A tail may start in the middle of a UTF-8 character or a line.
-    const text = buffer.subarray(0, count).toString('utf8');
-    return (start > 0 ? text.slice(text.indexOf('\n') + 1) : text)
-      .trimEnd()
+    let skip = 0;
+    if (start > 0)
+      while (skip < count && (buffer[skip]! & 0xc0) === 0x80) skip++;
+    const text = buffer.subarray(skip, count).toString('utf8').trimEnd();
+    const firstNewline = text.indexOf('\n');
+    return (
+      start > 0 && firstNewline >= 0 ? text.slice(firstNewline + 1) : text
+    )
       .split('\n')
       .slice(-lines)
       .join('\n');
@@ -109,7 +117,9 @@ export function jobLine(job: Job): string {
 export function jobNotice(job: Job): string {
   let output = 'Output is unavailable.';
   try {
-    output = redact(outputTail(job.outputPath)) || '(empty)';
+    output =
+      redact(outputTail(job.outputPath, job.kind === 'watch' ? 4096 : 32768)) ||
+      '(empty)';
   } catch {
     /* Preserve the notice even if an external process removed its output. */
   }
@@ -155,6 +165,8 @@ export class JobRegistry {
   private notices = new Map<string, Job[]>();
   private changes = new EventEmitter();
   private next = 1;
+  private endSequence = 0;
+  private ended: { sequence: number; job: Job }[] = [];
   private run = 0;
   private closed = false;
   private monitor: NodeJS.Timeout;
@@ -296,6 +308,8 @@ export class JobRegistry {
           ? 'failed'
           : 'done';
       const queue = this.notices.get(job.sessionId) ?? [];
+      this.ended.push({ sequence: ++this.endSequence, job: { ...job } });
+      if (this.ended.length > 1024) this.ended.shift();
       queue.push({ ...job });
       this.notices.set(job.sessionId, queue);
       this.emit('job_ended', job);
@@ -366,6 +380,21 @@ export class JobRegistry {
       );
     signal.throwIfAborted();
     const entry = this.launch(command, owner);
+    const sequence = this.endSequence;
+    let awakened: Job[] = [];
+    const sleeping = /^\s*sleep\s+\d+(?:\.\d+)?[smhd]?\s*$/.test(command);
+    const wake = (): void => {
+      if (!sleeping || entry.job || entry.finished || entry.stopPromise) return;
+      awakened = this.ended
+        .filter(
+          (notice) =>
+            notice.sequence > sequence &&
+            notice.job.sessionId === owner.sessionId,
+        )
+        .map((notice) => notice.job);
+      if (awakened.length) void this.stopEntry(entry, 'background job ended');
+    };
+    if (sleeping) this.changes.on('change', wake);
     let release!: () => void;
     const promoted = new Promise<void>((resolve) => {
       release = resolve;
@@ -408,12 +437,14 @@ export class JobRegistry {
         readSync(fd, data, 0, data.length, 0);
         return {
           output:
-            data.toString('utf8') +
+            (awakened.length
+              ? `Stopped waiting because background jobs ended: ${awakened.map((job) => `${job.id} ${job.status}`).join(', ')}. Their notices reach the next model request.`
+              : data.toString('utf8')) +
             (size > data.length
               ? `\nOutput continues in /background_jobs/${this.runName}/${entry.path.split(/[\\/]/).at(-1)}`
               : '') +
             (entry.reason ? `\nCommand ended: ${entry.reason}` : ''),
-          exit_code: entry.exitCode ?? 130,
+          exit_code: awakened.length ? 0 : (entry.exitCode ?? 130),
         };
       } finally {
         closeSync(fd);
@@ -422,6 +453,7 @@ export class JobRegistry {
       clearTimeout(timer);
       signal.removeEventListener('abort', cancel);
       entry.interrupt = undefined;
+      if (sleeping) this.changes.off('change', wake);
     }
   }
   backgroundForeground(): number {
@@ -467,6 +499,37 @@ export class JobRegistry {
       .finally(async () => {
         await this.stopOwned(job.id);
         this.finish(entry);
+      });
+    return { ...job };
+  }
+  startWatch(watch: Watch, owner: JobOwner, source = ''): Job {
+    this.checkCapacity('watch');
+    const entry = this.entry(watch.title, owner);
+    entry.watch = watch;
+    entry.deadline = Date.now() + watch.deadline;
+    const job = this.publish(entry, 'watch');
+    job.source = source;
+    void pollWatch(watch, entry.controller.signal)
+      .then((result) => {
+        if (!entry.controller.signal.aborted && !entry.finished) {
+          const text =
+            typeof result === 'string' ? result : JSON.stringify(result);
+          writeFileSync(entry.path, redact(text) + '\n', { flag: 'a' });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!entry.controller.signal.aborted) {
+          entry.reason = 'watch error';
+          writeFileSync(
+            entry.path,
+            redact(error instanceof Error ? error.message : String(error)) +
+              '\n',
+            { flag: 'a' },
+          );
+        }
+      })
+      .finally(() => {
+        if (!entry.stopPromise) this.finish(entry);
       });
     return { ...job };
   }
@@ -516,6 +579,9 @@ export class JobRegistry {
           await new Promise<void>((resolve) =>
             entry.child!.once('close', () => resolve()),
           );
+        this.finish(entry);
+      } else if (entry.watch) {
+        await stopWatch(entry.watch);
         this.finish(entry);
       } else await entry.settled;
     })();

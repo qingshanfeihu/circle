@@ -10,6 +10,8 @@ import type {
   ToolContext,
 } from './types.js';
 import { isRecord } from './settings.js';
+import { Watch, waitWatch } from './watch.js';
+import { JobRegistry, jobLine, type JobOwner } from './jobs.js';
 
 export class ToolError extends Error {}
 export class ExtensionError extends Error {}
@@ -72,10 +74,13 @@ export interface Extension {
 }
 export class ExtensionAPI {
   readonly ToolError = ToolError;
+  readonly Watch = Watch;
   constructor(
     private ext: Extension,
     private reservedTools: Set<string>,
     private reservedCommands: Set<string>,
+    private jobs?: JobRegistry,
+    private owner?: (context: ToolContext) => JobOwner,
   ) {}
   get name(): string {
     return this.ext.name;
@@ -111,6 +116,32 @@ export class ExtensionAPI {
       approval: options.approval ?? !options.readOnly,
       run: async (args, context) => {
         const result = await execute(args, context);
+        if (result instanceof Watch) {
+          if (!this.jobs) {
+            const complete = await waitWatch(result, context.signal);
+            return typeof complete === 'string'
+              ? complete
+              : JSON.stringify(complete);
+          }
+          context.signal.throwIfAborted();
+          const job = this.jobs.startWatch(
+            result,
+            this.owner?.(context) ?? {
+              sessionId: context.sessionId,
+              startedBy: 'model',
+            },
+            this.ext.name,
+          );
+          const initial = result.options.result;
+          return (
+            (initial === undefined
+              ? ''
+              : typeof initial === 'string'
+                ? initial + '\n'
+                : JSON.stringify(initial) + '\n') +
+            `Watching in background: ${jobLine(job)}. A notice arrives when it ends; do not poll or sleep.`
+          );
+        }
         return typeof result === 'string'
           ? result
           : JSON.stringify(result ?? null);
@@ -194,6 +225,8 @@ export interface ExtensionHostOptions {
   settings?: Record<string, Record<string, unknown>>;
   reservedTools?: Set<string>;
   reservedCommands?: Set<string>;
+  jobs?: JobRegistry;
+  jobOwner?: (context: ToolContext) => JobOwner;
 }
 export class ExtensionHost {
   extensions: Extension[] = [];
@@ -259,7 +292,15 @@ export class ExtensionHost {
         );
         if (!isRecord(module) || typeof module.register !== 'function')
           throw new ExtensionError('extension defines no register(api)');
-        await module.register(new ExtensionAPI(ext, tools, commands));
+        await module.register(
+          new ExtensionAPI(
+            ext,
+            tools,
+            commands,
+            this.options.jobs,
+            this.options.jobOwner,
+          ),
+        );
         for (const tool of ext.tools) tools.add(tool.name);
         for (const command of ext.commands) commands.add(command.name);
       } catch (error) {

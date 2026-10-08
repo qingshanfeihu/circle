@@ -117,6 +117,7 @@ export class AgentRuntime {
   readonly sandbox: Sandbox;
   readonly jobs: JobRegistry;
   readonly catalog: ModelCatalog;
+  private childJobOwners = new Map<string, import('./jobs.js').JobOwner>();
   private closing = false;
   private closingPromise?: Promise<void>;
   readonly policy;
@@ -180,6 +181,12 @@ export class AgentRuntime {
     this.context = new ContextManager(this.store, this.sandbox.offloadRoot!, {
       progress: (event) =>
         this.bus.emit('compaction', { payload: { ...event } }),
+      runningJobs: (sessionId) =>
+        this.jobs
+          .list(sessionId)
+          .filter(
+            (job) => job.status === 'running' && job.startedBy !== 'user',
+          ),
       priceUsage: (model, usage) =>
         priceCall(this.catalog.facts(model, this.options.settings), usage),
       notice: (event) =>
@@ -344,6 +351,11 @@ export class AgentRuntime {
           parentSessionId,
         );
         const parentState = this.store.contextState(parentSessionId);
+        this.childJobOwners.set(session.id, {
+          sessionId: parentSessionId,
+          parent: session.id,
+          startedBy: 'model',
+        });
         this.store.setContextState(parentSessionId, {
           ...parentState,
           subagentSessionIds: [
@@ -498,6 +510,7 @@ export class AgentRuntime {
           } finally {
             signal.removeEventListener('abort', abort);
             await this.jobs.stopOwned(backgroundJob?.id ?? session.id);
+            this.childJobOwners.delete(session.id);
           }
         };
         if (args.background === true) {
@@ -507,6 +520,11 @@ export class AgentRuntime {
             { sessionId: parentSessionId, startedBy: 'model' },
             async (signal, log, job) => {
               backgroundJob = job;
+              this.childJobOwners.set(session.id, {
+                sessionId: parentSessionId,
+                parent: job.id,
+                startedBy: 'model',
+              });
               backgroundLog = log;
               return runChild(signal);
             },
@@ -583,6 +601,12 @@ export class AgentRuntime {
       this.options.home,
     );
     return new ExtensionHost({
+      jobs: this.jobs,
+      jobOwner: (context) =>
+        this.childJobOwners.get(context.sessionId) ?? {
+          sessionId: context.sessionId,
+          startedBy: 'model',
+        },
       home: this.options.home,
       workspace: this.options.workspace,
       trusted: isFolderTrusted(this.options.settings, this.options.workspace),

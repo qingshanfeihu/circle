@@ -15,7 +15,13 @@ import { loopReminder } from './middleware/loop_guard.js';
 import { isRecord } from './settings.js';
 import type { CompactionEvent } from './compaction.js';
 import { redact } from './redact.js';
+import {
+  runningJobReminder,
+  pollingJobReminder,
+} from './middleware/job_notice.js';
+import type { Job } from './jobs.js';
 export interface ContextOptions {
+  runningJobs?: (sessionId: string) => Job[];
   contextWindow?: number;
   autoCompact?: boolean;
   offloadChars?: number;
@@ -202,6 +208,9 @@ export class ContextManager {
     const reminders = [
       planReminder(raw, visible, restoredTodos(raw), subagent),
       loopReminder(raw),
+      ...(!subagent
+        ? [pollingJobReminder(this.options.runningJobs?.(sessionId) ?? [], raw)]
+        : []),
     ].filter((message): message is Message => message !== undefined);
     if (reminders.length) this.store.append(sessionId, reminders);
     let state = this.store.contextState(sessionId);
@@ -238,6 +247,16 @@ export class ContextManager {
         trigger: estimate >= window * 0.85 ? 'auto' : 'overflow',
       });
       projected = this.project(sessionId);
+    }
+    if (!subagent && this.store.contextState(sessionId).summary) {
+      const reminder = runningJobReminder(
+        this.options.runningJobs?.(sessionId) ?? [],
+        projected,
+      );
+      if (reminder) {
+        this.store.append(sessionId, [reminder]);
+        projected = this.project(sessionId);
+      }
     }
     return projected;
   }

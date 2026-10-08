@@ -30,5 +30,25 @@ Exports and registration may be asynchronous. A failed registration is discarded
 - `registerSubagent(spec, toolNames)`: spec contains `name`, `description` and `system_prompt`, with optional `model`. Missing tool names disable that agent with a warning. Later agents of the same name replace earlier agents, including bundled agents.
 - `registerRenderer('tool_result:name', renderer)`: returns transcript lines from a result containing `tool_name`, `tool_call_id`, `status` and `output`. Invalid or failed renderers fall back to the normal result view.
 - `on(event, handler)`: observes `session_start`, `turn_start`, `turn_end` or `tool_result`. Handler failures are isolated and shown in extension status.
+- `new api.Watch(title, poll, options)`: return it from a tool to create a background watch. Options are `interval_s` (default 10), `deadline_s` (default 3600), `result` and `on_stop`.
+
+## Waiting for slow work
+
+```ts
+return new api.Watch('remote build', async (signal) => {
+  const response = await fetch(statusUrl, { signal });
+  const status = await response.json();
+  return status.finished ? status : null;
+}, {
+  interval_s: 5,
+  deadline_s: 1800,
+  result: { state: 'pending' },
+  on_stop: () => stopOwnedRequest(),
+});
+```
+
+The tool returns its initial result and job id immediately. Polling runs asynchronously between model steps; `null` or `undefined` means pending, and any other value completes the watch. Exceptions and deadlines fail the job. The result is retained in its output file; completion notices carry bounded text and the file path.
+
+`poll(signal)` should forward cancellation to its network requests or other owned operations. `on_stop` runs once when the watch is stopped, times out or the application closes; cleanup waits up to two seconds. Synchronous blocking callbacks still block Node's event loop. Watches share the shell/watch capacity limit and inherit the calling child agent's owner. An embedding without a job registry waits for the result instead.
 
 Raise `new api.ToolError('message')` for a failed tool result. Extension code executes with the application's privileges; workspace trust is required before loading project code. Existing Python extensions must be rewritten in TypeScript or JavaScript.
