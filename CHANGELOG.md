@@ -4,6 +4,21 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Added
+
+- **A welcome block opens every session.** At the top of the conversation: Circle's logo, the version, the model and its endpoint, the folder and its git branch, what the folder brings (its instruction files, skills, commands, extensions and settings) with a lamp each, and the folder's three most recent sessions. It is not saved or exported. Once it scrolls away, the header shows the version, model and folder again. See [The welcome](docs/interface.md#the-welcome).
+
+### Changed
+
+- **Setup and trust are asked on the session's own screen.** Each question is a card in the input box under the welcome, and the session starts in place after the last answer, instead of on a separate screen first. The trust card says what trusting loads from the folder, and warns when the folder has extensions, which run their own code.
+- **The screen comes up before Circle has loaded.** While extensions, commands and MCP servers load, the folder's rows in the welcome blink. What you send meanwhile waits and is sent once Circle is ready.
+- **Setup's model list is searched by typing**, like the other lists. A model the endpoint does not list can be typed and chosen as `use "<id>"`. In the full-screen setup, numbers no longer pick a model.
+- **OAuth sign-in cannot be chosen in setup** while it is not built, as in `/login`.
+
+### Fixed
+
+- **Setup froze while it asked the endpoint for its models.** It now asks in the background and says so on the card.
+
 ## 0.3.1 - 2026-10-08
 
 ### Changed
