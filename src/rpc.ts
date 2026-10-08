@@ -109,8 +109,9 @@ export async function runRpc(
         const messages = runtime.harness.messages;
         response({
           sessionId: runtime.session.id,
-          userMessages: messages.filter((message) => message.role === 'user')
-            .length,
+          userMessages: messages.filter(
+            (message) => message.role === 'user' && !message.internal,
+          ).length,
           assistantMessages: messages.filter(
             (message) => message.role === 'assistant',
           ).length,

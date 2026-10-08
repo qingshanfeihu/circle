@@ -2,6 +2,8 @@ export interface ToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  raw_args?: string;
+  argument_error?: string;
 }
 export interface Usage {
   input_tokens: number;
@@ -20,6 +22,9 @@ export interface Message {
   display?: string;
   provider_content?: unknown[];
   usage?: Usage;
+  internal?: string;
+  truncated?: boolean;
+  recoverable?: boolean;
 }
 export type Effect = 'read' | 'write' | 'execute' | 'unknown';
 export interface Tool {
@@ -40,6 +45,14 @@ export interface ModelRequest {
   tools: Tool[];
   signal: AbortSignal;
   token: (text: string, thinking?: boolean) => void;
+  progress?: (
+    kind: 'connected' | 'keepalive' | 'text' | 'thinking' | 'tool' | 'usage',
+  ) => void;
+  notice?: (event: ModelNotice) => void;
+}
+export interface ModelNotice {
+  event: string;
+  [key: string]: unknown;
 }
 export interface ModelResponse {
   message: Message;
@@ -47,6 +60,7 @@ export interface ModelResponse {
 }
 export interface ChatModel {
   model: string;
+  contextWindow?: number;
   complete(request: ModelRequest): Promise<ModelResponse>;
 }
 export const emptyUsage = (): Usage => ({

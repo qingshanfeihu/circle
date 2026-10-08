@@ -34,7 +34,7 @@ export interface ScreenState {
 export function transcriptRows(state: ScreenState, width: number): string[] {
   const p = palette();
   const rows: string[] = [...state.welcome, ''];
-  let messages = state.messages;
+  let messages = state.messages.filter((message) => !message.internal);
   let hide = state.hiddenTurns;
   while (hide-- > 0) {
     let index = messages.length - 1;
@@ -93,7 +93,9 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
           statusLight(
             result
               ? result.status === 'error'
-                ? 'error'
+                ? result.recoverable
+                  ? 'none'
+                  : 'error'
                 : 'ok'
               : state.waiting
                 ? 'wait'

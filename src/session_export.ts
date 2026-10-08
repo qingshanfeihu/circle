@@ -86,6 +86,16 @@ export function fromJsonl(text: string): {
         role,
         content,
         thinking,
+        ...(isRecord(data.additional_kwargs) &&
+        data.additional_kwargs.circle_plan_reminder === true
+          ? { internal: 'plan-reminder' }
+          : isRecord(data.additional_kwargs) &&
+              data.additional_kwargs.circle_loop_guard === true
+            ? { internal: 'loop-guard' }
+            : isRecord(data.additional_kwargs) &&
+                data.additional_kwargs.circle_internal
+              ? { internal: String(data.additional_kwargs.circle_internal) }
+              : {}),
         tool_calls:
           role === 'assistant' && Array.isArray(data.tool_calls)
             ? (data.tool_calls as Message['tool_calls'])
@@ -135,6 +145,7 @@ export function toMarkdown(messages: Message[], meta: SessionMeta): string {
   return (
     `# ${meta.title || meta.thread_id}\n\n` +
     messages
+      .filter((message) => !message.internal)
       .map(
         (message) =>
           `## ${message.role === 'tool' ? message.name || 'tool' : message.role}\n\n${message.display ?? message.content}${message.thinking ? '\n\nThinking:\n' + message.thinking : ''}\n`,
@@ -144,6 +155,7 @@ export function toMarkdown(messages: Message[], meta: SessionMeta): string {
 }
 export function toHtml(messages: Message[], meta: SessionMeta): string {
   const body = messages
+    .filter((message) => !message.internal)
     .map((message) => {
       if (message.role === 'user')
         return `<div class="you">${escapeHtml(message.display ?? message.content)}</div>`;

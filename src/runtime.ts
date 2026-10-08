@@ -14,7 +14,7 @@ import { defaultRunOptions, type RunOptions } from './run_options.js';
 import type { CircleSettings } from './settings.js';
 import { discoverSkills, loadSkillBody } from './skills.js';
 import { fromJsonl } from './session_export.js';
-import { projectDataDir } from './paths.js';
+import { projectDataDir, circleHome, normalizeWorkspace } from './paths.js';
 import { McpManager } from './mcp_loader.js';
 import { ExtensionHost } from './extensions.js';
 import { isFolderTrusted, loadSettings } from './settings.js';
@@ -22,6 +22,7 @@ import { BUILTIN_SLASH } from './tui/slash_commands.js';
 import { discoverCustomCommands } from './commands.js';
 import { LspManager } from './lsp_tool.js';
 import type { Tool, ToolContext } from './types.js';
+import { ContextManager, restoredTodos } from './context_middleware.js';
 const BUILTIN_TOOL_NAMES = new Set([
   'ls',
   'read_file',
@@ -62,6 +63,7 @@ export interface RuntimeOptions {
   continue?: boolean;
   fork?: string;
   model?: ChatModel;
+  extraTools?: Tool[];
   headless?: boolean;
   approve?: (call: ToolCall, signal: AbortSignal) => Promise<ApprovalDecision>;
   question?: (
@@ -70,6 +72,7 @@ export interface RuntimeOptions {
   ) => Promise<string>;
 }
 export class AgentRuntime {
+  readonly options: RuntimeOptions;
   readonly store: CheckpointStore;
   readonly bus = new EventBus();
   readonly sandbox: Sandbox;
@@ -78,13 +81,26 @@ export class AgentRuntime {
   readonly skills;
   readonly mcp: McpManager;
   readonly lsp: LspManager;
+  readonly context: ContextManager;
+  private compactionController?: AbortController;
+  private activeCompaction?: Promise<string>;
   extensions: ExtensionHost;
   private integrationsReady?: Promise<void>;
   private baseModel?: ChatModel;
+  private coreTools: Tool[] = [];
+  get allTools(): Tool[] {
+    return this.withIntegrationTools(this.coreTools, false);
+  }
   todos: Todo[] = [];
   session: Session;
   harness: Harness;
-  constructor(readonly options: RuntimeOptions) {
+  constructor(options: RuntimeOptions) {
+    this.options = {
+      ...options,
+      workspace: normalizeWorkspace(options.workspace),
+      home: circleHome(options.home),
+    };
+    options = this.options;
     this.runOptions = options.run ?? defaultRunOptions();
     this.store = new CheckpointStore(
       this.runOptions.no_session ? undefined : options.home,
@@ -103,10 +119,15 @@ export class AgentRuntime {
       options.workspace,
       options.home,
       this.sandbox.credentialFiles,
+      (path) => this.sandbox.resolvePath(path),
     );
     this.skills = discoverSkills(options.workspace, options.home);
     this.mcp = new McpManager(options.workspace);
     this.lsp = new LspManager(this.sandbox);
+    this.context = new ContextManager(this.store, this.sandbox.offloadRoot!, {
+      notice: (event) =>
+        this.bus.emit('info', { payload: { model_notice: event } }),
+    });
     this.extensions = this.extensionHost(new Set());
     let session: Session | undefined;
     if (options.session) {
@@ -133,6 +154,7 @@ export class AgentRuntime {
     if (this.runOptions.session_name)
       this.store.rename(this.session.id, this.runOptions.session_name);
     this.harness = this.createHarness(options.model);
+    this.todos = restoredTodos(this.harness.messages);
     this.bus.setRunId(this.session.id);
     this.bus.subscribe((event) => {
       if (event.kind === 'run_start')
@@ -165,6 +187,7 @@ export class AgentRuntime {
         model.model,
         this.options.settings.auth.protocol,
         this.runOptions,
+        this.options.home,
       ) +
       (this.skills.length
         ? '\n\nAvailable skills:\n' +
@@ -190,11 +213,11 @@ export class AgentRuntime {
         this.harness.planMode = enabled;
         return enabled ? 'Read-only mode enabled.' : 'Read-only mode disabled.';
       },
-      compact: async (hint) => this.compact(hint),
+      compact: async (hint, context) => this.compact(hint, context.signal),
       task: async (args, context) => {
         const name = String(args.subagent_type || 'general-purpose');
         const custom = this.extensions
-          .subagents(this.harness.tools)
+          .subagents(this.allTools)
           .find((agent) => agent.spec.name === name);
         if (!custom && !['general-purpose', 'explore'].includes(name))
           throw new Error('unknown subagent type');
@@ -221,7 +244,7 @@ export class AgentRuntime {
             parent_run_id: this.session.id,
           }),
         );
-        const childTools = (custom?.tools ?? this.harness.tools).filter(
+        const childTools = (custom?.tools ?? this.allTools).filter(
           (tool) =>
             tool.name !== 'task' &&
             tool.name !== 'compact_conversation' &&
@@ -231,9 +254,22 @@ export class AgentRuntime {
               custom !== undefined ||
               EXPLORE_TOOLS.has(tool.name)),
         );
+        const ownedChildTools = childTools.map((tool) =>
+          tool.name === 'write_todos'
+            ? {
+                ...tool,
+                run: async (args: Record<string, unknown>) => {
+                  childBus.emit('todo_list', {
+                    payload: { todos: args.todos },
+                  });
+                  return 'Updated todo list.';
+                },
+              }
+            : tool,
+        );
         const child = new Harness({
           model: childModel,
-          tools: childTools,
+          tools: ownedChildTools,
           store: this.store,
           session,
           policy: this.policy,
@@ -252,14 +288,21 @@ export class AgentRuntime {
           bus: childBus,
           approve: this.options.approve,
           headless: this.options.headless,
+          approvalSessionId: this.session.id,
+          parentPlanMode: () => this.harness.planMode,
           toolBoundary: (tool, args, context) =>
             this.extensionToolBoundary(tool, args, context),
+          prepareMessages: (signal) =>
+            this.context.prepare(
+              session.id,
+              child.model,
+              child.system,
+              child.tools,
+              signal,
+              true,
+            ),
         });
-        child.planMode = this.harness.planMode || name === 'explore';
-        this.policy.setYolo(
-          session.id,
-          this.policy.yoloEnabled(this.session.id),
-        );
+        child.planMode = name === 'explore';
         const abort = (): void => {
           void child.cancel();
         };
@@ -273,17 +316,8 @@ export class AgentRuntime {
       },
     });
     tools.push(this.lsp.tool());
-    if (this.runOptions.tools !== null)
-      tools = tools.filter(
-        (tool) =>
-          this.runOptions.tools!.includes(tool.name) ||
-          tool.name === 'compact_conversation',
-      );
-    tools = tools.filter(
-      (tool) =>
-        !this.runOptions.exclude_tools.includes(tool.name) ||
-        tool.name === 'compact_conversation',
-    );
+    tools.push(...(this.options.extraTools ?? []));
+    this.coreTools = tools;
     tools = this.withIntegrationTools(tools);
     return new Harness({
       model: this.extensions.model(model),
@@ -298,6 +332,14 @@ export class AgentRuntime {
       beforeRun: (signal) => this.initialize(signal),
       toolBoundary: (tool, args, context) =>
         this.extensionToolBoundary(tool, args, context),
+      prepareMessages: (signal) =>
+        this.context.prepare(
+          this.session.id,
+          this.harness.model,
+          this.harness.system,
+          this.harness.tools,
+          signal,
+        ),
     });
   }
   private extensionHost(reservedTools: Set<string>): ExtensionHost {
@@ -320,13 +362,13 @@ export class AgentRuntime {
       ]),
     });
   }
-  private withIntegrationTools(tools: Tool[]): Tool[] {
+  private withIntegrationTools(tools: Tool[], limits = true): Tool[] {
     const names = new Set<string>();
     return [...tools, ...this.mcp.tools, ...this.extensions.tools()].filter(
       (tool) => {
         if (names.has(tool.name))
           throw new Error(`tool '${tool.name}' already exists`);
-        if (tool.name !== 'compact_conversation') {
+        if (limits && tool.name !== 'compact_conversation') {
           if (
             this.runOptions.tools !== null &&
             !this.runOptions.tools.includes(tool.name)
@@ -365,11 +407,7 @@ export class AgentRuntime {
     if (this.options.headless) return;
     if (!this.integrationsReady) {
       this.integrationsReady = (async () => {
-        const base = this.harness.tools.filter(
-          (tool) =>
-            !this.mcp.tools.includes(tool) &&
-            !this.extensions.tools().includes(tool),
-        );
+        const base = this.coreTools;
         await this.mcp.load(
           this.options.settings.mcp_servers,
           new Set(base.map((tool) => tool.name)),
@@ -386,7 +424,7 @@ export class AgentRuntime {
           ['general-purpose', 'General coding tasks.'],
           ['explore', 'Read-only project exploration.'],
         ]);
-        for (const agent of host.subagents(this.harness.tools))
+        for (const agent of host.subagents(this.allTools))
           subagents.set(agent.spec.name, agent.spec.description);
         const task = this.harness.tools.find((tool) => tool.name === 'task');
         if (task)
@@ -438,6 +476,7 @@ export class AgentRuntime {
       model,
       this.options.settings.auth.protocol,
       this.runOptions,
+      this.options.home,
     );
   }
   get thinkingLevel(): string {
@@ -472,47 +511,29 @@ export class AgentRuntime {
       usage,
     };
   }
-  async compact(hint = ''): Promise<string> {
-    const tree = this.store.tree(this.session.id);
-    const messages = this.store.messages(this.session.id);
-    if (messages.length < 8) return 'Nothing to compact yet';
-    let end = messages.length - 6;
-    while (end > 0) {
-      try {
-        this.store.requireBalancedTools(messages.slice(0, end));
-        break;
-      } catch {
-        end--;
-      }
-    }
-    if (!end) return 'Nothing to compact yet';
-    const controller = new AbortController();
-    const response = await this.harness.model.complete({
-      system:
-        'Summarize the conversation for continued coding. Preserve goals, constraints, decisions, files, results, and unresolved work. ' +
+  async compact(hint = '', signal?: AbortSignal): Promise<string> {
+    if (signal)
+      return this.context.compact(
+        this.session.id,
+        this.harness.model,
+        signal,
         hint,
-      messages: [
-        {
-          id: randomUUID(),
-          role: 'user',
-          content: JSON.stringify(messages.slice(0, end)),
-        },
-      ],
-      tools: [],
-      signal: controller.signal,
-      token: () => {},
-    });
-    const checkpoint = tree.find(
-      (checkpoint) => checkpoint.message.id === messages[end - 1]!.id,
-    );
-    if (!checkpoint || !response.message.content.trim())
-      throw new Error('summary did not complete');
-    this.store.setSummary(
+      );
+    if (this.activeCompaction || this.harness.busy)
+      throw new Error('a turn is running');
+    this.compactionController = new AbortController();
+    this.activeCompaction = this.context.compact(
       this.session.id,
-      checkpoint.id,
-      response.message.content,
+      this.harness.model,
+      this.compactionController.signal,
+      hint,
     );
-    return `Compacted ${end} messages. Raw history retained.`;
+    try {
+      return await this.activeCompaction;
+    } finally {
+      this.activeCompaction = undefined;
+      this.compactionController = undefined;
+    }
   }
   async newSession(): Promise<void> {
     if (this.harness.busy) throw new Error('a turn is running');
@@ -522,6 +543,7 @@ export class AgentRuntime {
     );
     this.todos = [];
     this.harness = this.createHarness(this.options.model);
+    this.todos = restoredTodos(this.harness.messages);
     this.bus.setRunId(this.session.id);
     this.extensions.emit('session_start', {
       workspace: this.options.workspace,
@@ -536,6 +558,7 @@ export class AgentRuntime {
       session = this.store.fork(session.id, this.options.workspace);
     this.session = session;
     this.harness = this.createHarness(this.options.model);
+    this.todos = restoredTodos(this.harness.messages);
     this.bus.setRunId(session.id);
   }
   async importSession(text: string): Promise<void> {
@@ -546,6 +569,8 @@ export class AgentRuntime {
       this.store.rename(this.session.id, header.title);
   }
   async close(): Promise<void> {
+    this.compactionController?.abort(new Error('Interrupted'));
+    await this.activeCompaction?.catch(() => {});
     await this.harness.cancel();
     await this.integrationsReady?.catch(() => {});
     await this.mcp.close();

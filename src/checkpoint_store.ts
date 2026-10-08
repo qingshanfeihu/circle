@@ -19,6 +19,24 @@ export interface Checkpoint {
   message: Message;
   created: number;
 }
+export interface ContextState {
+  summary?: {
+    cutoffMessageId: string;
+    text: string;
+    historyPath?: string;
+    usage?: import('./types.js').Usage;
+    response?: Message;
+    model?: string;
+  };
+  prunedIds: string[];
+  stripThinkingIds: string[];
+  offloaded: Record<string, string>;
+}
+export const emptyContextState = (): ContextState => ({
+  prunedIds: [],
+  stripThinkingIds: [],
+  offloaded: {},
+});
 export class CheckpointStore {
   private db: DatabaseSync;
   private closed = false;
@@ -32,7 +50,9 @@ export class CheckpointStore {
       CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, parent TEXT REFERENCES checkpoints(id), message TEXT NOT NULL, created REAL NOT NULL);
       CREATE INDEX IF NOT EXISTS checkpoints_session ON checkpoints(session_id);
       CREATE TABLE IF NOT EXISTS context_projections (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, at_checkpoint TEXT NOT NULL, summary TEXT NOT NULL);
-      PRAGMA user_version = 1;`);
+      CREATE TABLE IF NOT EXISTS context_versions (version INTEGER PRIMARY KEY AUTOINCREMENT, checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id) ON DELETE CASCADE, state TEXT NOT NULL, created REAL NOT NULL);
+      CREATE INDEX IF NOT EXISTS context_versions_checkpoint ON context_versions(checkpoint_id, version);
+      PRAGMA user_version = 2;`);
   }
   create(
     workspace: string,
@@ -161,6 +181,8 @@ export class CheckpointStore {
     this.requireBalancedTools(messages);
     const session = this.create(workspace, parent.model, parent.title);
     this.append(session.id, structuredClone(messages));
+    const context = this.contextState(sessionId, head);
+    if (messages.length) this.setContextState(session.id, context);
     return this.get(session.id)!;
   }
   delete(sessionId: string): void {
@@ -200,28 +222,94 @@ export class CheckpointStore {
     const checkpoint = this.checkpoint(at);
     if (checkpoint?.session_id !== sessionId)
       throw new Error('invalid summary checkpoint');
-    this.db
-      .prepare('INSERT OR REPLACE INTO context_projections VALUES (?, ?, ?)')
-      .run(sessionId, at, summary);
+    if (
+      !this.messages(sessionId).some(
+        (message) => message.id === checkpoint.message.id,
+      )
+    )
+      throw new Error('summary checkpoint is not on the active branch');
+    this.setContextState(sessionId, {
+      ...this.contextState(sessionId),
+      summary: { cutoffMessageId: checkpoint.message.id, text: summary },
+    });
   }
-  projectedMessages(sessionId: string): Message[] {
-    const raw = this.messages(sessionId);
-    const projection = this.db
+  contextState(sessionId: string, head?: string | null): ContextState {
+    let cursor = head === undefined ? this.get(sessionId)?.head : head;
+    const seen = new Set<string>();
+    while (cursor) {
+      if (seen.has(cursor)) throw new Error('checkpoint ancestry cycle');
+      seen.add(cursor);
+      const checkpoint = this.checkpoint(cursor);
+      if (!checkpoint || checkpoint.session_id !== sessionId)
+        throw new Error('invalid checkpoint ancestry');
+      const row = this.db
+        .prepare(
+          'SELECT state FROM context_versions WHERE checkpoint_id = ? ORDER BY version DESC LIMIT 1',
+        )
+        .get(cursor);
+      if (row) return JSON.parse(String(row.state)) as ContextState;
+      cursor = checkpoint.parent;
+    }
+    const legacy = this.db
       .prepare(
         'SELECT at_checkpoint, summary FROM context_projections WHERE session_id = ?',
       )
       .get(sessionId);
+    if (legacy) {
+      const checkpoint = this.checkpoint(String(legacy.at_checkpoint));
+      if (
+        checkpoint &&
+        this.messages(sessionId, head).some(
+          (message) => message.id === checkpoint.message.id,
+        )
+      )
+        return {
+          ...emptyContextState(),
+          summary: {
+            cutoffMessageId: checkpoint.message.id,
+            text: String(legacy.summary),
+          },
+        };
+    }
+    return emptyContextState();
+  }
+  setContextState(
+    sessionId: string,
+    state: ContextState,
+    expectedHead?: string | null,
+  ): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const session = this.get(sessionId);
+      if (!session) throw new Error('unknown session');
+      if (expectedHead !== undefined && session.head !== expectedHead)
+        throw new Error('session changed in another process');
+      if (!session.head) throw new Error('context state needs a checkpoint');
+      this.db
+        .prepare(
+          'INSERT INTO context_versions (checkpoint_id, state, created) VALUES (?, ?, ?)',
+        )
+        .run(session.head, JSON.stringify(state), Date.now());
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  projectedMessages(sessionId: string): Message[] {
+    const raw = this.messages(sessionId);
+    const projection = this.contextState(sessionId).summary;
     if (!projection) return raw;
-    const checkpoint = this.checkpoint(String(projection.at_checkpoint));
     const index = raw.findIndex(
-      (message) => message.id === checkpoint?.message.id,
+      (message) => message.id === projection.cutoffMessageId,
     );
     if (index < 0) return raw;
     return [
       {
-        id: 'summary-' + projection.at_checkpoint,
+        id: 'summary-' + projection.cutoffMessageId,
         role: 'user',
-        content: `Earlier conversation summary:\n${projection.summary}`,
+        content: `Earlier conversation summary:\n${projection.text}${projection.historyPath ? '\nFull earlier history: ' + projection.historyPath : ''}`,
+        internal: 'summary',
       },
       ...raw.slice(index + 1),
     ];

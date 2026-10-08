@@ -579,6 +579,7 @@ export class ApprovalPolicy {
     readonly store: ApprovalStore,
     readonly workspace: string,
     readonly credentialFiles = DEFAULT_CREDENTIAL_FILES,
+    private readonly resolvePath?: (path: string) => string,
   ) {}
   setYolo(thread: string, enabled: boolean): void {
     if (enabled) this.yolo.add(thread);
@@ -635,7 +636,9 @@ export class ApprovalPolicy {
         paths.every((path) => {
           const rel = relative(
             this.workspace,
-            normalizeWorkspace(resolve(this.workspace, path)),
+            this.resolvePath
+              ? this.resolvePath(path)
+              : normalizeWorkspace(resolve(this.workspace, path)),
           );
           return Boolean(path) && rel !== '..' && !rel.startsWith('..' + sep);
         });
@@ -699,10 +702,12 @@ export function defaultPolicy(
   workspace: string,
   home = circleHome(),
   credentials = DEFAULT_CREDENTIAL_FILES,
+  resolvePath?: (path: string) => string,
 ): ApprovalPolicy {
   return new ApprovalPolicy(
     new ApprovalStore(join(home, 'approvals')),
     workspace,
     credentials,
+    resolvePath,
   );
 }

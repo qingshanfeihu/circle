@@ -341,6 +341,36 @@ export class SessionApp {
           this.state.usage[key] += event.usage?.[key] ?? 0;
       } else if (event.kind === 'run_error')
         this.state.notices.push('✖ ' + String(event.payload.message));
+      else if (event.kind === 'info' && event.payload.model_notice) {
+        const notice = event.payload.model_notice as {
+          event: string;
+          [key: string]: unknown;
+        };
+        if (notice.event === 'retry')
+          this.flash(
+            `Retry ${notice.attempt}/${notice.max} in ${(Number(notice.wait_ms) / 1000).toFixed(1)}s`,
+          );
+        else if (notice.event === 'param_dropped')
+          this.notice(
+            `Endpoint does not support ${notice.param}; continuing without it`,
+          );
+        else if (
+          ['repeat_retry', 'stall_retry', 'missing_finish_retry'].includes(
+            notice.event,
+          )
+        ) {
+          this.state.streaming = '';
+          this.state.thinking = '';
+          this.flash('Retrying model request');
+        } else if (notice.event === 'compacted')
+          this.notice(`Compacted ${notice.messages} messages`);
+        else if (notice.event === 'output_budget_exhausted')
+          this.notice('✖ Model output budget exhausted before an answer');
+        else if (notice.event === 'missing_finish' && notice.truncated)
+          this.notice('Model response may be truncated');
+        else if (notice.event === 'repetition_stopped')
+          this.notice('Model output was repeating; stopped the stream');
+      }
       this.repaint();
     });
     await this.runtime.initialize();
@@ -810,6 +840,7 @@ export class SessionApp {
       if (runtime.harness.busy) throw new Error('a turn is running');
       const tree = runtime.store.tree(runtime.session.id);
       const choices = tree
+        .filter((checkpoint) => !checkpoint.message.internal)
         .filter(
           (checkpoint) => name !== 'fork' || checkpoint.message.role === 'user',
         )

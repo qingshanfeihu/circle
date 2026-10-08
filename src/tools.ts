@@ -27,7 +27,7 @@ export interface ToolHooks {
     context: ToolContext,
   ) => Promise<string>;
   skill?: (name: string) => Promise<string>;
-  compact?: (hint: string) => Promise<string>;
+  compact?: (hint: string, context: ToolContext) => Promise<string>;
 }
 const string = (args: Record<string, unknown>, ...keys: string[]): string => {
   for (const key of keys)
@@ -340,7 +340,7 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
       'compact_conversation',
       'read',
       schema({ hint: text('Summary guidance') }),
-      async (args) => hooks.compact!(String(args.hint || '')),
+      async (args, context) => hooks.compact!(String(args.hint || ''), context),
     );
   add(
     'webfetch',

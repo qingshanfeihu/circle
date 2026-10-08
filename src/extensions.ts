@@ -313,6 +313,7 @@ export class ExtensionHost {
     const middleware = this.loaded().flatMap((ext) => ext.middleware);
     return {
       model: base.model,
+      contextWindow: base.contextWindow,
       complete: async (request) => {
         let next = (request: ModelRequest) => base.complete(request);
         for (const item of middleware

@@ -5,6 +5,8 @@ import { EventBus } from './events.js';
 import { ApprovalPolicy } from './approvals.js';
 import { CheckpointStore, type Session } from './checkpoint_store.js';
 import { attachFiles } from './mentions.js';
+import { prepareToolCall, RecoverableToolError } from './tool_call_compat.js';
+import { redact } from './redact.js';
 export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'prefix';
 export interface HarnessOptions {
   model: ChatModel;
@@ -23,6 +25,9 @@ export interface HarnessOptions {
     args: Record<string, unknown>,
     context: import('./types.js').ToolContext,
   ) => Promise<string>;
+  prepareMessages?: (signal: AbortSignal) => Promise<Message[]>;
+  approvalSessionId?: string;
+  parentPlanMode?: () => boolean;
 }
 export class Harness {
   readonly bus: EventBus;
@@ -51,6 +56,9 @@ export class Harness {
   }
   get messages(): Message[] {
     return this.options.store.messages(this.sessionId);
+  }
+  private get readOnly(): boolean {
+    return this.planMode || this.options.parentPlanMode?.() === true;
   }
   queue(message: string, mode: 'steer' | 'followUp' = 'steer'): void {
     (mode === 'steer' ? this.steering : this.followUps).push(message);
@@ -125,7 +133,7 @@ export class Harness {
       );
     this.bus.emit('run_start', { payload: { message: prompt } });
     try {
-      for (let step = 0; step < (this.options.maxSteps ?? 100); step++) {
+      for (let step = 0; step < (this.options.maxSteps ?? 9999); step++) {
         signal.throwIfAborted();
         for (const message of this.steering.splice(0)) {
           this.save({
@@ -140,12 +148,16 @@ export class Harness {
         const response = await this.model.complete({
           system:
             this.system +
-            (this.planMode
+            (this.readOnly
               ? '\nRead-only mode: inspect and plan; do not change files or run commands.'
               : ''),
-          messages: this.options.store.projectedMessages(this.sessionId),
+          messages: this.options.prepareMessages
+            ? await this.options.prepareMessages(signal)
+            : this.options.store.projectedMessages(this.sessionId),
           tools: this.tools,
           signal,
+          notice: (event) =>
+            this.bus.emit('info', { payload: { model_notice: event } }),
           token: (text, thinking) =>
             this.bus.emit('llm_token', {
               payload: { text, thinking: Boolean(thinking) },
@@ -171,15 +183,18 @@ export class Harness {
           });
           return { answer, usage };
         }
-        for (const call of calls) {
+        for (const original of calls) {
+          let call = original;
           let content = '';
           let status: 'success' | 'error' = 'success';
+          let recoverable = false;
           this.bus.emit('tool_call', { payload: { ...call } });
           try {
             signal.throwIfAborted();
-            const tool = this.tools.find((tool) => tool.name === call.name);
-            if (!tool) throw new Error(`tool is not available: ${call.name}`);
-            if (this.planMode && tool.effect !== 'read')
+            const prepared = prepareToolCall(call, this.tools);
+            call = prepared.call;
+            const tool = prepared.tool;
+            if (this.readOnly && tool.effect !== 'read')
               throw new Error('read-only mode: this tool cannot run');
             const found = this.options.policy.review(call.name, call.args);
             if (found.verdict === 'DENY')
@@ -190,7 +205,7 @@ export class Harness {
               (this.options.policy.needsApproval(
                 call.name,
                 call.args,
-                this.sessionId,
+                this.options.approvalSessionId ?? this.sessionId,
               ) ||
                 (this.options.headless && found.verdict === 'ASK_FORCED'))
             ) {
@@ -207,7 +222,7 @@ export class Harness {
               signal.throwIfAborted();
               if (
                 !this.options.policy.remember(
-                  this.sessionId,
+                  this.options.approvalSessionId ?? this.sessionId,
                   call.name,
                   call.args,
                   decision,
@@ -216,16 +231,30 @@ export class Harness {
                 throw new Error('The user rejected this tool call.');
             }
             signal.throwIfAborted();
+            if (this.readOnly && tool.effect !== 'read')
+              throw new Error('read-only mode: this tool cannot run');
             this.bus.emit('tool_start', { payload: { ...call } });
             const context = { signal, sessionId: this.sessionId };
+            const guardedTool: Tool = {
+              ...tool,
+              run: async (args, context) => {
+                signal.throwIfAborted();
+                if (this.readOnly && tool.effect !== 'read')
+                  throw new Error('read-only mode: this tool cannot run');
+                return tool.run(args, context);
+              },
+            };
             content = this.options.toolBoundary
-              ? await this.options.toolBoundary(tool, call.args, context)
-              : await tool.run(call.args, context);
+              ? await this.options.toolBoundary(guardedTool, call.args, context)
+              : await guardedTool.run(call.args, context);
             if (typeof content !== 'string')
               throw new Error('tool must return text');
           } catch (error) {
             status = 'error';
-            content = error instanceof Error ? error.message : String(error);
+            recoverable = error instanceof RecoverableToolError;
+            content = redact(
+              error instanceof Error ? error.message : String(error),
+            );
           }
           this.save({
             id: randomUUID(),
@@ -234,6 +263,7 @@ export class Harness {
             tool_call_id: call.id,
             name: call.name,
             status,
+            ...(recoverable ? { recoverable: true } : {}),
           });
           this.bus.emit('tool_result', {
             payload: { id: call.id, name: call.name, status, output: content },
@@ -244,15 +274,18 @@ export class Harness {
       }
       throw new Error('maximum model steps reached');
     } catch (error) {
+      const failure = signal.aborted ? signal.reason : error;
       this.bus.emit('run_error', {
         payload: {
-          message: error instanceof Error ? error.message : String(error),
+          message: redact(
+            failure instanceof Error ? failure.message : String(failure),
+          ),
           interrupted: signal.aborted,
         },
         usage: { ...usage },
         elapsed_ms: Date.now() - start,
       });
-      throw error;
+      throw failure;
     }
   }
 }

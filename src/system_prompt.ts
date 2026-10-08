@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import { currentBranch } from './git_info.js';
 import type { RunOptions } from './run_options.js';
+import { formatMemorySources } from './memory_sources.js';
 const prompts = fileURLToPath(new URL('./prompts/', import.meta.url));
 export function readPrompt(...parts: string[]): string {
   return readFileSync(join(prompts, ...parts), 'utf8').trim();
@@ -70,6 +71,7 @@ export function buildSystemPrompt(
   model: string,
   protocol: string,
   options: RunOptions,
+  home?: string,
 ): string {
   const replacementPath = join(workspace, '.circle', 'SYSTEM.md');
   const base =
@@ -99,8 +101,8 @@ export function buildSystemPrompt(
       ? []
       : [readPrompt('circle_guidelines.md'), readPrompt('circle_paths.md')]),
   ];
+  const files = options.no_context_files ? [] : discoverContextFiles(workspace);
   if (!options.no_context_files) {
-    const files = discoverContextFiles(workspace);
     if (files.length)
       sections.push(
         '<project_context>\n' +
@@ -113,6 +115,13 @@ export function buildSystemPrompt(
           '\n</project_context>',
       );
   }
+  const memory = formatMemorySources(
+    workspace,
+    home,
+    files.map(([path]) => path),
+    options.no_context_files,
+  );
+  if (memory) sections.push(memory);
   sections.push(
     `<env>\n  Working directory: ${workspace}\n  Platform: ${platform()}\n  Today's date: ${new Date().toISOString().slice(0, 10)}\n  Is directory a git repo: ${currentBranch(workspace) ? 'yes' : 'no'}\n  Model: ${model}\n  Protocol: ${protocol}\n</env>`,
   );

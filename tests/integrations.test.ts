@@ -19,6 +19,7 @@ import { defaultSettings, trustFolder, saveSettings } from '../src/settings.js';
 import { ScriptedModel } from '../src/testing.js';
 import { LspClient, LspManager } from '../src/lsp_tool.js';
 import { Sandbox } from '../src/sandbox.js';
+import { defaultRunOptions } from '../src/run_options.js';
 import type { Message } from '../src/types.js';
 
 function extension(root: string, name: string, source: string): void {
@@ -451,5 +452,157 @@ test('the LSP tool sends file content and converts one-based editor positions to
         .textDocument as { text: string }
     ).text,
     'const value = 1;',
+  );
+});
+test('main tool limits retain the subagent tool set and subagent approvals belong to the visible session', async (t) => {
+  const root = scratch(t);
+  const path = join(root, 'child.txt');
+  const run = defaultRunOptions();
+  run.tools = ['task'];
+  const model = new ScriptedModel([
+    {
+      message: assistant('', [
+        {
+          id: 'task',
+          name: 'task',
+          args: { description: 'write in the child' },
+        },
+      ]),
+    },
+    {
+      message: assistant('', [
+        {
+          id: 'write',
+          name: 'write_file',
+          args: { file_path: path, content: 'child effect' },
+        },
+      ]),
+    },
+    { message: assistant('child done') },
+    { message: assistant('main done') },
+  ]);
+  let approvals = 0;
+  const runtime = new AgentRuntime({
+    home: root,
+    workspace: root,
+    settings: defaultSettings(),
+    model,
+    run,
+    headless: true,
+    approve: async () => {
+      approvals++;
+      return 'always';
+    },
+  });
+  cleanup(t, () => runtime.close());
+  await runtime.harness.run('task');
+  assert.deepEqual(runtime.harness.tools.map((tool) => tool.name).sort(), [
+    'compact_conversation',
+    'task',
+  ]);
+  assert.ok(
+    model.requests[1]!.tools.some((tool) => tool.name === 'write_file'),
+  );
+  assert.equal(readFileSync(path, 'utf8'), 'child effect');
+  assert.equal(approvals, 1);
+  assert.equal(runtime.policy.store.rules(runtime.session.id).length, 1);
+});
+test('a read-only switch while a child approval is pending blocks the already queued mutation', async (t) => {
+  const root = scratch(t);
+  const path = join(root, 'blocked.txt');
+  let entered!: () => void;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const model = new ScriptedModel([
+    {
+      message: assistant('', [
+        {
+          id: 'task',
+          name: 'task',
+          args: { description: 'write in the child' },
+        },
+      ]),
+    },
+    {
+      message: assistant('', [
+        {
+          id: 'write',
+          name: 'write_file',
+          args: { file_path: path, content: 'must not write' },
+        },
+      ]),
+    },
+    { message: assistant('child blocked') },
+    { message: assistant('main done') },
+  ]);
+  const runtime = new AgentRuntime({
+    home: root,
+    workspace: root,
+    settings: defaultSettings(),
+    model,
+    headless: true,
+    approve: async () => {
+      entered();
+      await gate;
+      return 'approve';
+    },
+  });
+  cleanup(t, () => runtime.close());
+  const running = runtime.harness.run('task');
+  await ready;
+  runtime.harness.planMode = true;
+  release();
+  await running;
+  assert.equal(existsSync(path), false);
+});
+test('read-only is rechecked after awaited extension middleware before the actual effect', async (t) => {
+  const root = scratch(t);
+  const home = join(root, 'home');
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace);
+  const path = join(workspace, 'blocked.txt');
+  extension(
+    join(home, 'extensions'),
+    'delay',
+    `export function register(api){api.registerMiddleware(async(request,next)=>{await new Promise(resolve=>setTimeout(resolve,50));return next(request)},'tool_boundary')}`,
+  );
+  const model = new ScriptedModel([
+    {
+      message: assistant('', [
+        {
+          id: 'write',
+          name: 'write_file',
+          args: { file_path: path, content: 'must not be written' },
+        },
+      ]),
+    },
+    { message: assistant('blocked') },
+  ]);
+  const runtime = new AgentRuntime({
+    home,
+    workspace,
+    settings: defaultSettings(),
+    model,
+  });
+  cleanup(t, () => runtime.close());
+  runtime.policy.setYolo(runtime.session.id, true);
+  runtime.bus.subscribe((event) => {
+    if (event.kind === 'tool_start')
+      setTimeout(() => {
+        runtime.harness.planMode = true;
+      }, 5);
+  });
+  await runtime.harness.run('write');
+  assert.equal(existsSync(path), false);
+  assert.match(
+    runtime.harness.messages.find(
+      (message) => message.tool_call_id === 'write',
+    )!.content,
+    /read-only/,
   );
 });

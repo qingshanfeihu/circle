@@ -168,7 +168,7 @@
       "bytes": 4348,
       "category": "source",
       "target": "src/context_middleware.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/display_lexicon.py",
@@ -592,7 +592,7 @@
       "bytes": 1732,
       "category": "source",
       "target": "src/memory_sources.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/mentions.py",
@@ -624,7 +624,7 @@
       "bytes": 11083,
       "category": "source",
       "target": "src/middleware/loop_guard.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/middleware/plan_tail.py",
@@ -632,15 +632,15 @@
       "bytes": 5803,
       "category": "source",
       "target": "src/middleware/plan_tail.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/middleware/redact.py",
       "sha256": "904fb806609247bafca8de390b8567ada793c3c55d37313e4e358ca49b2a973a",
       "bytes": 1147,
       "category": "source",
-      "target": "src/middleware/redact.ts",
-      "status": "pending"
+      "target": "src/redact.ts",
+      "status": "in-progress"
     },
     {
       "source": "circle/middleware/steering.py",
@@ -655,8 +655,8 @@
       "sha256": "29b1c8392a20ee1896e0c2fa17addb0fb1e48649e177285b8411ff32f30b3ff1",
       "bytes": 13422,
       "category": "source",
-      "target": "src/middleware/tool_call_compat.ts",
-      "status": "pending"
+      "target": "src/tool_call_compat.ts",
+      "status": "in-progress"
     },
     {
       "source": "circle/middleware/tool_error_boundary.py",
@@ -672,7 +672,7 @@
       "bytes": 7906,
       "category": "source",
       "target": "src/middleware/tool_result_prune.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/middleware/tool_selection.py",
@@ -696,7 +696,7 @@
       "bytes": 32685,
       "category": "source",
       "target": "src/model_guard.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/net.py",
@@ -1152,7 +1152,7 @@
       "bytes": 4455,
       "category": "source",
       "target": "src/text_repetition.ts",
-      "status": "pending"
+      "status": "in-progress"
     },
     {
       "source": "circle/tool_events.py",
