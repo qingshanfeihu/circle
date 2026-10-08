@@ -196,4 +196,6 @@ Print mode has its own codes, listed [above](#print-mode).
 
 It replaces only the connection, `auth` in `settings.json`: endpoint, protocol and model. Everything else stays, including `trusted_folders`, `mcp_servers`, `extensions`, `credential_files`, `theme` and keys Circle does not know. When the endpoint changes, `enabled_models` is cleared, since it named the old endpoint's models. `credentials.json` is merged, so earlier keys stay.
 
+Inside a session, `/login` asks the same questions and switches the session without a restart. See [Change the endpoint or the key](models.md#change-the-endpoint-or-the-key).
+
 To change only the model, pick it in `/models` inside a session and press `ctrl+s` instead. See [Settings](settings.md).

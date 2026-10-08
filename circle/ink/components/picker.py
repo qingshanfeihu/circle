@@ -3,7 +3,9 @@
 Type to narrow it (every word must appear), ``↑`` ``↓`` move (wrapping), ``pageup``
 ``pagedown`` jump, ``enter`` picks, ``esc`` clears the search or closes. A picker can bind
 extra keys (``ctrl+s`` save, ``ctrl+r`` rename, ``ctrl+d`` delete, ``tab`` scope …) and can
-ask for a line of text in place of the search (a new name) or for a confirmation.
+ask for a line of text in place of the search (a new name, a key shown as dots) or for a
+confirmation. With ``free_text``, ``enter`` on a search nothing matches hands over what was
+typed (a model id the endpoint does not list).
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ class Picker:
         rows: int = 10,
         focus_key: str | None = None,
         empty: str = "Nothing to show",
+        free_text: Callable[[str], None] | None = None,
     ) -> None:
         self.title = title
         self.hint = hint
@@ -49,11 +52,14 @@ class Picker:
         self._render = render
         self._keys = dict(keys or {})
         self._rows = max(3, rows)
+        self._free_text = free_text
         self.query = ""
         self._focus = 0
         self._top = 0
         # A line of text asked for in place of the search: (label, text, done)
         self._asking: tuple[str, str, Callable[[str], None]] | None = None
+        self._masked = False
+        self._ask_keys = ""
         self._confirming: tuple[str, Callable[[], None]] | None = None
         if focus_key is not None:
             self.focus_on(focus_key)
@@ -103,9 +109,17 @@ class Picker:
 
     # ── asking for text or a confirmation ───────────────────────────────────
 
-    def ask(self, label: str, text: str, done: Callable[[str], None]) -> None:
+    def ask(self, label: str, text: str, done: Callable[[str], None], *,
+            mask: bool = False, keys: str = "enter saves · esc cancels") -> None:
+        """``mask`` shows what is typed or pasted as dots, as setup shows a key."""
         self._asking = (label, text, done)
+        self._masked = mask
+        self._ask_keys = keys
         self._render()
+
+    @property
+    def asking(self) -> bool:
+        return self._asking is not None
 
     def confirm(self, question: str, done: Callable[[], None]) -> None:
         self._confirming = (question, done)
@@ -120,7 +134,8 @@ class Picker:
         info: list[str] = []
         if self._asking is not None:
             label, text, _done = self._asking
-            info.append(f"{label}: {text}▏  enter saves · esc cancels")
+            typed = "•" * len(text) if self._masked else text
+            info.append(f"{label}: {typed}▏  {self._ask_keys}")
         elif self._confirming is not None:
             info.append(f"{self._confirming[0]}  enter confirms · esc cancels")
         else:
@@ -169,6 +184,8 @@ class Picker:
             item = self.focused()
             if item is not None:
                 self._on_pick(item)
+            elif self._free_text is not None and self.query.strip():
+                self._free_text(self.query.strip())
             return True
         elif key == "escape":
             if self.query:
@@ -193,6 +210,20 @@ class Picker:
         self._render()
         return True
 
+    def handle_paste(self, text: str) -> None:
+        """A paste goes where typing goes: the asked line, or the search. One line only."""
+        line = "".join(ch for ch in text.replace("\r", "").replace("\n", "") if ch.isprintable())
+        if self._confirming is not None or not line:
+            return
+        if self._asking is not None:
+            label, asked, done = self._asking
+            self._asking = (label, asked + line, done)
+        else:
+            self.query += line
+            self._focus = 0
+            self._clamp()
+        self._render()
+
     def _handle_asking(self, key: str, char: str) -> bool:
         assert self._asking is not None
         label, text, done = self._asking
@@ -203,6 +234,8 @@ class Picker:
             self._asking = None
         elif key == "backspace":
             self._asking = (label, text[:-1], done)
+        elif key == "ctrl+u":
+            self._asking = (label, "", done)
         elif char and len(char) == 1 and char.isprintable():
             self._asking = (label, text + char, done)
         self._render()

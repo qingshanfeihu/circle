@@ -33,11 +33,17 @@ The key is saved in `credentials.json` and the rest in `settings.json`. See [Set
 
 The footer shows cost and context for the current model.
 
-To change the endpoint or the key, run `circle --init`. It keeps your other settings; `enter` on an empty line keeps the saved URL or key. See [CLI](cli.md#setting-up-again).
+## Change the endpoint or the key
+
+Type `/login` in a session and choose **API URL + KEY**. It asks the same questions as setup: the base URL (the saved one is filled in to keep or edit), the key (shown as dots; a paste works), then the model from what the endpoint lists. When the endpoint cannot be asked, it asks whether the API is OpenAI-style or Anthropic-style and takes a model id you type. The session switches to the new model at once, and the connection is saved as with setup. `enter` on an empty line keeps the saved URL or key. `esc` on the URL or key line goes back to the list, and `esc` on a list leaves `/login`; nothing is saved before a model is picked.
+
+When the endpoint turns the key down (HTTP 401 or 403, for example a wrong key or an account with no plan), the red line under the turn ends in `· /login to change the key`.
+
+Outside a session, `circle --init` runs the same setup. Both keep your other settings. See [CLI](cli.md#setting-up-again).
 
 ## OAuth
 
-The setup screen offers **OAuth login**, and `/login` exists, but no real OAuth flow is built in yet. Choosing it shows an error and returns you to the choice. Use an API URL and key.
+The setup screen and `/login` list **OAuth sign-in**, but no real OAuth flow is built in yet. In setup, choosing it shows an error and returns you to the choice; in `/login` it is marked `not available yet` and choosing it does nothing. Use an API URL and key.
 
 ## Thinking depth
 

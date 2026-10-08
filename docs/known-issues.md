@@ -15,7 +15,7 @@ This page lists what does not work as you might expect in the current version, w
 
 ## Sign-in
 
-- **OAuth sign-in is not available.** `/login` fails unless `CIRCLE_OAUTH_MOCK=1` is set. Use an API URL and key. See [Choose a model](models.md).
+- **OAuth sign-in is not available.** `/login` lists it as `not available yet`, and `/login anthropic|openai` fails unless `CIRCLE_OAUTH_MOCK=1` is set. Use an API URL and key. See [Choose a model](models.md).
 
 ## Sessions
 

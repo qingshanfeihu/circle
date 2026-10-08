@@ -18,7 +18,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("hotkeys", "Show keyboard shortcuts"),
     SlashCommand(
         "login",
-        "Sign in: /login anthropic|openai (OAuth); API key via circle --init",
+        "Sign in or change the endpoint, key and model",
         aliases=("connect",),
     ),
     SlashCommand("logout", "Clear saved credentials"),

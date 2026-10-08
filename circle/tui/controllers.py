@@ -54,6 +54,12 @@ class InitController:
     # Setting up again (circle --init): an empty enter keeps the saved URL and key
     saved_url: str = ""
     _saved_key: str = ""
+    # /login in a session: the key moves the flow to PROBING and the caller runs run_probe()
+    # off the input thread; the session saves the connection itself (auth, credentials)
+    defer_probe: bool = False
+    persist: bool = True
+    auth: ModelAuth | None = None
+    credentials: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.probe is None:
@@ -67,6 +73,10 @@ class InitController:
                     previous.auth.api_key_ref or "api_key", "")
         except (OSError, ValueError):
             pass
+
+    @property
+    def has_saved_key(self) -> bool:
+        return bool(self._saved_key)
 
     def title(self) -> str:
         return "Set up Circle"
@@ -233,6 +243,11 @@ class InitController:
     def _start_probe(self) -> None:
         self.step = InitStep.PROBING
         self.status = "discovering models…"
+        if not self.defer_probe:
+            self.run_probe()
+
+    def run_probe(self) -> None:
+        """Ask the endpoint for its models; it can take seconds (2.5 s per request)."""
         probed = self.probe(self.base_url, self.api_key)
         if probed is None:
             probed = ProbeResult("openai", [], inferred=True, status="failed")
@@ -260,36 +275,36 @@ class InitController:
             return
         model = self.models[self.model_focus]
         if self.mode == "oauth":
-            settings = with_connection(ModelAuth(
+            self.auth = ModelAuth(
                 mode="oauth",
                 protocol=self.protocol,
                 base_url=self.base_url,
                 model=model,
                 oauth_provider=self.oauth_provider,
                 api_key_ref="oauth_access_token",
-            ), self.home)
-            save_credentials(
-                {
-                    "oauth_access_token": self._oauth_token or "mock-token",
-                    "oauth_refresh_token": "",
-                },
-                self.home,
             )
+            self.credentials = {
+                "oauth_access_token": self._oauth_token or "mock-token",
+                "oauth_refresh_token": "",
+            }
         else:
-            settings = with_connection(ModelAuth(
+            self.auth = ModelAuth(
                 mode="api_key",
                 protocol=self.protocol,
                 base_url=self.base_url,
                 model=model,
-            ), self.home)
-            save_credentials({"api_key": self.api_key}, self.home)
-        save_settings(settings, self.home)
-        self.settings = settings
+            )
+            self.credentials = {"api_key": self.api_key}
+        if self.persist:
+            settings = with_connection(self.auth, self.home)
+            save_credentials(self.credentials, self.home)
+            save_settings(settings, self.home)
+            self.settings = settings
         self.step = InitStep.DONE
 
     @property
     def done(self) -> bool:
-        return self.step == InitStep.DONE and self.settings is not None
+        return self.step == InitStep.DONE and self.auth is not None
 
 
 @dataclass

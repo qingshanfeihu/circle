@@ -82,7 +82,7 @@ from circle.mcp_loader import format_mcp_status
 from circle.mentions import attach_files, complete
 from circle.middleware.cancellation import CancellationToken
 from circle.model import EFFORT_LEVELS, build_chat_model, reasoning_effort_of
-from circle.model_guard import add_retry_listener
+from circle.model_guard import _chain, add_retry_listener
 from circle.paths import circle_home, ensure_home, normalize_workspace
 from circle.pricing import context_window_for
 from circle.run_options import RunOptions
@@ -112,7 +112,7 @@ from circle.tui.agent_strip import (
 )
 from circle.tui.content_blocks import assistant_block
 from circle.tui.conversation_tree import row_text
-from circle.tui.controllers import InitController, TrustController
+from circle.tui.controllers import InitController, InitStep, TrustController
 from circle.tui.harness_bridge import NO_OUTPUT, HarnessBridge, StreamUpdate
 from circle.tui.input_history import InputHistory
 from circle.tui.message_model import (
@@ -181,6 +181,16 @@ def _format_llm_error(exc: BaseException) -> str:
         if m:
             return m.group(1)
     return msg
+
+
+def _refused_the_key(exc: BaseException) -> bool:
+    """The endpoint turned the key down (401, 403): no key, a wrong one, no plan behind it."""
+    return any(getattr(e, "status_code", None) in (401, 403) for e in _chain(exc))
+
+
+def _endpoint_name(base_url: str) -> str:
+    """``https://gateway.example/v1`` as ``gateway.example/v1``: short enough for a list."""
+    return re.sub(r"^[a-z][a-z0-9+.-]*://", "", (base_url or "").strip(), flags=re.I).rstrip("/")
 
 
 class CircleSessionApp:
@@ -396,6 +406,7 @@ class CircleSessionApp:
         # /approvals 管理页
         self._approvals_page: SessionApprovalsSession | None = None
         self._picker: Picker | None = None
+        self._login: InitController | None = None  # /login while its lists are open
         # The list of /commands or @files under what is being typed, and the text it was
         # closed for with esc (it stays closed until the text changes)
         self._completion: dict[str, Any] | None = None
@@ -1054,6 +1065,10 @@ class CircleSessionApp:
             card = self._active_card()
             if card is not None and not card.input_row:
                 return  # the prompt row is hidden behind the card: a paste has nowhere to go
+            if self._picker is not None:
+                # where typing goes: the search, or the line it asks for (a key, as dots)
+                self._picker.handle_paste(event.text)
+                return
             self._prompt.handle_paste(event.text)
             self._update_completion()
             self._app.render()
@@ -2314,7 +2329,8 @@ class CircleSessionApp:
             self._show_welcome()
 
     def _cmd_login(self, args: str) -> None:
-        """OAuth provider login (/login, /connect)."""
+        """/login (/connect): the ways to reach the model, as setup offers them.
+        ``/login anthropic|openai`` goes straight to that OAuth sign-in."""
         from circle.oauth import (
             SUPPORTED_OAUTH_PROVIDERS,
             OAuthNotConfiguredError,
@@ -2323,9 +2339,7 @@ class CircleSessionApp:
 
         provider = args.strip().lower()
         if not provider:
-            cur = self.settings.auth.oauth_provider or self.settings.auth.mode
-            self._flash(f"Usage: /login anthropic|openai · signed in as: {cur or 'nobody'} · "
-                        "for an API URL + key run `circle --init`", 6.0)
+            self._open_login_picker()
             return
         if provider not in SUPPORTED_OAUTH_PROVIDERS:
             self._fail(f"Unknown provider {provider!r} · choose {', '.join(SUPPORTED_OAUTH_PROVIDERS)}")
@@ -2342,24 +2356,35 @@ class CircleSessionApp:
 
         models = list(session.models) or [self.settings.auth.model]
         model = models[0] if models else self.settings.auth.model
-        self.settings.auth = ModelAuth(
-            mode="oauth",
-            protocol="anthropic" if provider == "anthropic" else "openai",
-            base_url=session.base_url,
-            model=model or self.settings.auth.model,
-            oauth_provider=provider,
-            api_key_ref="oauth_access_token",
-        )
-        self.settings.initialized = True
-        save_credentials(
+        self._use_connection(
+            ModelAuth(
+                mode="oauth",
+                protocol="anthropic" if provider == "anthropic" else "openai",
+                base_url=session.base_url,
+                model=model or self.settings.auth.model,
+                oauth_provider=provider,
+                api_key_ref="oauth_access_token",
+            ),
             {
                 "oauth_access_token": session.access_token,
                 "oauth_refresh_token": session.refresh_token,
             },
-            self.home,
         )
+
+    def _use_connection(self, auth: ModelAuth, credentials: dict[str, str]) -> None:
+        """Signed in: the connection becomes the saved one and this session's model is built
+        on it. As in setup, the models ctrl+p goes through were the old endpoint's, so a new
+        endpoint clears them."""
+        changed = ["model"]
+        if self.settings.auth.base_url.rstrip("/") != auth.base_url.rstrip("/"):
+            self.settings.enabled_models = []
+            changed.append("enabled_models")
+        self.settings.auth = auth
+        self.settings.initialized = True
+        save_credentials(credentials, self.home)
         self._saved_model = None
-        self._save_settings("model")
+        self._model_list = None  # the new endpoint is asked again
+        self._save_settings(*changed)
         apply_auth_to_environ(self.settings, self.home)
         try:
             chat = build_chat_model(self.settings, home=self.home)
@@ -2369,7 +2394,175 @@ class CircleSessionApp:
             self._fail(f"Credentials saved, but rebuilding the model failed: {exc}")
             return
         self._footer.update(model=self.settings.auth.model)
-        self._toast(f"Signed in to {provider} · model {self.settings.auth.model}")
+        where = auth.oauth_provider or _endpoint_name(auth.base_url)
+        self._toast(f"Signed in to {where} · model {self.settings.auth.model}")
+
+    # ── /login: setup's questions, asked in the session ─────────────────────
+
+    def _open_login_picker(self) -> None:
+        """How Circle reaches the model, then the URL, the key and the model, asked by the
+        controller setup uses. Nothing is saved before a model is picked; esc leaves."""
+        login = InitController(home=self.home, probe=self._probe_endpoint,
+                               defer_probe=True, persist=False)
+        self._login = login
+        self._login_step(login)
+
+    def _close_login(self) -> None:
+        self._login = None
+        self._close_picker()
+
+    def _probe_endpoint(self, base_url: str, api_key: str):
+        from circle.probe import resolve_endpoint
+
+        try:
+            return resolve_endpoint(base_url, api_key)
+        except Exception:  # noqa: BLE001 - a probe that breaks is a failed probe
+            logger.warning("asking %s for its models failed", base_url, exc_info=True)
+            return None
+
+    def _login_title(self, login: InitController) -> str:
+        return "Sign in" + (f" · {login.error}" if login.error else "")
+
+    def _login_step(self, login: InitController) -> None:
+        """The list for the step ``login`` is at; at DONE, sign in with what was chosen."""
+        with self._app.lock:
+            if getattr(self, "_login", None) is not login:
+                return  # left with esc while the endpoint was being asked
+            step = login.step
+            if step == InitStep.DONE and login.auth is not None:
+                self._close_login()
+            elif step == InitStep.PROBING:
+                self._login_probe(login)
+            elif step == InitStep.OAUTH_PROVIDER:
+                self._login_choice(login, [("anthropic", "anthropic"), ("openai", "openai")],
+                                   hint="sign in with OAuth")
+            elif step == InitStep.MANUAL_PROTOCOL:
+                self._login_choice(login, [("openai", "OpenAI-style API"),
+                                           ("anthropic", "Anthropic-style API")],
+                                   hint=f"{login.status} · which kind of API is it?")
+            elif step == InitStep.PICK_MODEL:
+                self._login_models(login)
+            else:
+                self._login_methods(login)
+        if step == InitStep.DONE and login.auth is not None:
+            # Not under the screen lock: building the agent can take seconds (MCP servers)
+            self._use_connection(login.auth, login.credentials)
+
+    def _login_methods(self, login: InitController) -> None:
+        from circle.oauth import oauth_available
+
+        auth = self.settings.auth
+        oauth_ok = oauth_available()
+        if not self.settings.initialized:
+            now = "not signed in"
+        elif auth.mode == "oauth":
+            now = f"now oauth · {auth.oauth_provider} · {auth.model}"
+        else:
+            now = f"now api key · {_endpoint_name(auth.base_url)} · {auth.model}"
+        items = [
+            PickerItem(key="api_key", label="API URL + KEY", current=auth.mode == "api_key"),
+            PickerItem(key="oauth", label="OAuth sign-in", current=auth.mode == "oauth",
+                       meta="" if oauth_ok else "not available yet"),
+        ]
+        steps = "enter continues · esc goes back"
+
+        def ask_url(text: str) -> None:
+            picker.title = self._login_title(login)
+            picker.ask("base url", text, got_url, keys=steps)
+
+        def got_url(text: str) -> None:
+            login.submit_line(text)
+            if login.step == InitStep.API_URL:  # not a URL: say why and ask again
+                ask_url(text)
+            else:
+                ask_key()
+
+        def ask_key() -> None:
+            picker.title = self._login_title(login)
+            label = "api key" + (" (enter keeps the saved one)" if login.has_saved_key else "")
+            picker.ask(label, "", got_key, mask=True, keys=steps)
+
+        def got_key(text: str) -> None:
+            login.submit_line(text)
+            if login.step == InitStep.API_KEY:
+                ask_key()
+            else:
+                self._login_step(login)
+
+        def pick(item: PickerItem) -> None:
+            if item.key == "oauth" and not oauth_ok:
+                self._flash("OAuth sign-in is not available yet · use API URL + KEY", 3.0)
+                return
+            login.error = ""
+            login.step = InitStep.AUTH_MODE  # back here after esc: start the answers again
+            login.model_focus = 0 if item.key == "api_key" else 1
+            login.confirm()
+            if login.step == InitStep.API_URL:
+                ask_url(login.saved_url)
+            else:
+                self._login_step(login)
+
+        picker = Picker(
+            title=self._login_title(login), items=items, on_pick=pick,
+            on_close=self._close_login, render=self._render_picker,
+            focus_key="oauth" if auth.mode == "oauth" else "api_key", hint=now)
+        self._open_picker(picker)
+
+    def _login_choice(self, login: InitController, choices: list[tuple[str, str]], *,
+                      hint: str) -> None:
+        """Two answers, as setup's ↑↓ lists: which OAuth provider, which kind of API."""
+        keys = [key for key, _label in choices]
+
+        def pick(item: PickerItem) -> None:
+            login.error = ""
+            login.model_focus = keys.index(item.key)
+            login.confirm()
+            self._login_step(login)
+
+        self._open_picker(Picker(
+            title=self._login_title(login),
+            items=[PickerItem(key=key, label=label) for key, label in choices],
+            on_pick=pick, on_close=self._close_login, render=self._render_picker,
+            focus_key=keys[min(login.model_focus, len(keys) - 1)], hint=hint))
+
+    def _login_probe(self, login: InitController) -> None:
+        """Ask the endpoint for its models off the input thread: it can take seconds."""
+        self._open_picker(Picker(
+            title=self._login_title(login), items=[], on_pick=lambda _item: None,
+            on_close=self._close_login, render=self._render_picker,
+            empty=f"asking {_endpoint_name(login.base_url)} for its models…"))
+
+        def run() -> None:
+            login.run_probe()
+            self._login_step(login)
+
+        threading.Thread(target=run, name="circle-login-probe", daemon=True).start()
+
+    def _login_models(self, login: InitController) -> None:
+        def pick(item: PickerItem) -> None:
+            login.error = ""
+            login.model_focus = login.models.index(item.key)
+            login.confirm()
+            self._login_step(login)
+
+        def typed(text: str) -> None:
+            # An id the endpoint did not list, not checked. Not submit_line: it reads a bare
+            # number as a row of setup's numbered list
+            login.error = ""
+            if text not in login.models:
+                login.models.insert(0, text)
+            login.model_focus = login.models.index(text)
+            login.confirm()
+            self._login_step(login)
+
+        current = self.settings.auth.model
+        self._open_picker(Picker(
+            title=self._login_title(login),
+            items=[PickerItem(key=m, label=m, current=m == current) for m in login.models],
+            on_pick=pick, on_close=self._close_login, render=self._render_picker,
+            focus_key=current, hint=login.status, free_text=typed,
+            empty=("No model matches · enter uses what you typed" if login.models
+                   else "Type the model id your endpoint uses")))
 
     def _cmd_logout(self, _args: str) -> None:
         clear_credentials(self.home)
@@ -3507,7 +3700,8 @@ class CircleSessionApp:
                 self._dispatch_slash("mcp", "")
                 return
             elif key == "endpoint":
-                self._flash("circle --init sets the endpoint and key (it resets settings)", 4.0)
+                self._close_picker()
+                self._open_login_picker()
                 return
             else:
                 return
@@ -3548,6 +3742,8 @@ class CircleSessionApp:
         pal = apply_theme(self.settings.theme)
         self._app.style_pool.set_selection_bg([pal.sel_bg])
         self._footer.apply_palette()
+        if self._picker is not None:  # its rows carry the colours they were drawn in
+            self._ask_panel.update(self._picker.render_lines(max(20, self._app.width or 80)))
         self._app._force_full_render()
         return pal
 
@@ -4194,7 +4390,10 @@ class CircleSessionApp:
             self._close_turn_region()
             for line in cooked:
                 self._transcript.append_message(line)
-            self._transcript.append_message(_error_line(_format_llm_error(exc)))
+            said = _format_llm_error(exc)
+            if _refused_the_key(exc):
+                said += " · /login to change the key"
+            self._transcript.append_message(_error_line(said))
             self._settle_inbox()
             self._leave_busy()
             self._app.render()

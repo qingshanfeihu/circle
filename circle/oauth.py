@@ -21,6 +21,11 @@ class OAuthNotConfiguredError(RuntimeError):
     """Raised until a provider OAuth client is wired for this build."""
 
 
+def oauth_available() -> bool:
+    """Whether OAuth sign-in can work in this build: only with the selftest mock for now."""
+    return os.environ.get("CIRCLE_OAUTH_MOCK", "").strip() in {"1", "true", "yes"}
+
+
 def start_oauth_login(provider: str) -> OAuthSession:
     provider = provider.strip().lower()
     if provider not in SUPPORTED_OAUTH_PROVIDERS:
@@ -28,7 +33,7 @@ def start_oauth_login(provider: str) -> OAuthSession:
             f"unsupported oauth provider {provider!r}; "
             f"expected one of {', '.join(SUPPORTED_OAUTH_PROVIDERS)}"
         )
-    if os.environ.get("CIRCLE_OAUTH_MOCK", "").strip() in {"1", "true", "yes"}:
+    if oauth_available():
         models = (
             ("claude-mock-opus", "claude-mock-sonnet")
             if provider == "anthropic"

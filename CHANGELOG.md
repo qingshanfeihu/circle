@@ -4,6 +4,18 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Changed
+
+- **`/login` asks how to sign in.** Without a word it lists the ways in. **API URL + KEY** asks for the base URL, the key (shown as dots; pasting works) and the model, as setup does, and switches the session to them without a restart; nothing is saved before a model is picked. OAuth is listed as `not available yet`. The endpoint row of `/settings` opens it. See [Change the endpoint or the key](docs/models.md#change-the-endpoint-or-the-key).
+- **A turn the endpoint refuses because of the key** (HTTP 401 or 403, such as a wrong key or an account without a plan) ends in `· /login to change the key`.
+- **Secondary text reads on every surface it is drawn on.** Dim and faint text keep their contrast on the lists' panel and inside tool, thinking and subagent blocks, not only on the background. On a light terminal they are a little darker; on a dark one faint text is a little brighter.
+
+### Fixed
+
+- **Open lists kept their old colours** when the terminal switched between dark and light under the `auto` theme. They are drawn again at once.
+- **Pasting while a list was open put the text in the input box behind it.** It goes into the list's search, or into the line the list asks for.
+- `circle --help` said `--init` resets `settings.json`. It replaces the endpoint, key and model and keeps the rest.
+
 ## 0.3.0 - 2026-10-06
 
 ### Added

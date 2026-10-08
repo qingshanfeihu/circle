@@ -60,9 +60,9 @@ See [Security](security.md).
 | Command | Aliases | What it does |
 |---|---|---|
 | `/models [name]` | `/model` | Choose a model from what the endpoint offers, or use one by its id, for this session. `ctrl+s` in the list also saves it as the default. |
-| `/login anthropic\|openai` | `/connect` | Sign in with OAuth. **Not available in this version:** it fails unless `CIRCLE_OAUTH_MOCK=1`. Set up an API URL and key instead. |
+| `/login [anthropic\|openai]` | `/connect` | Sign in, or change the endpoint, key and model. Without a word it lists the ways in. **API URL + KEY** asks for the base URL, the key (shown as dots) and the model, as setup does, then switches the session to them and saves them; `enter` on an empty line keeps the saved URL or key, and nothing is saved before a model is picked. **OAuth sign-in** is listed but marked `not available yet`. `/login anthropic\|openai` goes straight to that OAuth sign-in, which fails unless `CIRCLE_OAUTH_MOCK=1`. |
 | `/logout` | | Clear the saved credentials and mark Circle as not set up. |
-| `/settings` | | A list of the settings: theme, whether thinking is shown, what `esc` `esc` opens, and the model, thinking depth, endpoint, trusted folders, MCP servers and data folder. `enter` changes the marked one and saves it at once; the model and depth rows open their own lists. |
+| `/settings` | | A list of the settings: theme, whether thinking is shown, what `esc` `esc` opens, and the model, thinking depth, endpoint, trusted folders, MCP servers and data folder. `enter` changes the marked one and saves it at once; the model and depth rows open their own lists, and the endpoint row opens `/login`. |
 | `/themes [auto\|dark\|light]` | | Show or set the theme. It applies at once and is saved. `auto` follows your terminal live; `dark` or `light` overrides it. |
 
 See [Choose a model](models.md).

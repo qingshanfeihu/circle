@@ -20,7 +20,7 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | 常驻 | 正在成立的状态：页眉、页脚、模式词、忙碌词、子代理条 | 状态成立 | 状态消失即撤，不进历史 | 页眉在顶，页脚与子代理条在底 |
 | 计划区 | 模型维护的活文档（write_todos） | 计划存在 | 对话框接管期间隐藏，答完恢复；`/new` 清空 | 对话框上方一个封闭块：方角、标题嵌上沿、默认 5 个完整行、窗口跟随当前项、滚轮翻看、下沿右角标 `2–6 / 14`、内部铺洋红 |
 | 对话框 | 阻塞回合、必须由你回答的问题：审批、提问、机密、trust | 中断到达，且你 1 秒内没在打字 | 答完框恢复，草稿还原 | 唯一的那个框换内容：标题行（青灯）、正文、空行、竖排选项 |
-| 弹窗 | 不阻塞回合的选择列表：`/approvals`，`circle.ink.components.picker.Picker` 画的 `/models`、`/effort`、`/resume`、`/tree`、`/fork`，以及打 `/`、`@` 时的补全列表（↑↓、tab 取、enter 取，命令还会执行，esc 关） | 命令或键触发（ctrl+l、esc esc） | 选完或 esc | 框上方，panel 底，无边框；打字过滤（每个词都要出现）、↑↓ 循环、enter、esc 先清搜索再关 |
+| 弹窗 | 不阻塞回合的选择列表：`/approvals`，`circle.ink.components.picker.Picker` 画的 `/models`、`/effort`、`/resume`、`/tree`、`/fork`、`/login`，以及打 `/`、`@` 时的补全列表（↑↓、tab 取、enter 取，命令还会执行，esc 关） | 命令或键触发（ctrl+l、esc esc） | 选完或 esc | 框上方，panel 底，无边框；打字过滤（每个词都要出现）、↑↓ 循环、enter、esc 先清搜索再关 |
 | 页面 | 整屏接管的只读视图：子代理详情 | 你主动进入 | esc 回主视图 | 转录区被接管，顶栏一行；底部栈不动 |
 | 一闪 | 操作回执：已复制、排队、忙、用法、切换 ctrl+o / ctrl+t | 操作瞬间 | 1–2 秒；重试、压缩这类要等的可到数秒 | 页脚右侧（计量留在左侧，放不下时计量的尾巴让位），不进历史 |
 
@@ -86,6 +86,8 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | 审批 / question / 机密 | 中断到达，你停手后 | 对话框 |
 | `/approvals` 规则 | 无参数 | 弹窗 |
 | 模型、思考深度、会话、会话树、fork 的列表 | `/models` `/effort` `/resume` `/tree` `/fork` 无参数，ctrl+l，空框 esc esc | 弹窗 |
+| 登录方式，接着 URL、key（圆点）、模型，问法同 setup（`InitController`）；没做好的方式列出来、标 `not available yet`、选不动 | `/login` 无参数 | 弹窗；选完模型才保存，成了进转录淡色一行 |
+| key 被端点拒（401 / 403） | 回合失败 | 转录，红色 `✖` 行尾加 `· /login to change the key` |
 | 等着被读的插话 `steering: …`、回合后才发的 `follow-up: …` | 回合进行中你按了 enter | 常驻，输入框上方，淡色一行一条；读到后进转录 |
 | 子代理详情 | 在途条 enter / 点名字 | 页面 |
 | 已复制、已排队、`Press ctrl+c again to exit` | 操作瞬间 | 一闪 |
@@ -100,7 +102,7 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | 拒绝并说明 | 卡片，最后一行是输入 | enter 发送 | 进那一行 | 回到选项 | 中断回合 |
 | 提问 | 卡片 | 数字 · ↑↓ · 空格多选 · `o` 自填 · enter | 吞掉 | 取消，两步确认 | 中断回合 |
 | /approvals | 弹窗 | ↑↓（或 j k）· 数字 · enter 撤销一条 | 吞 j k 和数字，其余不吞 | 关闭 | 关闭并按当前档 |
-| 列表（Picker） | 弹窗 | ↑↓ · pageup/pagedown · enter · 各列表自带键（ctrl+s 存为默认、tab 切范围、ctrl+r 改名、ctrl+d 删除、L 标签、ctrl+u 只看你的） | 进搜索 | 先清搜索，再关 | 交给会话（中断回合） |
+| 列表（Picker） | 弹窗 | ↑↓ · pageup/pagedown · enter · 各列表自带键（ctrl+s 存为默认、tab 切范围、ctrl+r 改名、ctrl+d 删除、L 标签、ctrl+u 只看你的） | 进搜索；列表在问一行字（新名字、URL、key）时进那一行，ctrl+u 清空。粘贴同打字，不进输入框 | 先清搜索，再关；问一行字时回到列表 | 交给会话（中断回合） |
 
 ## 8 尚未落地的部分
 
