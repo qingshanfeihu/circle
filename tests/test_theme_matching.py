@@ -30,12 +30,40 @@ def _hex_of(sgr: str) -> str:
     return "#%02x%02x%02x" % tuple(int(x) for x in body[2:5])
 
 
-@pytest.mark.parametrize("bg", BACKGROUNDS)
-def test_secondary_text_keeps_its_contrast_on_any_background(bg):
+def _bg_hex_of(sgr: str) -> str:
+    body = sgr[2:-1].split(";")
+    assert body[:2] == ["48", "2"], sgr
+    return "#%02x%02x%02x" % tuple(int(x) for x in body[2:5])
+
+
+def _surfaces(pal) -> dict[str, str]:
+    """Where secondary text is drawn: the background, the lists' panel, the tinted blocks."""
+    return {"bg": pal.bg_hex, "panel": _bg_hex_of(pal.panel_bg), "read": pal.read_bg_hex,
+            "write": pal.write_bg_hex, "think": pal.think_bg_hex, "agent": pal.agent_bg_hex}
+
+
+SLOT_SETS = [None, {2: (0, 205, 0), 4: (0, 0, 238), 5: (205, 0, 205), 14: (0, 255, 255)},
+             {2: (38, 162, 105), 4: (18, 72, 139), 5: (163, 71, 186), 14: (51, 199, 222)}]
+
+
+@pytest.mark.parametrize("slots", SLOT_SETS)
+@pytest.mark.parametrize("bg", BACKGROUNDS + ["#d6dee6"])
+def test_secondary_text_keeps_its_contrast_on_any_background(bg, slots):
+    """On the background, on the panel the lists are drawn on (their titles are faint) and in
+    the tool, thinking and subagent blocks (⎿ results), whatever the terminal's colour slots."""
     fg = "#ffffff" if theme.is_dark_hex(bg) else "#000000"
-    pal = theme.build_palette(fg, bg)
-    assert theme.contrast_ratio(_hex_of(pal.dim), bg) >= 4.5
-    assert theme.contrast_ratio(_hex_of(pal.faint), bg) >= 3.0
+    pal = theme.build_palette(fg, bg, slots)
+    for name, surface in _surfaces(pal).items():
+        assert theme.contrast_ratio(_hex_of(pal.dim), surface) >= 4.5, name
+        assert theme.contrast_ratio(_hex_of(pal.faint), surface) >= 3.0, name
+
+
+def test_the_default_palettes_keep_secondary_text_on_every_surface():
+    for fg, bg in (theme.DEFAULT_DARK, theme.DEFAULT_LIGHT):
+        pal = theme.build_palette(fg, bg)
+        for name, surface in _surfaces(pal).items():
+            assert theme.contrast_ratio(_hex_of(pal.dim), surface) >= 4.5, name
+            assert theme.contrast_ratio(_hex_of(pal.faint), surface) >= 3.0, name
 
 
 def test_the_light_default_palette_is_no_longer_too_pale():
@@ -44,11 +72,14 @@ def test_the_light_default_palette_is_no_longer_too_pale():
     assert theme.contrast_ratio(_hex_of(pal.faint), bg) >= 3.0
 
 
-def test_dark_palette_keeps_the_original_blend():
+def test_dark_palette_keeps_the_original_blend_where_it_reads():
+    """dim stays at 35%. faint at 55% read at 2.97:1 inside a write block, so it is one 5% step
+    nearer the text; nothing else moves on dark."""
     fg, bg = theme.DEFAULT_DARK
     pal = theme.build_palette(fg, bg)
-    assert _hex_of(pal.faint) == theme.mix(fg, bg, 0.55)
     assert _hex_of(pal.dim) == theme.mix(fg, bg, 0.35)
+    assert theme.contrast_ratio(theme.mix(fg, bg, 0.55), pal.write_bg_hex) < 3.0
+    assert _hex_of(pal.faint) == theme.mix(fg, bg, 0.50)
 
 
 def test_frame_gradient_is_unchanged_on_dark_and_darkened_on_light():

@@ -292,15 +292,18 @@ def contrast_ratio(a: str, b: str) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
-def mix_with_floor(fg: str, bg: str, t: float, floor: float) -> str:
-    """``mix(fg, bg, t)``, pulled back toward ``fg`` until it reads at ``floor`` contrast on ``bg``.
+def mix_with_floor(fg: str, bg: str, t: float, floor: float, *,
+                   also_on: tuple[str, ...] = ()) -> str:
+    """``mix(fg, bg, t)``, pulled back toward ``fg`` until it reads at ``floor`` contrast on ``bg``
+    and on each of ``also_on`` (the panel the lists are drawn on).
 
     A fixed blend ratio is right on a dark terminal and too pale on a light one: text at 55%
     toward a near-white background is barely there. The floor keeps secondary text legible on
     whatever background the terminal reports."""
+    surfaces = (bg, *also_on)
     while t > 0.0:
         colour = mix(fg, bg, t)
-        if contrast_ratio(colour, bg) >= floor:
+        if all(contrast_ratio(colour, surface) >= floor for surface in surfaces):
             return colour
         t = round(t - 0.05, 4)
     return normalize_hex(fg)
@@ -323,12 +326,16 @@ def build_palette(
         tint_hex = mix(bg, rgb_to_hex(rgb), ratio)
         tint_hexes[name] = tint_hex
         tints[name] = bg_sgr(tint_hex)
+    panel = mix(bg, fg, 0.06)  # lists and pop-ups: titles and details are dim or faint on it
+    # Secondary text is also drawn on the panel and inside the tinted tool, thinking and
+    # subagent blocks (⎿ results, … +N lines): its floor holds on each of them
+    surfaces = (panel, *tint_hexes.values())
     return Palette(
         text=fg_sgr(fg),
-        dim=fg_sgr(mix_with_floor(fg, bg, 0.35, 4.5)),
-        faint=fg_sgr(mix_with_floor(fg, bg, 0.55, 3.0)),
+        dim=fg_sgr(mix_with_floor(fg, bg, 0.35, 4.5, also_on=surfaces)),
+        faint=fg_sgr(mix_with_floor(fg, bg, 0.55, 3.0, also_on=surfaces)),
         em=fg_sgr(mix(fg, em_target, 0.45)),
-        panel_bg=bg_sgr(mix(bg, fg, 0.06)),
+        panel_bg=bg_sgr(panel),
         sel_bg=bg_sgr(mix(bg, fg, 0.16)),
         line=fg_sgr(mix(bg, fg, 0.22)),
         outline=fg_sgr(mix(bg, fg, 0.40)),
