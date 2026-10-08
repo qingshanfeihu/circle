@@ -34,7 +34,11 @@
         $receipt = (Get-Content -LiteralPath "$archive.sha256" -Raw).Trim()
         if ($receipt -notmatch ('^([0-9a-fA-F]{64})\s+' + [regex]::Escape($asset) + '$')) { throw 'Invalid checksum receipt' }
         $expected = $Matches[1]
-        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Archive checksum mismatch' }
+        $stream = [IO.File]::OpenRead($archive)
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $actual = [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '') }
+        finally { $stream.Dispose(); $hasher.Dispose() }
+        if ($actual -ne $expected) { throw 'Archive checksum mismatch' }
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $zip = [IO.Compression.ZipFile]::OpenRead($archive)
         try {
