@@ -60,7 +60,11 @@ function sync(
     timeout: 120_000,
     maxBuffer: 16_000_000,
   });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(
+    result.status,
+    0,
+    result.error?.message || result.stderr || result.stdout,
+  );
   return result.stdout;
 }
 function extract(source: string, destination: string): void {
@@ -69,7 +73,7 @@ function extract(source: string, destination: string): void {
     const script = join(temporary, 'extract.ps1');
     writeFileSync(
       script,
-      'param([string]$Source,[string]$Destination)\n$ErrorActionPreference="Stop"\nExpand-Archive -LiteralPath $Source -DestinationPath $Destination\n',
+      'param([string]$Source,[string]$Destination)\n$ErrorActionPreference="Stop"\nAdd-Type -AssemblyName System.IO.Compression.FileSystem\n[IO.Compression.ZipFile]::ExtractToDirectory($Source,$Destination)\n',
     );
     sync('powershell.exe', [
       '-NoProfile',

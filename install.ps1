@@ -45,7 +45,7 @@
                 if ($kind -ne 0 -and $kind -ne 0x8000 -and $kind -ne 0x4000) { throw 'Archive links and special files are not allowed' }
             }
         } finally { $zip.Dispose() }
-        Expand-Archive -LiteralPath $archive -DestinationPath $temporary
+        [IO.Compression.ZipFile]::ExtractToDirectory($archive, $temporary)
         $root = Join-Path $temporary 'circle-next'
         $node = Join-Path $root 'runtime\node.exe'
         $manager = Join-Path $root 'app\dist\install_manager.js'

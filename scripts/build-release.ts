@@ -66,7 +66,7 @@ try {
   const compressScript = join(temporary, 'compress.ps1');
   writeFileSync(
     expandScript,
-    'param([string]$Source,[string]$Destination)\n$ErrorActionPreference="Stop"\nExpand-Archive -LiteralPath $Source -DestinationPath $Destination\n',
+    'param([string]$Source,[string]$Destination)\n$ErrorActionPreference="Stop"\nAdd-Type -AssemblyName System.IO.Compression.FileSystem\n[IO.Compression.ZipFile]::ExtractToDirectory($Source,$Destination)\n',
   );
   writeFileSync(
     compressScript,
