@@ -28,6 +28,7 @@ export interface HarnessOptions {
   prepareMessages?: (signal: AbortSignal) => Promise<Message[]>;
   approvalSessionId?: string;
   parentPlanMode?: () => boolean;
+  planFileMutation?: (call: ToolCall) => boolean;
 }
 export class Harness {
   readonly bus: EventBus;
@@ -149,7 +150,9 @@ export class Harness {
           system:
             this.system +
             (this.readOnly
-              ? '\nRead-only mode: inspect and plan; do not change files or run commands.'
+              ? this.options.planFileMutation
+                ? '\nRead-only mode: inspect and plan; only plan.md or plan files may be changed, subject to approval. Do not run shell commands.'
+                : '\nRead-only mode: inspect and plan; do not change files or run commands.'
               : ''),
           messages: this.options.prepareMessages
             ? await this.options.prepareMessages(signal)
@@ -194,7 +197,11 @@ export class Harness {
             const prepared = prepareToolCall(call, this.tools);
             call = prepared.call;
             const tool = prepared.tool;
-            if (this.readOnly && tool.effect !== 'read')
+            if (
+              this.readOnly &&
+              tool.effect !== 'read' &&
+              !this.options.planFileMutation?.(call)
+            )
               throw new Error('read-only mode: this tool cannot run');
             const found = this.options.policy.review(call.name, call.args);
             if (found.verdict === 'DENY')
@@ -231,7 +238,11 @@ export class Harness {
                 throw new Error('The user rejected this tool call.');
             }
             signal.throwIfAborted();
-            if (this.readOnly && tool.effect !== 'read')
+            if (
+              this.readOnly &&
+              tool.effect !== 'read' &&
+              !this.options.planFileMutation?.(call)
+            )
               throw new Error('read-only mode: this tool cannot run');
             this.bus.emit('tool_start', { payload: { ...call } });
             const context = { signal, sessionId: this.sessionId };
@@ -239,7 +250,11 @@ export class Harness {
               ...tool,
               run: async (args, context) => {
                 signal.throwIfAborted();
-                if (this.readOnly && tool.effect !== 'read')
+                if (
+                  this.readOnly &&
+                  tool.effect !== 'read' &&
+                  !this.options.planFileMutation?.(call)
+                )
                   throw new Error('read-only mode: this tool cannot run');
                 return tool.run(args, context);
               },

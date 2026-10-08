@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { readFileSync } from 'node:fs';
 import type { ChatModel, Message, ToolCall } from './types.js';
 import { GatewayModel, EFFORT_LEVELS } from './model.js';
@@ -25,6 +25,8 @@ import type { Tool, ToolContext } from './types.js';
 import { ContextManager, restoredTodos } from './context_middleware.js';
 import { migrateLegacy } from './migration.js';
 import type { MigrationReport } from './legacy_sessions.js';
+import { askQuestions } from './questions.js';
+import type { SecretRequest } from './secret_prompt.js';
 const BUILTIN_TOOL_NAMES = new Set([
   'ls',
   'read_file',
@@ -72,6 +74,7 @@ export interface RuntimeOptions {
     args: Record<string, unknown>,
     signal: AbortSignal,
   ) => Promise<string>;
+  secret?: (request: SecretRequest, signal: AbortSignal) => Promise<void>;
 }
 export class AgentRuntime {
   readonly migration: MigrationReport;
@@ -207,16 +210,50 @@ export class AgentRuntime {
         this.bus.emit('todo_list', { payload: { todos } });
       },
       skill: async (name) => loadSkillBody(name, this.skills),
-      ...(this.options.question
-        ? {
-            question: async (args, context) =>
-              this.options.question!(args, context.signal),
-          }
-        : {}),
-      plan: async (enabled) => {
+      question: async (args, context) =>
+        askQuestions(this.options.home, this.sandbox, args, context.signal, {
+          ask: this.options.question,
+          secret: this.options.secret,
+        }),
+      plan: async (enabled, context) => {
         if (!enabled && !this.options.question)
           throw new Error('plan_exit requires an interactive answer');
-        this.harness.planMode = enabled;
+        if (!enabled) {
+          const reply = await this.options.question!(
+            {
+              questions: [
+                {
+                  question: 'Implement the completed plan?',
+                  header: 'plan',
+                  options: [
+                    {
+                      label: 'implement plan',
+                      description: 'Leave read-only mode',
+                    },
+                    {
+                      label: 'continue planning',
+                      description: 'Stay in read-only mode',
+                    },
+                  ],
+                  multiple: false,
+                  custom: false,
+                },
+              ],
+            },
+            context.signal,
+          );
+          context.signal.throwIfAborted();
+          let answers: unknown;
+          try {
+            answers = JSON.parse(reply);
+          } catch {
+            answers = undefined;
+          }
+          const chosen = Array.isArray(answers) ? answers.flat() : [];
+          if (!chosen.includes('implement plan'))
+            return 'The user kept read-only mode active. Continue planning.';
+        }
+        this.setPlanMode(enabled);
         return enabled ? 'Read-only mode enabled.' : 'Read-only mode disabled.';
       },
       compact: async (hint, context) => this.compact(hint, context.signal),
@@ -346,6 +383,26 @@ export class AgentRuntime {
           this.harness.tools,
           signal,
         ),
+      planFileMutation: (call) => {
+        if (['write_file', 'edit_file', 'delete'].includes(call.name)) {
+          const path = this.sandbox.resolvePath(
+            String(call.args.file_path || call.args.path || ''),
+          );
+          return ['plan.md', 'plan'].includes(basename(path).toLowerCase());
+        }
+        if (call.name !== 'apply_patch') return false;
+        const paths = [
+          ...String(call.args.patchText || '').matchAll(
+            /^\*\*\* (?:Add File|Update File|Delete File|Move to):\s*(.+)$/gm,
+          ),
+        ].map((match) => this.sandbox.resolvePath(match[1]!));
+        return (
+          paths.length > 0 &&
+          paths.every((path) =>
+            ['plan.md', 'plan'].includes(basename(path).toLowerCase()),
+          )
+        );
+      },
     });
   }
   private extensionHost(reservedTools: Set<string>): ExtensionHost {
@@ -467,6 +524,20 @@ export class AgentRuntime {
     this.options.settings = loadSettings(this.options.home);
     this.integrationsReady = undefined;
     await this.initialize();
+  }
+  setPlanMode(enabled: boolean): void {
+    if (this.harness.planMode === enabled) return;
+    this.harness.planMode = enabled;
+    this.store.append(this.session.id, [
+      {
+        id: randomUUID(),
+        role: 'user',
+        internal: 'mode-boundary',
+        content: enabled
+          ? '[Circle system] Plan mode is now ON. Do not create/edit/delete project files except plan.md; do not run shell commands. Research and update the plan only.'
+          : '[Circle system] Plan mode is now OFF. Previous plan-mode constraints no longer apply. Implement changes subject to normal approval.',
+      },
+    ]);
   }
   setModel(model: string): void {
     if (this.harness.busy) throw new Error('a turn is running');

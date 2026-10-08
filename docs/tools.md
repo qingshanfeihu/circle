@@ -4,7 +4,11 @@ The runtime registers tools with JSON Schema arguments and declared effects. Bui
 
 Model-facing tools also include plans, skills, questions, subagents, context compaction and web fetching. Tool results are saved in the session before the next model request. A rejected or cancelled call receives an error result with the original call ID.
 
-`--tools read,grep`, `--exclude-tools execute`, and `--no-tools` limit available tools for a run. The aliases `read`, `write`, `edit`, `bash` and `find` map to `read_file`, `write_file`, `edit_file`, `execute` and `glob`. Context compaction remains available.
+`--tools read,grep`, `--exclude-tools execute`, and `--no-tools` limit available tools for a run. The aliases `read`, `write`, `edit`, `bash` and `find` map to `read_file`, `write_file`, `edit_file`, `execute` and `glob`. Context compaction remains available. Limits apply to the main agent; subagents retain their configured tools, so omit `task` too when that matters.
+
+Read-only mode permits plan-file changes subject to normal approval and blocks other mutations and shell execution. Mixed patches affecting non-plan files are rejected before effects. Deleting files uses forced approval and remains blocked in headless mode, including `--yolo`. `plan_exit` requires an affirmative interactive answer. Mode transitions are persisted as marked boundary messages.
+
+`websearch` parses DuckDuckGo result pages and returns source URLs and snippets. `webfetch` accepts Markdown, text or HTML, formats JSON, bounds streamed responses and refuses private/local targets and redirects. See [questions](questions.md) for ordinary and secret input.
 
 ## LSP
 

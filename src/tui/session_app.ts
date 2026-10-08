@@ -1,3 +1,11 @@
+import { QuestionCard } from '../ink/components/question_card.js';
+import type { Question } from '../questions.js';
+import {
+  submitAnswer,
+  cancelRequest,
+  listPending,
+  type SecretRequest,
+} from '../secret_prompt.js';
 import { execFile, spawn } from 'node:child_process';
 import {
   existsSync,
@@ -57,6 +65,8 @@ export class SessionApp {
   private theme: ThemeWatch;
   private remap: Record<string, string>;
   private pending?: DialogPending;
+  private questionCard?: QuestionCard;
+  private secretReady?: SecretRequest;
   private ended = false;
   private animation?: NodeJS.Timeout;
   private flashTimer?: NodeJS.Timeout;
@@ -294,31 +304,12 @@ export class SessionApp {
       question: async (args, signal) => {
         if (!Array.isArray(args.questions))
           throw new Error('invalid questions');
-        const answers: string[] = [];
-        for (const question of args.questions as {
-          question: string;
-          options?: { label: string; description?: string }[];
-        }[]) {
-          const choices = question.options?.map((option) => option.label) ?? [];
-          answers.push(
-            choices.length
-              ? await this.askChoice(
-                  'question',
-                  question.question,
-                  choices,
-                  signal,
-                )
-              : await this.askText(
-                  'question',
-                  question.question,
-                  '',
-                  false,
-                  signal,
-                ),
-          );
-        }
+        const answers: string[][] = [];
+        for (const question of args.questions as Question[])
+          answers.push(await this.askQuestion(question, signal));
         return JSON.stringify(answers);
       },
+      secret: (request, signal) => this.enterSecret(request, signal),
     });
     this.off = this.runtime.bus.subscribe((event) => {
       if (event.kind === 'run_start') {
@@ -379,6 +370,50 @@ export class SessionApp {
         `Could not migrate ${error.thread || 'legacy data'}: ${error.message}`,
       );
     this.repaint();
+  }
+  private async askQuestion(
+    question: Question,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    const card = new QuestionCard(question);
+    this.questionCard = card;
+    try {
+      return JSON.parse(await this.dialog(card.state(), signal)) as string[];
+    } finally {
+      this.questionCard = undefined;
+    }
+  }
+  private async enterSecret(
+    request: SecretRequest,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.secretReady = request;
+    try {
+      const choice = await this.askChoice(
+        'secret',
+        `${request.question}\n${request.key} → ${request.target_file}\nctrl+s enters a masked value`,
+        ['enter secret', 'cancel'],
+        signal,
+      );
+      if (choice !== 'enter secret') {
+        await cancelRequest(this.home, request.id);
+        return;
+      }
+      const value = await this.askText(
+        'secret',
+        `${request.question}\n${request.key} → ${request.target_file}`,
+        '',
+        true,
+        signal,
+      );
+      if (!value) {
+        await cancelRequest(this.home, request.id);
+        return;
+      }
+      await submitAnswer(this.home, request.id, value);
+    } finally {
+      this.secretReady = undefined;
+    }
   }
   private askChoice(
     title: string,
@@ -484,7 +519,10 @@ export class SessionApp {
       return;
     }
     if (event.type === 'paste') {
-      if (this.state.dialog?.input !== undefined)
+      if (this.questionCard) {
+        this.questionCard.paste(event.text);
+        this.state.dialog = this.questionCard.state();
+      } else if (this.state.dialog?.input !== undefined)
         this.state.dialog.input += event.text;
       else this.insert(event.text);
       this.repaint();
@@ -494,6 +532,19 @@ export class SessionApp {
     const char = event.char;
     if (this.state.dialog) {
       const dialog = this.state.dialog;
+      if (this.questionCard) {
+        const answer = this.questionCard.handle(key, char);
+        if (answer !== undefined)
+          this.pending?.complete(JSON.stringify(answer));
+        else this.state.dialog = this.questionCard.state();
+        this.repaint();
+        return;
+      }
+      if (key === 'ctrl+s' && this.secretReady && dialog.input === undefined) {
+        this.pending?.complete('enter secret');
+        this.repaint();
+        return;
+      }
       if (key === 'escape' || key === 'ctrl+c')
         this.pending?.complete(dialog.options.at(-1) || '');
       else if (dialog.input !== undefined) {
@@ -518,6 +569,15 @@ export class SessionApp {
     if (this.state.picker && !['ctrl+c', 'ctrl+d'].includes(key)) {
       this.state.picker.handle(key, char);
       this.repaint();
+      return;
+    }
+    if (key === 'ctrl+s') {
+      const request = listPending(this.home)[0];
+      if (request)
+        void this.enterSecret(request, new AbortController().signal).catch(
+          (error) => this.fail(error),
+        );
+      else this.flash('No secret request');
       return;
     }
     if (key === 'ctrl+d' && !this.state.draft) {
@@ -705,8 +765,9 @@ export class SessionApp {
       return;
     }
     if (name === 'plan') {
-      runtime.harness.planMode =
-        args === 'on' || (args !== 'off' && !runtime.harness.planMode);
+      runtime.setPlanMode(
+        args === 'on' || (args !== 'off' && !runtime.harness.planMode),
+      );
       this.notice(
         runtime.harness.planMode ? 'Read-only mode on' : 'Read-only mode off',
       );

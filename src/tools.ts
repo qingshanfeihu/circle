@@ -1,9 +1,11 @@
+import { webFetch, webSearch } from './websearch.js';
 import {
   mkdirSync,
   readFileSync,
   readdirSync,
   statSync,
   writeFileSync,
+  rmSync,
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { glob } from 'glob';
@@ -11,6 +13,7 @@ import type { Tool, ToolContext } from './types.js';
 import { Sandbox } from './sandbox.js';
 import { loadToolPrompt } from './system_prompt.js';
 import { applyPatch } from './apply_patch.js';
+import { QUESTION_SCHEMA } from './questions.js';
 export interface Todo {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
@@ -21,7 +24,7 @@ export interface ToolHooks {
     args: Record<string, unknown>,
     context: ToolContext,
   ) => Promise<string>;
-  plan?: (enabled: boolean) => Promise<string>;
+  plan?: (enabled: boolean, context: ToolContext) => Promise<string>;
   task?: (
     args: Record<string, unknown>,
     context: ToolContext,
@@ -284,36 +287,14 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
       return 'Updated todo list.';
     },
   );
-  if (hooks.question)
-    add(
-      'question',
-      'read',
-      schema(
-        {
-          questions: {
-            type: 'array',
-            items: schema(
-              {
-                question: text('Question'),
-                options: {
-                  type: 'array',
-                  items: schema(
-                    { label: text('Option'), description: text('Details') },
-                    ['label'],
-                  ),
-                },
-              },
-              ['question'],
-            ),
-          },
-        },
-        ['questions'],
-      ),
-      hooks.question,
-    );
+  if (hooks.question) add('question', 'read', QUESTION_SCHEMA, hooks.question);
   if (hooks.plan) {
-    add('plan_enter', 'read', schema({}), async () => hooks.plan!(true));
-    add('plan_exit', 'read', schema({}), async () => hooks.plan!(false));
+    add('plan_enter', 'read', schema({}), async (_args, context) =>
+      hooks.plan!(true, context),
+    );
+    add('plan_exit', 'read', schema({}), async (_args, context) =>
+      hooks.plan!(false, context),
+    );
   }
   if (hooks.task)
     add(
@@ -345,32 +326,49 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
   add(
     'webfetch',
     'read',
-    schema({ url: text('URL to fetch') }, ['url']),
+    schema(
+      {
+        url: text('URL to fetch'),
+        format: { type: 'string', enum: ['markdown', 'text', 'html'] },
+      },
+      ['url'],
+    ),
+    async (args, context) =>
+      webFetch(
+        string(args, 'url'),
+        String(args.format || 'markdown'),
+        context.signal,
+      ),
+  );
+  add(
+    'websearch',
+    'read',
+    schema(
+      {
+        query: text('Search query'),
+        num_results: { type: 'integer', minimum: 1, maximum: 10 },
+      },
+      ['query'],
+    ),
+    async (args, context) =>
+      webSearch(
+        string(args, 'query'),
+        context.signal,
+        Number(args.num_results) || 5,
+      ),
+  );
+  add(
+    'delete',
+    'write',
+    schema({ file_path: text('Path to delete') }, ['file_path']),
     async (args, context) => {
-      const url = new URL(string(args, 'url'));
-      if (
-        !['http:', 'https:'].includes(url.protocol) ||
-        url.username ||
-        url.password
-      )
-        throw new Error('use an http(s) URL without credentials');
-      const response = await fetch(url, {
-        signal: AbortSignal.any([context.signal, AbortSignal.timeout(20000)]),
-        headers: { 'User-Agent': 'Circle/0.1' },
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength > 2_000_000)
-        throw new Error('response exceeds 2 MB');
-      return new TextDecoder()
-        .decode(buffer)
-        .replace(
-          /<script\b[^>]*>[\s\S]*?<\/script>|<style\b[^>]*>[\s\S]*?<\/style>/gi,
-          '',
-        )
-        .replace(/<[^>]+>/g, ' ')
-        .slice(0, 100000);
+      context.signal.throwIfAborted();
+      const path = sandbox.resolvePath(string(args, 'file_path', 'path'));
+      sandbox.checkCredentialPath(path);
+      rmSync(path, { recursive: true });
+      return `Deleted ${path}`;
     },
   );
+
   return tools;
 }
