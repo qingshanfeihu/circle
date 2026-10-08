@@ -5,6 +5,12 @@ import { ensureHome, normalizeWorkspace } from './paths.js';
 import type { Message } from './types.js';
 import type { LegacyImportPlan } from './legacy_sessions.js';
 import { createHash } from 'node:crypto';
+import {
+  validateSessionGraph,
+  orderedCheckpoints,
+  type SessionGraph,
+  type SessionGraphNode,
+} from './session_graph.js';
 export interface Session {
   id: string;
   workspace: string;
@@ -13,6 +19,7 @@ export interface Session {
   head: string | null;
   created: number;
   updated: number;
+  parent_id: string | null;
 }
 export interface Checkpoint {
   id: string;
@@ -64,24 +71,63 @@ export class CheckpointStore {
       CREATE TABLE IF NOT EXISTS labels (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, message_id TEXT NOT NULL, label TEXT NOT NULL, PRIMARY KEY(session_id, message_id));
       CREATE TABLE IF NOT EXISTS legacy_imports (source_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, receipt TEXT NOT NULL, created REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS legacy_checkpoints (source_key TEXT NOT NULL, legacy_id TEXT NOT NULL, native_head TEXT, PRIMARY KEY(source_key, legacy_id));
-      PRAGMA user_version = 3;`);
+      `);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const version = Number(
+        this.db.prepare('PRAGMA user_version').get()?.user_version ?? 0,
+      );
+      const columns = this.db.prepare('PRAGMA table_info(sessions)').all();
+      if (!columns.some((row) => row.name === 'parent_id'))
+        this.db.exec('ALTER TABLE sessions ADD COLUMN parent_id TEXT');
+      this.db.exec(
+        'CREATE INDEX IF NOT EXISTS sessions_parent ON sessions(parent_id);',
+      );
+      // Upgrade native children once, without changing history or replaying work.
+      if (version < 4)
+        for (const row of this.db
+          .prepare(
+            'SELECT c.session_id,v.state FROM context_versions v JOIN checkpoints c ON c.id=v.checkpoint_id ORDER BY v.version',
+          )
+          .all()) {
+          const state = JSON.parse(String(row.state)) as ContextState;
+          for (const child of state.subagentSessionIds ?? [])
+            if (child !== row.session_id)
+              this.db
+                .prepare(
+                  'UPDATE sessions SET parent_id=? WHERE id=? AND parent_id IS NULL',
+                )
+                .run(String(row.session_id), child);
+        }
+      this.db.exec('PRAGMA user_version = 4; COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   create(
     workspace: string,
     model: string,
     title = '',
     id = 'circle-' + randomUUID().slice(0, 8),
+    parentId: string | null = null,
   ): Session {
     const existing = this.get(id);
     if (existing) {
       if (existing.workspace !== normalizeWorkspace(workspace))
         throw new Error('session belongs to a different workspace');
+      if (existing.parent_id !== parentId)
+        throw new Error('session belongs to a different parent');
       return existing;
     }
     const now = Date.now();
+    if (parentId && !this.get(parentId))
+      throw new Error('parent session is missing');
     this.db
-      .prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, NULL, ?, ?)')
-      .run(id, normalizeWorkspace(workspace), title, model, now, now);
+      .prepare(
+        'INSERT INTO sessions (id,workspace,title,model,head,created,updated,parent_id) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)',
+      )
+      .run(id, normalizeWorkspace(workspace), title, model, now, now, parentId);
     return this.get(id)!;
   }
   get(id: string): Session | undefined {
@@ -96,16 +142,23 @@ export class CheckpointStore {
     if (sessions.length > 1) throw new Error('session id is ambiguous');
     return sessions[0];
   }
-  list(workspace?: string): Session[] {
+  list(workspace?: string, includeChildren = false): Session[] {
     return (workspace
       ? this.db
           .prepare(
-            'SELECT * FROM sessions WHERE workspace = ? ORDER BY updated DESC',
+            `SELECT * FROM sessions WHERE workspace = ? ${includeChildren ? '' : 'AND parent_id IS NULL'} ORDER BY updated DESC`,
           )
           .all(normalizeWorkspace(workspace))
       : this.db
-          .prepare('SELECT * FROM sessions ORDER BY updated DESC')
+          .prepare(
+            `SELECT * FROM sessions ${includeChildren ? '' : 'WHERE parent_id IS NULL'} ORDER BY updated DESC`,
+          )
           .all()) as unknown as Session[];
+  }
+  children(parentId: string): Session[] {
+    return this.db
+      .prepare('SELECT * FROM sessions WHERE parent_id=? ORDER BY created,id')
+      .all(parentId) as unknown as Session[];
   }
   rename(id: string, title: string): void {
     this.db
@@ -192,16 +245,23 @@ export class CheckpointStore {
   fork(sessionId: string, workspace: string, head?: string | null): Session {
     const parent = this.get(sessionId);
     if (!parent) throw new Error('unknown session');
-    const messages = this.messages(sessionId, head);
-    this.requireBalancedTools(messages);
-    const session = this.create(workspace, parent.model, parent.title);
-    this.append(session.id, structuredClone(messages));
-    const context = this.contextState(sessionId, head);
-    if (messages.length) this.setContextState(session.id, context);
-    return this.get(session.id)!;
+    return this.importGraph(this.exportGraph(sessionId, head, true), workspace);
   }
   delete(sessionId: string): void {
-    this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+    const visit = (id: string, seen: Set<string>): void => {
+      if (seen.has(id)) throw new Error('session parent cycle');
+      seen.add(id);
+      for (const child of this.children(id)) visit(child.id, seen);
+      this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    };
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      visit(sessionId, new Set());
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   labels(sessionId: string): Record<string, string> {
     return Object.fromEntries(
@@ -273,8 +333,12 @@ export class CheckpointStore {
           'legacy session ID conflicts with an existing native session',
         );
       const session = plan.session;
+      if (plan.parentId && !this.get(plan.parentId))
+        throw new Error('legacy parent session is missing');
       this.db
-        .prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, NULL, ?, ?)')
+        .prepare(
+          'INSERT INTO sessions (id,workspace,title,model,head,created,updated,parent_id) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)',
+        )
         .run(
           session.thread_id,
           session.workspace,
@@ -282,6 +346,7 @@ export class CheckpointStore {
           session.model,
           session.created * 1000,
           session.updated * 1000,
+          plan.parentId ?? null,
         );
       const paths = new Map<
         string,
@@ -400,6 +465,178 @@ export class CheckpointStore {
     }
     if (pending.size)
       throw new Error('cannot select a checkpoint with pending tool calls');
+  }
+  exportGraph(
+    sessionId: string,
+    head?: string | null,
+    branchOnly = false,
+  ): SessionGraph {
+    this.db.exec('BEGIN');
+    try {
+      const graph: SessionGraph = { root: sessionId, sessions: [] };
+      const queue: {
+        id: string;
+        parent: string | null;
+        head?: string | null;
+      }[] = [{ id: sessionId, parent: null, head }];
+      const owners = new Map<string, string | null>();
+      while (queue.length) {
+        const item = queue.shift()!;
+        if (owners.has(item.id)) {
+          if (owners.get(item.id) !== item.parent)
+            throw new Error('child session has multiple owners');
+          continue;
+        }
+        owners.set(item.id, item.parent);
+        const session = this.get(item.id);
+        if (!session) throw new Error('referenced session is missing');
+        const selected = item.head === undefined ? session.head : item.head;
+        let checkpoints = this.db
+          .prepare(
+            'SELECT * FROM checkpoints WHERE session_id=? ORDER BY rowid',
+          )
+          .all(item.id)
+          .map((row) => this.decode(row));
+        if (branchOnly) {
+          const byId = new Map(
+            checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]),
+          );
+          const included = new Set<string>();
+          let cursor = selected;
+          while (cursor) {
+            if (included.has(cursor))
+              throw new Error('checkpoint ancestry cycle');
+            included.add(cursor);
+            const checkpoint = byId.get(cursor);
+            if (!checkpoint) throw new Error('checkpoint is missing');
+            cursor = checkpoint.parent;
+          }
+          checkpoints = checkpoints.filter((checkpoint) =>
+            included.has(checkpoint.id),
+          );
+        }
+        const checkpointIds = new Set(
+          checkpoints.map((checkpoint) => checkpoint.id),
+        );
+        const contexts = this.db
+          .prepare(
+            'SELECT v.checkpoint_id,v.state,v.created FROM context_versions v JOIN checkpoints c ON c.id=v.checkpoint_id WHERE c.session_id=? ORDER BY v.version',
+          )
+          .all(item.id)
+          .filter((row) => checkpointIds.has(String(row.checkpoint_id)))
+          .map((row) => ({
+            checkpoint_id: String(row.checkpoint_id),
+            state: JSON.parse(String(row.state)) as ContextState,
+            created: Number(row.created),
+          }));
+        const effective = this.contextState(item.id, selected);
+        if (selected && !contexts.some((row) => row.checkpoint_id === selected))
+          contexts.push({
+            checkpoint_id: selected,
+            state: effective,
+            created: Date.now(),
+          });
+        const messageIds = new Set(
+          checkpoints.flatMap((checkpoint) =>
+            checkpoint.message ? [checkpoint.message.id] : [],
+          ),
+        );
+        const labels = Object.fromEntries(
+          Object.entries(this.labels(item.id)).filter(([id]) =>
+            messageIds.has(id),
+          ),
+        );
+        const node: SessionGraphNode = {
+          session: { ...session, head: selected, parent_id: item.parent },
+          checkpoints,
+          contexts,
+          labels,
+        };
+        graph.sessions.push(node);
+        const children = new Set(
+          contexts.flatMap((row) => row.state.subagentSessionIds ?? []),
+        );
+        if (!branchOnly)
+          for (const child of this.children(item.id)) children.add(child.id);
+        for (const id of children) queue.push({ id, parent: item.id });
+      }
+      validateSessionGraph(graph);
+      this.db.exec('COMMIT');
+      return graph;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  importGraph(graph: SessionGraph, workspace: string): Session {
+    validateSessionGraph(graph);
+    const sessionIds = new Map(
+      graph.sessions.map((node) => [node.session.id, 'circle-' + randomUUID()]),
+    );
+    const checkpointIds = new Map(
+      graph.sessions.flatMap((node) =>
+        node.checkpoints.map(
+          (checkpoint) => [checkpoint.id, randomUUID()] as const,
+        ),
+      ),
+    );
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const node of graph.sessions) {
+        const session = node.session;
+        this.db
+          .prepare(
+            'INSERT INTO sessions (id,workspace,title,model,head,created,updated,parent_id) VALUES (?,?,?,?,?,?,?,?)',
+          )
+          .run(
+            sessionIds.get(session.id)!,
+            normalizeWorkspace(workspace),
+            session.title,
+            session.model,
+            session.head ? checkpointIds.get(session.head)! : null,
+            session.created,
+            session.updated,
+            session.parent_id ? sessionIds.get(session.parent_id)! : null,
+          );
+      }
+      for (const node of graph.sessions) {
+        for (const checkpoint of orderedCheckpoints(node))
+          this.db
+            .prepare('INSERT INTO checkpoints VALUES (?,?,?,?,?)')
+            .run(
+              checkpointIds.get(checkpoint.id)!,
+              sessionIds.get(node.session.id)!,
+              checkpoint.parent ? checkpointIds.get(checkpoint.parent)! : null,
+              JSON.stringify(checkpoint.message),
+              checkpoint.created,
+            );
+        for (const context of node.contexts) {
+          const state = structuredClone(context.state);
+          if (state.subagentSessionIds)
+            state.subagentSessionIds = state.subagentSessionIds.map((id) =>
+              sessionIds.get(id)!,
+            );
+          this.db
+            .prepare(
+              'INSERT INTO context_versions (checkpoint_id,state,created) VALUES (?,?,?)',
+            )
+            .run(
+              checkpointIds.get(context.checkpoint_id)!,
+              JSON.stringify(state),
+              context.created,
+            );
+        }
+        for (const [id, label] of Object.entries(node.labels))
+          this.db
+            .prepare('INSERT INTO labels VALUES (?,?,?)')
+            .run(sessionIds.get(node.session.id)!, id, label);
+      }
+      this.db.exec('COMMIT');
+      return this.get(sessionIds.get(graph.root)!)!;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   repairInterrupted(sessionId: string): void {
     const messages = this.messages(sessionId);

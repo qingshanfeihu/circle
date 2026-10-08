@@ -53,6 +53,7 @@ export interface LegacySnapshot {
   timestamp: number;
 }
 export interface LegacyImportPlan {
+  parentId?: string;
   sourceKey: string;
   session: LegacySessionInfo;
   snapshots: LegacySnapshot[];
@@ -66,6 +67,7 @@ export interface LegacyImportPlan {
     writes: number;
     fingerprint: string;
     archive: string;
+    namespace?: string;
   };
 }
 export interface MigrationReport {
@@ -193,6 +195,7 @@ export function reconstructLegacy(
 export function readLegacyPlans(
   home: string,
   alreadyImported = new Set<string>(),
+  presentSessions?: Set<string>,
 ): {
   plans: LegacyImportPlan[];
   errors: MigrationReport['errors'];
@@ -226,7 +229,22 @@ export function readLegacyPlans(
         const sourceKey = hash(
           indexPath + '\n' + checkpointsPath + '\n' + session.thread_id,
         );
-        if (alreadyImported.has(sourceKey)) {
+        const rootImported = alreadyImported.has(sourceKey);
+        const namespaces = db
+          .prepare(
+            "SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id=? AND checkpoint_ns<>'' ORDER BY length(checkpoint_ns),checkpoint_ns",
+          )
+          .all(session.thread_id)
+          .map((row) => String(row.checkpoint_ns));
+        const namespaceKey = (namespace: string): string =>
+          hash(sourceKey + '\nnamespace:' + namespace);
+        if (
+          rootImported &&
+          ((presentSessions && !presentSessions.has(session.thread_id)) ||
+            namespaces.every((namespace) =>
+              alreadyImported.has(namespaceKey(namespace)),
+            ))
+        ) {
           skipped.push(session.thread_id);
           continue;
         }
@@ -284,56 +302,138 @@ export function readLegacyPlans(
             mode: 0o600,
             flag: 'wx',
           });
-        const snapshots = reconstructLegacy(rows, writes);
-        let selected = session.leaf || rows.at(-1)!.checkpoint_id;
-        if (!snapshots.some((snapshot) => snapshot.id === selected))
-          throw new Error('legacy selected checkpoint is missing');
-        if (!session.leaf) {
-          const pending = writes.filter(
-            (write) =>
-              write.checkpoint_id === selected && write.channel === 'messages',
-          );
-          if (pending.length) {
-            const base = snapshots.find(
+        if (!rootImported) {
+          const snapshots = reconstructLegacy(rows, writes);
+          let selected = session.leaf || rows.at(-1)!.checkpoint_id;
+          if (!snapshots.some((snapshot) => snapshot.id === selected))
+            throw new Error('legacy selected checkpoint is missing');
+          if (!session.leaf) {
+            const pending = writes.filter(
+              (write) =>
+                write.checkpoint_id === selected &&
+                write.channel === 'messages',
+            );
+            if (pending.length) {
+              const base = snapshots.find(
+                (snapshot) => snapshot.id === selected,
+              )!;
+              let records: LegacyMessage[] = base.messages.map(
+                (message) => message.legacy_data!,
+              );
+              for (const write of pending)
+                records = mergeMessages(
+                  records,
+                  decodeLegacy(write.type, write.value),
+                );
+              const current = records.map((record, index) =>
+                fromLegacyMessage(record, index),
+              );
+              const key = selected + '#pending';
+              snapshots.push({
+                ...base,
+                id: key,
+                parent: selected,
+                messages: current,
+              });
+              selected = key;
+            }
+          }
+          plans.push({
+            sourceKey,
+            session,
+            snapshots,
+            selected,
+            labels,
+            receipt: {
+              format: 1,
+              source: checkpointsPath,
+              thread: session.thread_id,
+              rows: rows.length,
+              writes: writes.length,
+              fingerprint,
+              archive,
+            },
+          });
+        } else skipped.push(session.thread_id);
+        const namespaceIds = new Map(
+          namespaces.map((namespace) => [
+            namespace,
+            'legacy-agent-' + namespaceKey(namespace).slice(0, 24),
+          ]),
+        );
+        for (const namespace of namespaces) {
+          const childSourceKey = namespaceKey(namespace);
+          if (alreadyImported.has(childSourceKey)) continue;
+          try {
+            const childRows = allRows.filter(
+              (row) => row.checkpoint_ns === namespace,
+            );
+            const childWrites = allWrites.filter(
+              (row) => row.checkpoint_ns === namespace,
+            );
+            const snapshots = reconstructLegacy(childRows, childWrites);
+            let selected = childRows.at(-1)!.checkpoint_id;
+            const last = snapshots.find(
               (snapshot) => snapshot.id === selected,
             )!;
-            let records: LegacyMessage[] = base.messages.map(
-              (message) => message.legacy_data!,
+            let records = last.messages.map((message) => message.legacy_data!);
+            const pending = childWrites.filter(
+              (write) =>
+                write.checkpoint_id === selected &&
+                write.channel === 'messages',
             );
-            for (const write of pending)
-              records = mergeMessages(
-                records,
-                decodeLegacy(write.type, write.value),
-              );
-            const current = records.map((record, index) =>
-              fromLegacyMessage(record, index),
-            );
-            const key = selected + '#pending';
-            snapshots.push({
-              ...base,
-              id: key,
-              parent: selected,
-              messages: current,
+            if (pending.length) {
+              for (const write of pending)
+                records = mergeMessages(
+                  records,
+                  decodeLegacy(write.type, write.value),
+                );
+              snapshots.push({
+                ...last,
+                id: selected + '#pending',
+                parent: selected,
+                messages: records.map((record, index) =>
+                  fromLegacyMessage(record, index),
+                ),
+              });
+              selected += '#pending';
+            }
+            const parentNamespace = namespaces
+              .filter((parent) => namespace.startsWith(parent + '|'))
+              .sort((a, b) => b.length - a.length)[0];
+            const name = namespace.split('|').at(-1)!.split(':')[0]!;
+            plans.push({
+              sourceKey: childSourceKey,
+              parentId: parentNamespace
+                ? namespaceIds.get(parentNamespace)!
+                : session.thread_id,
+              session: {
+                ...session,
+                thread_id: namespaceIds.get(namespace)!,
+                title: `Legacy ${name}`,
+                leaf: selected,
+              },
+              snapshots,
+              selected,
+              labels: {},
+              receipt: {
+                format: 2,
+                source: checkpointsPath,
+                thread: session.thread_id,
+                namespace,
+                rows: childRows.length,
+                writes: childWrites.length,
+                fingerprint,
+                archive,
+              },
             });
-            selected = key;
+          } catch (error) {
+            errors.push({
+              thread: session.thread_id + '/' + namespace,
+              message: error instanceof Error ? error.message : String(error),
+            });
           }
         }
-        plans.push({
-          sourceKey,
-          session,
-          snapshots,
-          selected,
-          labels,
-          receipt: {
-            format: 1,
-            source: checkpointsPath,
-            thread: session.thread_id,
-            rows: rows.length,
-            writes: writes.length,
-            fingerprint,
-            archive,
-          },
-        });
       } catch (error) {
         errors.push({
           thread: session.thread_id,

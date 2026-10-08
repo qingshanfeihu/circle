@@ -1199,16 +1199,16 @@
       "sha256": "b2ccc100e540f8ec9369b2179c532662554363842f568931a81c0308bcaf9f1d",
       "bytes": 10940,
       "category": "source",
-      "target": "src/tui/agent_detail.ts",
-      "status": "pending"
+      "target": "src/tui/subagents.ts",
+      "status": "in-progress"
     },
     {
       "source": "circle/tui/agent_strip.py",
       "sha256": "4aad128e1b1b8e4818af5c6d5cd8276280007bfe81f5c5238795e7d59124885f",
       "bytes": 9401,
       "category": "source",
-      "target": "src/tui/agent_strip.ts",
-      "status": "pending"
+      "target": "src/tui/subagents.ts",
+      "status": "in-progress"
     },
     {
       "source": "circle/tui/content_blocks.py",

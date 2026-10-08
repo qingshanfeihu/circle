@@ -306,7 +306,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     if (options.export) {
       const { CheckpointStore } = await import('./checkpoint_store.js');
-      const { toHtml, toJsonl } = await import('./session_export.js');
+      const { toHtml, toSessionBundle } = await import('./session_export.js');
       const store = new CheckpointStore(home);
       try {
         const { migrateLegacy } = await import('./migration.js');
@@ -327,7 +327,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         writeFileSync(
           path,
           path.endsWith('.jsonl')
-            ? toJsonl(store.messages(session.id), meta)
+            ? toSessionBundle(store, session.id)
             : toHtml(store.messages(session.id), meta),
         );
         process.stdout.write(path + '\n');

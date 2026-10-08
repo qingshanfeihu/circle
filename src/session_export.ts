@@ -1,6 +1,13 @@
 import { fromLegacyMessage } from './legacy_message.js';
 import type { Message } from './types.js';
 import { isRecord } from './settings.js';
+import { createHash } from 'node:crypto';
+import {
+  graphMessages,
+  validateSessionGraph,
+  type SessionGraph,
+} from './session_graph.js';
+import type { CheckpointStore } from './checkpoint_store.js';
 export interface SessionMeta {
   thread_id: string;
   title: string;
@@ -23,12 +30,83 @@ export function toJsonl(messages: Message[], meta: SessionMeta): string {
       .join('\n') + '\n'
   );
 }
+export function toSessionBundle(store: CheckpointStore, id: string): string {
+  const graph = store.exportGraph(id);
+  const root = graph.sessions.find(
+    (node) => node.session.id === graph.root,
+  )!.session;
+  const lines = [
+    JSON.stringify({
+      format: 'circle-session',
+      version: 3,
+      id: root.id,
+      title: root.title,
+      workspace: root.workspace,
+      model: root.model,
+      exported: new Date().toISOString(),
+    }),
+    JSON.stringify({ type: 'session_graph', data: graph }),
+  ];
+  const body = lines.join('\n') + '\n';
+  return (
+    body +
+    JSON.stringify({
+      type: 'seal',
+      algorithm: 'sha256',
+      digest: createHash('sha256').update(body).digest('hex'),
+    }) +
+    '\n'
+  );
+}
 export function fromJsonl(text: string): {
   header: Record<string, unknown>;
   messages: Message[];
+  graph?: SessionGraph;
 } {
   let header: Record<string, unknown> = {};
   const messages: Message[] = [];
+  const lines = text.split('\n');
+  const first = lines.find((line) => line.trim());
+  if (first) {
+    let initial: unknown;
+    try {
+      initial = JSON.parse(first);
+    } catch {
+      throw new Error('line 1 is not JSON');
+    }
+    if (
+      isRecord(initial) &&
+      initial.format === 'circle-session' &&
+      initial.version === 3
+    ) {
+      if (lines.length !== 4 || lines[3] !== '')
+        throw new Error('invalid session bundle framing');
+      const payload: unknown = JSON.parse(lines[1]!);
+      const seal: unknown = JSON.parse(lines[2]!);
+      const body = lines.slice(0, 2).join('\n') + '\n';
+      if (
+        !isRecord(seal) ||
+        seal.type !== 'seal' ||
+        seal.algorithm !== 'sha256' ||
+        seal.digest !== createHash('sha256').update(body).digest('hex')
+      )
+        throw new Error('session bundle integrity check failed');
+      if (!isRecord(payload) || payload.type !== 'session_graph')
+        throw new Error('invalid session graph record');
+      const graph = payload.data;
+      validateSessionGraph(graph);
+      if (graph.root !== initial.id)
+        throw new Error('session bundle root does not match header');
+      const root = graph.sessions.find(
+        (node) => node.session.id === graph.root,
+      )!;
+      return {
+        header: initial,
+        messages: graphMessages(root),
+        graph,
+      };
+    }
+  }
   for (const [index, line] of text.split('\n').entries()) {
     if (!line.trim()) continue;
     let raw: unknown;

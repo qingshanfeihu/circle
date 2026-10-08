@@ -72,6 +72,16 @@ export function restoredTodos(messages: Message[]): Todo[] {
       }
   return [];
 }
+export function restoredPlanMode(messages: Message[]): boolean {
+  for (const message of [...messages].reverse())
+    if (message.role === 'user' && message.internal === 'mode-boundary') {
+      const match = /^\[Circle system\] Plan mode is now (ON|OFF)\./.exec(
+        message.content,
+      );
+      if (match) return match[1] === 'ON';
+    }
+  return false;
+}
 export class ContextManager {
   constructor(
     readonly store: CheckpointStore,

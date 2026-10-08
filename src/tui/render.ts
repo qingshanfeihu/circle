@@ -6,6 +6,7 @@ import { dialogRows, type DialogState } from '../ink/components/dialog_card.js';
 import type { Picker } from '../ink/components/picker.js';
 import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
 import type { CompactionProgress } from '../compaction.js';
+import type { SubagentView } from './subagents.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
@@ -37,6 +38,9 @@ export interface ScreenState {
   contextInput?: number;
   contextWindow?: number;
   costText?: string;
+  subagents?: SubagentView[];
+  selectedAgent?: string;
+  agentDetail?: SubagentView;
   renderToolResult?: (message: Message) => string[] | undefined;
 }
 export function transcriptRows(state: ScreenState, width: number): string[] {
@@ -118,9 +122,12 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
                   ? 'none'
                   : 'error'
                 : 'ok'
-              : state.waiting
-                ? 'wait'
-                : 'running',
+              : state.agentDetail &&
+                  !['running', 'waiting'].includes(state.agentDetail.state)
+                ? 'none'
+                : state.waiting
+                  ? 'wait'
+                  : 'running',
           ),
           `${call.name}(${truncate(String(args), Math.max(1, width - call.name.length - 8))})`,
           style,
@@ -178,9 +185,56 @@ export function renderScreen(
     );
   const jobs = (state.jobs ?? []).filter((job) => job.status === 'running');
   const jobRows: string[] = [];
+  const agents = (state.subagents ?? []).filter(
+    (agent) =>
+      (!agent.background && ['running', 'waiting'].includes(agent.state)) ||
+      agent.id === state.selectedAgent ||
+      agent.id === state.agentDetail?.id,
+  );
+  if (!state.dialog && !state.picker && agents.length && height >= 12) {
+    jobRows.push(
+      p.dim +
+        pad(
+          ` Agents · ${agents.filter((agent) => ['running', 'waiting'].includes(agent.state)).length} · ↓ select`,
+          width,
+        ) +
+        p.reset,
+    );
+    const at = Math.max(
+      0,
+      agents.findIndex((agent) => agent.id === state.selectedAgent),
+    );
+    const max = Math.min(3, Math.max(1, Math.floor(height / 10)));
+    for (const agent of agents.slice(
+      Math.max(0, at - max + 1),
+      Math.max(0, at - max + 1) + max,
+    )) {
+      const lamp =
+        agent.state === 'running'
+          ? 'running'
+          : agent.state === 'waiting'
+            ? 'wait'
+            : agent.state === 'done'
+              ? 'ok'
+              : agent.state === 'error'
+                ? 'error'
+                : 'none';
+      jobRows.push(
+        sgrJoin(agent.id === state.selectedAgent ? p.agent_bg : '', p.dim) +
+          pad(
+            ` ${agent.id === state.selectedAgent ? '›' : ' '} ${statusLight(lamp)} ${truncate(agent.name, 24)} · ${agent.state === 'waiting' ? 'waiting for you' : agent.state} · ${agent.tokens} tokens`,
+            width,
+          ) +
+          p.reset,
+      );
+    }
+  }
   const maxJobs = Math.max(
     0,
-    Math.min(4, Math.floor((height - (state.todos.length ? 14 : 6)) / 2)),
+    Math.min(
+      4,
+      Math.floor((height - jobRows.length - (state.todos.length ? 14 : 6)) / 2),
+    ),
   );
   if (!state.dialog && !state.picker && jobs.length && maxJobs) {
     jobRows.push(p.dim + pad(` Jobs · ${jobs.length}`, width) + p.reset);
@@ -334,6 +388,27 @@ export function renderScreen(
       p.reset,
   ];
   let transcript = transcriptRows(state, width);
+  if (state.agentDetail) {
+    const agent = state.agentDetail;
+    transcript = [
+      p.dim +
+        ` ${agent.name} · ${agent.state} · esc back · ←/→ previous/next` +
+        p.reset,
+      ...transcriptRows(
+        {
+          ...state,
+          messages: agent.messages,
+          agentDetail: agent,
+          welcome: [],
+          notices: [],
+          streaming: '',
+          thinking: '',
+          hiddenTurns: 0,
+        },
+        width,
+      ),
+    ];
+  }
   if (state.jobDetail) {
     const job = state.jobDetail;
     let output = '';

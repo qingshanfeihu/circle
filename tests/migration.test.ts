@@ -18,6 +18,7 @@ import { AgentRuntime } from '../src/runtime.js';
 import { ScriptedModel } from '../src/testing.js';
 import { defaultSettings } from '../src/settings.js';
 import { fromJsonl, toJsonl } from '../src/session_export.js';
+import { toSessionBundle } from '../src/session_export.js';
 import { scratch, cleanup } from './helpers.js';
 const digest = (bytes: string | Uint8Array): string =>
   createHash('sha256').update(bytes).digest('hex');
@@ -370,4 +371,70 @@ test('failed imports roll back whole sessions and do not overwrite a colliding n
   assert.throws(() => store.importLegacy(plan), /conflicts/);
   assert.equal(store.messages(session.id)[0]!.content, 'native data');
   assert.equal(store.migrationReceipts().length, 0);
+});
+test('legacy child namespaces restore every native snapshot as owned records, augment earlier root imports and never resurrect deleted data', (t) => {
+  const { home } = fixture(t);
+  const store = new CheckpointStore(home);
+  cleanup(t, () => store.close());
+  assert.deepEqual(migrateLegacy(home, store).errors, []);
+  // Add child scopes after the root marker exists, exercising upgrades from earlier builds.
+  const db = new DatabaseSync(join(home, 'checkpoints.sqlite'));
+  try {
+    for (const namespace of ['task:parent', 'task:parent|task:child']) {
+      db.prepare(
+        "INSERT INTO checkpoints SELECT thread_id, ?, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata FROM checkpoints WHERE checkpoint_ns=''",
+      ).run(namespace);
+      db.prepare(
+        "INSERT INTO writes SELECT thread_id, ?, checkpoint_id, task_id, idx, channel, type, value FROM writes WHERE checkpoint_ns=''",
+      ).run(namespace);
+    }
+  } finally {
+    db.close();
+  }
+  const before = ['sessions.sqlite', 'checkpoints.sqlite'].map((file) =>
+    digest(readFileSync(join(home, file))),
+  );
+  const read = readLegacyPlans(
+    home,
+    store.importedLegacyKeys(),
+    new Set(store.list(undefined, true).map((session) => session.id)),
+  );
+  assert.deepEqual(read.errors, []);
+  assert.equal(read.plans.length, 2);
+  const report = migrateLegacy(home, store);
+  assert.deepEqual(report.errors, []);
+  assert.equal(report.imported.length, 2);
+  assert.equal(store.list().length, 1);
+  const child = store.children('circle-legacy-main')[0]!;
+  const nested = store.children(child.id)[0]!;
+  assert.ok(nested);
+  assert.equal(store.list(undefined, true).length, 3);
+  for (const plan of read.plans)
+    for (const snapshot of plan.snapshots)
+      assert.deepEqual(
+        store.messages(
+          plan.session.thread_id,
+          store.legacyHead(plan.sourceKey, snapshot.id),
+        ),
+        snapshot.messages,
+      );
+  assert.equal(
+    fromJsonl(toSessionBundle(store, 'circle-legacy-main')).graph!.sessions
+      .length,
+    3,
+  );
+  assert.deepEqual(
+    ['sessions.sqlite', 'checkpoints.sqlite'].map((file) =>
+      digest(readFileSync(join(home, file))),
+    ),
+    before,
+  );
+  assert.deepEqual(migrateLegacy(home, store).imported, []);
+  store.delete(child.id);
+  assert.equal(store.get(nested.id), undefined);
+  assert.deepEqual(migrateLegacy(home, store).imported, []);
+  assert.equal(store.children('circle-legacy-main').length, 0);
+  store.delete('circle-legacy-main');
+  assert.deepEqual(migrateLegacy(home, store).imported, []);
+  assert.equal(store.list(undefined, true).length, 0);
 });

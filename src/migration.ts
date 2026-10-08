@@ -6,7 +6,11 @@ export function migrateLegacy(
 ): MigrationReport {
   const report: MigrationReport = { imported: [], skipped: [], errors: [] };
   try {
-    const source = readLegacyPlans(home, store.importedLegacyKeys());
+    const source = readLegacyPlans(
+      home,
+      store.importedLegacyKeys(),
+      new Set(store.list(undefined, true).map((session) => session.id)),
+    );
     report.errors.push(...source.errors);
     report.skipped.push(...source.skipped);
     for (const plan of source.plans) {

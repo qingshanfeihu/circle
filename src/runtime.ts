@@ -13,7 +13,7 @@ import { EventBus } from './events.js';
 import { defaultRunOptions, type RunOptions } from './run_options.js';
 import type { CircleSettings } from './settings.js';
 import { discoverSkills, loadSkillBody } from './skills.js';
-import { fromJsonl } from './session_export.js';
+import { fromJsonl, toSessionBundle } from './session_export.js';
 import { projectDataDir, circleHome, normalizeWorkspace } from './paths.js';
 import { McpManager } from './mcp_loader.js';
 import { ExtensionHost } from './extensions.js';
@@ -22,7 +22,11 @@ import { BUILTIN_SLASH } from './tui/slash_commands.js';
 import { discoverCustomCommands } from './commands.js';
 import { LspManager } from './lsp_tool.js';
 import type { Tool, ToolContext } from './types.js';
-import { ContextManager, restoredTodos } from './context_middleware.js';
+import {
+  ContextManager,
+  restoredTodos,
+  restoredPlanMode,
+} from './context_middleware.js';
 import { migrateLegacy } from './migration.js';
 import type { MigrationReport } from './legacy_sessions.js';
 import { askQuestions } from './questions.js';
@@ -335,7 +339,9 @@ export class AgentRuntime {
         const session = this.store.create(
           this.options.workspace,
           childModel.model,
-          String(args.description || '').slice(0, 80),
+          `${name}: ${String(args.description || '')}`.slice(0, 160),
+          undefined,
+          parentSessionId,
         );
         const parentState = this.store.contextState(parentSessionId);
         this.store.setContextState(parentSessionId, {
@@ -516,7 +522,7 @@ export class AgentRuntime {
     tools = this.withIntegrationTools(
       tools.filter((tool) => tool.name !== 'wait_jobs'),
     );
-    return new Harness({
+    const harness = new Harness({
       model: this.extensions.model(model),
       tools,
       store: this.store,
@@ -568,6 +574,8 @@ export class AgentRuntime {
         );
       },
     });
+    harness.planMode = restoredPlanMode(harness.messages);
+    return harness;
   }
   private extensionHost(reservedTools: Set<string>): ExtensionHost {
     const commands = discoverCustomCommands(
@@ -857,11 +865,38 @@ export class AgentRuntime {
     this.bus.setRunId(session.id);
   }
   async importSession(text: string): Promise<void> {
-    const { header, messages } = fromJsonl(text);
+    if (this.busy) throw new Error('a turn is running');
+    const { header, messages, graph } = fromJsonl(text);
+    if (graph) {
+      const session = this.store.importGraph(graph, this.options.workspace);
+      this.session = session;
+      this.harness = this.createHarness(this.options.model);
+      this.todos = restoredTodos(this.harness.messages);
+      this.bus.setRunId(session.id);
+      this.extensions.emit('session_start', {
+        workspace: this.options.workspace,
+        session_id: session.id,
+      });
+      return;
+    }
     await this.newSession();
     this.store.append(this.session.id, messages);
+    this.harness.planMode = restoredPlanMode(messages);
+    this.todos = restoredTodos(messages);
     if (typeof header.title === 'string')
       this.store.rename(this.session.id, header.title);
+  }
+  exportSession(): string {
+    if (
+      this.busy ||
+      this.jobs
+        .list(this.session.id)
+        .some((job) => job.kind === 'agent' && job.status === 'running')
+    )
+      throw new Error(
+        'export after the current turn and background subagents finish',
+      );
+    return toSessionBundle(this.store, this.session.id);
   }
   async close(saveJobNotes = true): Promise<void> {
     if (this.closingPromise) return this.closingPromise;

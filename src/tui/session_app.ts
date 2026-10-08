@@ -45,6 +45,7 @@ import {
   type CompactionEvent,
 } from '../compaction.js';
 import { formatCosts } from '../pricing.js';
+import { SubagentNavigation } from './subagents.js';
 import { currentBranch } from '../git_info.js';
 import { loadRemap, ACTIONS } from '../keybindings.js';
 import { emptyUsage, type ToolCall } from '../types.js';
@@ -52,7 +53,7 @@ import { ScreenRenderer } from '../ink/screen.js';
 import { type ApprovalDecision } from '../harness.js';
 import { BUILTIN_SLASH, parseSlash } from './slash_commands.js';
 import { GatewayModel, EFFORT_LEVELS } from '../model.js';
-import { exportKind, toHtml, toJsonl, toMarkdown } from '../session_export.js';
+import { exportKind, toHtml, toMarkdown } from '../session_export.js';
 import {
   discoverCustomCommands,
   expandCommandTemplate,
@@ -99,6 +100,16 @@ export class SessionApp {
           !this.runtime?.harness.busy)),
   );
   private backgroundCard = false;
+  private agents = new SubagentNavigation();
+  private agentActivity = new Map<
+    string,
+    {
+      state: 'running' | 'waiting' | 'done' | 'error';
+      name: string;
+      background?: boolean;
+    }
+  >();
+  private frameRows: string[] = [];
   private shared?: string;
   private dataListener = (data: string): void => {
     for (const event of this.input.feed(data)) this.handle(event);
@@ -173,7 +184,8 @@ export class SessionApp {
         this.state.busy ||
         this.state.waiting ||
         this.runtime?.jobs.list().some((job) => job.status === 'running') ||
-        this.state.jobDetail
+        this.state.jobDetail ||
+        this.state.agentDetail
       )
         this.repaint();
       this.wakeJobs();
@@ -216,6 +228,42 @@ export class SessionApp {
         facts.rates?.input !== undefined && facts.rates.output !== undefined,
       );
       this.state.jobs = this.runtime.jobs.list();
+      const collect = (
+        parent: string,
+      ): import('../checkpoint_store.js').Session[] =>
+        this.runtime!.store.children(parent).flatMap((child) => [
+          child,
+          ...collect(child.id),
+        ]);
+      this.state.subagents = collect(this.runtime.session.id).map((session) => {
+        const activity = this.agentActivity.get(session.id);
+        const messages = this.runtime!.store.messages(session.id);
+        const last = messages.at(-1);
+        return {
+          id: session.id,
+          name: activity?.name || session.title.split(':')[0] || 'subagent',
+          description: session.title,
+          background: activity?.background,
+          messages,
+          state:
+            activity?.state ??
+            (last?.role === 'assistant' && !last.tool_calls?.length
+              ? 'done'
+              : 'interrupted'),
+          started: session.created,
+          tokens: messages.reduce(
+            (sum, message) =>
+              sum +
+              (message.usage?.input_tokens ?? 0) +
+              (message.usage?.output_tokens ?? 0),
+            0,
+          ),
+        };
+      });
+      this.state.selectedAgent = this.agents.selected;
+      this.state.agentDetail = this.state.subagents.find(
+        (agent) => agent.id === this.agents.detail,
+      );
       if (this.state.jobDetail)
         this.state.jobDetail = this.runtime.jobs.get(this.state.jobDetail.id);
       this.state.renderToolResult = (message) => {
@@ -272,6 +320,7 @@ export class SessionApp {
       process.stdout.columns || 80,
       process.stdout.rows || 24,
     );
+    this.frameRows = rows;
     this.screen.render(rows);
   }
   private flash(text: string): void {
@@ -447,6 +496,25 @@ export class SessionApp {
       }
       if (event.kind === 'job_ended') this.jobWakeAt = Date.now() + 1000;
       if (event.tags.subagent) {
+        const id = String(event.tags.subagent);
+        const old = this.agentActivity.get(id);
+        const state =
+          event.kind === 'run_end'
+            ? 'done'
+            : event.kind === 'run_error'
+              ? 'error'
+              : event.kind === 'tool_waiting'
+                ? 'waiting'
+                : event.kind === 'tool_start' ||
+                    event.kind === 'llm_start' ||
+                    event.kind === 'run_start'
+                  ? 'running'
+                  : (old?.state ?? 'running');
+        this.agentActivity.set(id, {
+          state,
+          name: String(event.tags.name || old?.name || 'subagent'),
+          background: Boolean(event.tags.job_id) || old?.background,
+        });
         if (event.kind === 'llm_end')
           for (const key of Object.keys(
             this.state.usage,
@@ -663,6 +731,33 @@ export class SessionApp {
     this.theme.feed(event);
     if (event.type === 'color' || event.type === 'scheme') return;
     if (event.type === 'mouse') {
+      if (
+        event.action === 'press' &&
+        event.button === 0 &&
+        /task\(/.test(this.frameRows[event.y] ?? '') &&
+        this.state.subagents?.length
+      ) {
+        const open = (id: string): void => {
+          this.agents.detail = id;
+          this.agents.selected = id;
+          this.state.scroll = 0;
+          this.repaint();
+        };
+        if (this.state.subagents.length === 1)
+          open(this.state.subagents[0]!.id);
+        else
+          this.picker(
+            'Task details',
+            this.state.subagents.map((agent) => ({
+              key: agent.id,
+              label: `${agent.name} · ${agent.state}`,
+              meta: agent.description,
+            })),
+            async (item) => {
+              open(item.key);
+            },
+          );
+      }
       if (event.action === 'wheel')
         this.state.scroll = Math.max(
           0,
@@ -696,6 +791,28 @@ export class SessionApp {
     }
     const key = this.remap[event.key] || event.key;
     const char = event.char;
+    if (
+      !this.state.dialog &&
+      !this.state.picker &&
+      !this.state.jobDetail &&
+      this.agents.handle(
+        key,
+        char,
+        (this.state.subagents ?? [])
+          .filter(
+            (agent) =>
+              this.agents.detail ||
+              ['running', 'waiting'].includes(agent.state) ||
+              agent.id === this.agents.selected,
+          )
+          .map((agent) => agent.id),
+        this.state.draft,
+      )
+    ) {
+      this.state.scroll = 0;
+      this.repaint();
+      return;
+    }
     if (this.state.jobDetail && !this.state.dialog) {
       const job = this.state.jobDetail;
       if (key === 'escape') {
@@ -1278,7 +1395,7 @@ export class SessionApp {
         kind === 'html'
           ? toHtml(messages, meta)
           : kind === 'jsonl'
-            ? toJsonl(messages, meta)
+            ? runtime.exportSession()
             : toMarkdown(messages, meta),
       );
       if (name === 'share') {
