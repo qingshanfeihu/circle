@@ -58,6 +58,7 @@ from circle.ink.components.picker import Picker, PickerItem
 from circle.ink.components.plan_panel import PlanPanel
 from circle.ink.components.prompt_input import PromptInput
 from circle.ink.components.transcript import Transcript
+from circle.ink.components.welcome import WelcomeInfo, WelcomeItem, welcome_rows
 from circle.ink.dom import NodeType, create_element, create_text
 from circle.ink.escape_input import StandaloneEscapeInputParser as _StandaloneEscapeInputParser
 from circle.ink.parse_keypress import (
@@ -193,8 +194,26 @@ def _endpoint_name(base_url: str) -> str:
     return re.sub(r"^[a-z][a-z0-9+.-]*://", "", (base_url or "").strip(), flags=re.I).rstrip("/")
 
 
+class _NotConnected:
+    """The bridge before the session has connected: nothing runs, nothing to stop."""
+
+    is_running = False
+    auto_approve = False
+    inbox = None
+
+    def cancel(self) -> None:
+        pass
+
+
 class CircleSessionApp:
     """InfoTest-style session loop bound to Circle's harness."""
+
+    # A session made without __init__ (tests) is a connected one with no gate and no welcome
+    _gate: Any = None
+    _connected = True
+    _connecting = False
+    _welcome_on = False
+    _early_submits: list[str] = []
 
     def __init__(
         self,
@@ -209,7 +228,12 @@ class CircleSessionApp:
         thread_id: str | None = None,
         fork: str | None = None,
         initial: list[tuple[str, str]] | None = None,
+        connect: bool = True,
+        setup: bool = False,
     ) -> None:
+        """``connect=False``: draw the screen first and connect in :meth:`run`, after setup
+        (when the settings are not ready, or ``setup``) and trust (when the folder is not
+        trusted yet) have been answered in the frame."""
         self.settings = settings
         self._resume_at_start = resume
         self._pick_session_at_start = pick_session
@@ -220,21 +244,23 @@ class CircleSessionApp:
         self._initial_messages = list(initial or [])
         self.workspace = normalize_workspace(workspace)
         self.home = home or circle_home()
-        # The project's .circle/settings.json over yours, in memory only
-        self._project_settings, self._settings_problems = apply_project_settings(
-            settings, self.workspace)
-        # ``circle --model`` (or the project's model): this run uses it, settings.json
-        # keeps the saved one
-        self._saved_model: str | None = (self._project_settings["model"][0]
-                                         if "model" in self._project_settings else None)
-        if isinstance(model_override, str) and model_override:
-            if self._saved_model is None:
-                self._saved_model = settings.auth.model
-            settings.auth.model = model_override
-            model_override = None
-        self.model_override = model_override
-
-        apply_auth_to_environ(settings, self.home)
+        self._project_settings: dict[str, tuple[Any, Any]] = {}
+        self._settings_problems: list[str] = []
+        self._saved_model: str | None = None
+        self._model_arg = model_override
+        self.model_override = None if isinstance(model_override, str) else model_override
+        self._connected = False
+        self._connecting = False
+        self._project_applied = False
+        # Setup or trust, asked in the frame before the session connects
+        self._gate: InitController | TrustController | None = None
+        self._setup_first = setup
+        self._early_submits: list[str] = []  # typed while connecting, sent once connected
+        self._welcome_on = False
+        self._welcome_items: list[Any] | None = None
+        self._welcome_recent: tuple[list[tuple[str, str]], int] | None = None
+        if connect:
+            self._apply_project()
         init_palette_from_terminal(settings.theme)
 
         self._app = InkApp(alt_screen=True, mouse=True)
@@ -446,12 +472,11 @@ class CircleSessionApp:
         self._shell_stop: CancellationToken | None = None  # a running !command
         # a sent message → (how it is shown, the pastes it names), when that differs
         self._shown_as: dict[str, tuple[str, dict[int, str]]] = {}
-        self._custom_commands: dict[str, CustomCommand] = {
-            c.name: c
-            for c in discover_custom_commands(self.workspace, self.home)
-        }
+        self._custom_commands: dict[str, CustomCommand] = {}
         self._mcp_tools: list[Any] = []
-        self._extensions = self._load_extensions()
+        # Nothing is loaded before the session connects: no extension runs in a folder you
+        # have not trusted yet
+        self._extensions = ExtensionHost(home=self.home, workspace=self.workspace, trusted=False)
         # 机密输入模式（question 工具 secret 类型）：buffer 只存在内存，
         # 输入行只渲染掩码；值经 secret_prompt 直写目标文件，不进对话。
         self._secret_entry: dict[str, Any] | None = None
@@ -459,8 +484,47 @@ class CircleSessionApp:
         self._secret_last_check = 0.0
 
         self._approvals = default_policy(self.home, settings.credential_files or None)
+        self._chat_model: Any = None
+        self._agent: Any = None
+        self._bridge: Any = _NotConnected()
+        if connect:
+            self._connect()
+
+    def _apply_project(self) -> None:
+        """The project's .circle/settings.json over yours, in memory only. ``circle --model``
+        (or the project's model): this run uses it, settings.json keeps the saved one."""
+        if self._project_applied:
+            return
+        self._project_applied = True
+        settings = self.settings
+        self._project_settings, self._settings_problems = apply_project_settings(settings, self.workspace)
+        self._saved_model = (self._project_settings["model"][0]
+                             if "model" in self._project_settings else None)
+        model_override = self._model_arg
+        if isinstance(model_override, str) and model_override:
+            if self._saved_model is None:
+                self._saved_model = settings.auth.model
+            settings.auth.model = model_override
+            model_override = None
+        self.model_override = model_override
+
+    def _connect(self) -> None:
+        """Load what the folder and your settings bring and build the agent. In a full-screen
+        run this happens after setup and trust, with the welcome's lamps blinking."""
+        first = not self._project_applied
+        self._apply_project()
+        settings = self.settings
+        if first and "theme" in self._project_settings:
+            self._apply_theme()
+        apply_auth_to_environ(settings, self.home)
+        self._custom_commands = {
+            c.name: c
+            for c in discover_custom_commands(self.workspace, self.home)
+        }
+        self._extensions = self._load_extensions()
+        self._approvals = default_policy(self.home, settings.credential_files or None)
         model = build_chat_model(
-            settings, home=self.home, model_override=model_override
+            settings, home=self.home, model_override=self.model_override
         )
         self._chat_model = model
         self._sync_model_meter()
@@ -481,6 +545,8 @@ class CircleSessionApp:
         )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
         self._bridge = self._make_bridge()
+        self._footer.update(model=settings.auth.model, status="ready")
+        self._connected = True
 
     def _save_settings(self, *changed: str) -> None:
         """Save your settings after you changed ``changed``: what you chose now is yours,
@@ -574,7 +640,18 @@ class CircleSessionApp:
         self._app.start()
         self._theme_watch.start(self.settings.theme)
         remove_listener = add_retry_listener(self._on_model_retry)
+        code = 0
         try:
+            self._welcome_on = True
+            if not self._connected:
+                self._refresh_welcome_data()
+                self._start_ticker()
+                gate_code = self._run_gate()
+                if gate_code is not None:
+                    return gate_code
+                self._connect_now()
+                if not self._app._running:  # left (ctrl+c) while it connected
+                    return code
             self._show_welcome()
             for problem in [*self._keybinding_problems, *self._settings_problems]:
                 self._fail(problem)
@@ -603,10 +680,232 @@ class CircleSessionApp:
             self._theme_watch.stop()
             self._bridge.cancel()
             self._app.stop()
-        hint = self._resume_hint()
+        hint = self._resume_hint() if self._connected else ""
         if hint:
             print(hint, flush=True)
-        return 0
+        return code
+
+    # ── setup and trust, asked in the frame before the session connects ────
+
+    def _run_gate(self) -> int | None:
+        """Setup (when the settings are not ready, or ``circle --init``) and then trust (when
+        the folder is not trusted yet), each a card in the frame. None once both are answered;
+        otherwise the exit code: 1 when trust was declined, 0 when you left with esc or ctrl+c."""
+        self._begin_gate()
+        self._app.render()
+        while self._app._running and self._gate is not None:
+            time.sleep(0.05)
+        if self._gate is not None or not self._app._running:
+            return self._gate_exit
+        return None
+
+    def _begin_gate(self) -> None:
+        """The first question: setup, or trust when Circle is set up already."""
+        self._gate_exit = 0
+        with self._app.lock:
+            if self._setup_first or not self.settings.is_ready():
+                self._gate = InitController(home=self.home, probe=self._probe_endpoint, defer_probe=True)
+            elif not is_folder_trusted(self.settings, self.workspace):
+                self._gate = TrustController(self.settings, self.workspace, home=self.home)
+            self._sync_gate()
+
+    def _advance_gate(self) -> None:
+        """After an answer: the next step, the next gate, or the end of the gates."""
+        gate = self._gate
+        if isinstance(gate, InitController):
+            if gate.step == InitStep.PROBING and getattr(self, "_probing", None) is not gate:
+                self._probing = gate
+                threading.Thread(target=self._gate_probe, args=(gate,), name="circle-setup-probe",
+                                 daemon=True).start()
+            if gate.done and gate.settings is not None:
+                self.settings = gate.settings
+                if is_folder_trusted(self.settings, self.workspace):
+                    self._gate = None
+                else:
+                    self._gate = TrustController(self.settings, self.workspace, home=self.home)
+        elif isinstance(gate, TrustController) and gate.finished:
+            if not gate.accepted:
+                self._gate_exit = 1
+                self._app._running = False  # leave without a session
+                return
+            assert gate.result is not None
+            self.settings = gate.result
+            self._gate = None
+        self._sync_gate()
+
+    def _gate_probe(self, gate: InitController) -> None:
+        """Ask the endpoint for its models off the input thread; the card says so meanwhile."""
+        probed = gate.probe(gate.base_url, gate.api_key)
+        with self._app.lock:
+            if self._gate is gate and gate.step == InitStep.PROBING:
+                gate.apply_probe(probed)
+                self._sync_gate()
+        self._app.render()
+
+    def _sync_gate(self) -> None:
+        """The input row as the gate's step wants it: masked for the key, its placeholder,
+        emptied when the step changes."""
+        gate = self._gate
+        step = gate.step if isinstance(gate, InitController) else ("trust" if gate is not None else None)
+        if step != getattr(self, "_gate_step", None):
+            self._gate_step = step
+            self._prompt.clear()
+        if isinstance(gate, InitController):
+            self._prompt.masked = gate.step == InitStep.API_KEY
+            self._prompt.placeholder = gate.placeholder()
+        else:
+            self._prompt.masked = False
+            self._prompt.placeholder = ""
+
+    def _handle_gate_key(self, kp: KeyPress) -> None:
+        gate = self._gate
+        key, char = kp.key, kp.char if len(kp.char or "") == 1 else ""
+        if key in ("escape", "ctrl+c", "ctrl+d"):
+            self._gate_exit = 0
+            self._app._running = False  # esc leaves setup, as ctrl+c does
+            return
+        if isinstance(gate, TrustController):
+            if key in ("up", "down"):
+                gate.move(-1 if key == "up" else 1)
+            elif key in ("enter", "return"):
+                gate.confirm()
+            elif char.lower() in ("y", "1"):
+                gate.submit_line("y")
+            elif char.lower() in ("n", "2"):
+                gate.submit_line("n")
+        elif isinstance(gate, InitController):
+            step = gate.step
+            if step in (InitStep.AUTH_MODE, InitStep.OAUTH_PROVIDER, InitStep.MANUAL_PROTOCOL):
+                if key in ("up", "down"):
+                    gate.move(-1 if key == "up" else 1)
+                elif key in ("enter", "return"):
+                    gate.confirm()
+                elif char in ("1", "2"):
+                    gate.submit_line(char)
+            elif step == InitStep.PICK_MODEL:
+                if key in ("up", "down"):
+                    gate.move_choice(-1 if key == "up" else 1)
+                elif key in ("enter", "return"):
+                    gate.set_query(self._prompt.value)
+                    gate.pick_choice()
+                elif self._prompt.handle_key(key if key else "char", char):
+                    gate.set_query(self._prompt.value)
+            elif step in (InitStep.API_URL, InitStep.API_KEY):
+                if key in ("enter", "return"):
+                    text = self._prompt.value
+                    self._prompt.clear()
+                    gate.submit_line(text)
+                else:
+                    self._prompt.handle_key(key if key else "char", char)
+            # looking for models or waiting for a browser: nothing to answer yet
+        self._advance_gate()
+        self._app.render()
+
+    def _handle_connecting_key(self, kp: KeyPress) -> None:
+        """While the session connects: you may type, and what you send waits for it."""
+        if kp.key in ("ctrl+c", "ctrl+d"):
+            self._app._running = False
+            return
+        if kp.key in ("enter", "return"):
+            text = self._prompt.value
+            if text.strip():
+                self._prompt.clear()
+                self._early_submits.append(text)
+                self._flash(f"Queued · {len(self._early_submits)}")
+            return
+        if self._prompt.handle_key(kp.key if kp.key else "char", kp.char if len(kp.char or "") == 1 else ""):
+            self._app.render()
+
+    def _start_ticker(self) -> None:
+        """Repaint a few times a second until the session has connected: the lamps blink."""
+        def tick() -> None:
+            while self._app._running and not (self._connected and not self._connecting):
+                self._app.render()
+                time.sleep(0.2)
+            self._app.render()
+
+        threading.Thread(target=tick, name="circle-welcome-ticker", daemon=True).start()
+
+    def _connect_now(self) -> None:
+        """Connect with the screen up: the folder's rows blink while it loads."""
+        self._connecting = True
+        try:
+            self._connect()
+        finally:
+            self._connecting = False
+        with self._app.lock:
+            self._refresh_welcome_data()
+            waiting, self._early_submits = self._early_submits, []
+            for text in waiting:
+                self._on_submit(text)
+        self._app.render()
+
+    # ── the welcome block ───────────────────────────────────────────────
+
+    def _refresh_welcome_data(self) -> None:
+        """What the welcome lists: the folder's own things and its recent sessions. Looked up
+        here, not on every frame."""
+        from circle.trust import folder_inventory
+
+        try:
+            self._welcome_items = folder_inventory(self.workspace, self.home)
+        except OSError:
+            self._welcome_items = []
+        try:
+            saved = [item for item in session_index.for_workspace(self.home, self.workspace, limit=200)
+                     if item.thread_id != self._thread_id]
+        except Exception:  # noqa: BLE001 - the welcome works without the list
+            logger.debug("session index unavailable", exc_info=True)
+            saved = []
+        shown = [(item.title or "(untitled)", session_index.age(item.updated)) for item in saved[:3]]
+        self._welcome_recent = (shown, max(0, len(saved) - 3))
+
+    def _welcome_info(self) -> WelcomeInfo:
+        from urllib.parse import urlparse
+
+        settings = self.settings
+        auth = settings.auth
+        setting_up = isinstance(self._gate, InitController)
+        model = "" if setting_up or not settings.is_ready() else auth.model
+        depth = reasoning_effort_of(self._chat_model) if self._chat_model is not None else ""
+        if model and depth and depth in EFFORT_LEVELS:
+            model = f"{model} • {depth}"
+        if auth.mode == "oauth":
+            endpoint = auth.oauth_provider
+        else:
+            endpoint = urlparse(auth.base_url or "").hostname or _endpoint_name(auth.base_url)
+        path = str(self.workspace)
+        home = str(Path.home())
+        if path == home or path.startswith(home + os.sep):
+            path = "~" + path[len(home):]
+        # unlit until trusted, blinking while it loads, then lit (the session only connects
+        # in a folder that is trusted)
+        if self._gate is not None:
+            state = "none"
+        elif self._connecting or not self._connected:
+            state = "running"
+        else:
+            state = "ok"
+        failed = [f"{ext.name}: {ext.error}" for ext in getattr(self._extensions, "extensions", [])
+                  if ext.source == "project" and ext.error]
+        items = []
+        for found in self._welcome_items or []:
+            if found.kind == "instructions":
+                text = ", ".join(found.names)
+            elif found.kind == "settings":
+                text = found.where
+            else:
+                text = f"{found.count} in {found.where}"
+            bad = state == "ok" and found.kind == "extensions" and bool(failed)
+            items.append(WelcomeItem(found.kind, text, "error" if bad else state, failed if bad else []))
+        recent, more = self._welcome_recent or ([], 0)
+        return WelcomeInfo(version=__version__, model=model, endpoint=endpoint if model else "",
+                           folder=path, branch=self._branch(), items=items, recent=list(recent), more=more)
+
+    def _sync_welcome(self, width: int) -> None:
+        if not self._welcome_on:
+            return
+        self._transcript.set_head(welcome_rows(self._welcome_info(), width))
 
     def _resume_hint(self) -> str:
         """After the screen is gone: the command that opens this conversation again."""
@@ -656,8 +955,10 @@ class CircleSessionApp:
                 self._fail("The model spent its whole output budget thinking · no answer this turn")
 
     def _show_welcome(self) -> None:
-        """Session start. The identity (version · model · directory) lives in the header, which
-        is always there, so nothing is written into the transcript any more."""
+        """Session start. The welcome block (the logo, version · model · folder, what the folder
+        brings, its recent sessions) is the first thing in the transcript; it is drawn on every
+        frame, never stored, and the header takes the identity over once it scrolls away."""
+        self._refresh_welcome_data()
         self._footer.update(status="ready")
         self._app.render()
         self._extensions.emit("session_start", {"workspace": str(self.workspace)})
@@ -691,6 +992,9 @@ class CircleSessionApp:
 
     def _active_card(self):
         """The blocking question that owns the frame right now, or None."""
+        gate = self._gate
+        if gate is not None:
+            return gate.card_spec()
         approval, ask = self._exec_approval, self._ask_session  # one read each: other threads clear them
         if approval is not None:
             return approval.card_spec()
@@ -702,6 +1006,8 @@ class CircleSessionApp:
         """The one-word mode at the frame's bottom-right. The default — approving each call
         by hand — shows nothing. ``read-only`` (plan mode) wins over ``auto`` (yolo)."""
         pal = palette()
+        if self._gate is not None:
+            return "", ""
         if self._plan_mode:
             return "read-only", pal.green
         if self._approvals.yolo_enabled(self._thread_id):
@@ -735,6 +1041,9 @@ class CircleSessionApp:
         directory (cut from the left, the tail is what identifies it), then the model name."""
         pal = palette()
         self._sync_title()
+        if self._gate is not None:
+            self._header_text.set_value("\n")  # setup and trust: the welcome says who and where
+            return
         model = self.settings.auth.model
         depth = reasoning_effort_of(getattr(self, "_chat_model", None))
         if depth and depth in EFFORT_LEVELS:
@@ -749,7 +1058,8 @@ class CircleSessionApp:
             path = f"{path} ({branch})"
         hint = "? for shortcuts"
         room = width - 1
-        show_hint = width >= 60 and string_width(head + model) + 12 + string_width(hint) + 2 <= width
+        show_hint = (self._connected and width >= 60
+                     and string_width(head + model) + 12 + string_width(hint) + 2 <= width)
         if show_hint:
             room -= string_width(hint) + 2
         left_room = room - string_width(head)
@@ -765,6 +1075,8 @@ class CircleSessionApp:
                 text = f"{head}{model_shown}{sep}{path}"
             else:
                 text = f"{head}{model_shown}"
+        if self._welcome_on and self._transcript.head_in_view():
+            text = ""  # the welcome block on screen already says who and where
         gap = max(1, width - string_width(text) - string_width(hint) - 1) if show_hint else 0
         right = f"{' ' * gap}{pal.faint}{hint}{pal.reset} " if show_hint else ""
         self._header_text.set_value(f"{pal.dim}{text}{pal.reset}{right}\n")
@@ -774,15 +1086,17 @@ class CircleSessionApp:
         if width < 8:
             return
         pal = palette()
+        self._sync_welcome(width)
         self._sync_header(width)
+        self._set_view_visible(self._footer.node, self._connected)  # no meters before a session
         card = self._active_card()
         mode, mode_sgr = self._mode_word()
         rows: list[str] = []
         if card is not None:
-            # 轮到你：框停转、边框黄色静止、忙碌词撤下
+            # 轮到你：框停转、边框黄色静止、忙碌词撤下（setup 查模型时没什么要你做，框是淡色）
             top, left, right, bottom = build_loop_frame(
                 width, elapsed=None, label="", bottom_label=self._footer.obs_warning,
-                mode=mode, mode_sgr=mode_sgr, border=pal.yellow)
+                mode=mode, mode_sgr=mode_sgr, border=pal.faint if card.lamp == "running" else pal.yellow)
             # 屏矮时只裁正文（写明裁了几行），标题和选项永远在：框里 overflow 会把底部选项裁掉。
             strip_h = int(self._agent_strip.style.height or 0)
             room = max(6, (self._app.height or 24) - 2 - 2 - 1 - 1 - strip_h - int(card.input_row) - 1)
@@ -1059,6 +1373,14 @@ class CircleSessionApp:
         if isinstance(event, (ColorReportEvent, ColorSchemeEvent)):
             self._theme_watch.handle(event)
             return
+        if isinstance(event, PasteEvent) and (self._gate is not None or not self._connected):
+            gate = self._gate
+            if gate is None or (isinstance(gate, InitController) and gate.input_step()):
+                self._prompt.handle_paste(event.text)  # a key or a URL, pasted
+                if isinstance(gate, InitController) and gate.step == InitStep.PICK_MODEL:
+                    gate.set_query(self._prompt.value)
+                self._app.render()
+            return
         if isinstance(event, PasteEvent):
             if self._input_history.in_search_mode:
                 return
@@ -1088,6 +1410,13 @@ class CircleSessionApp:
 
     def _handle_key(self, kp: KeyPress) -> None:
         self._last_key_at = time.monotonic()
+        if self._gate is not None:
+            with self._app.lock:  # the ticker repaints the card meanwhile: one answer at a time
+                self._handle_gate_key(kp)
+            return
+        if not self._connected:
+            self._handle_connecting_key(kp)
+            return
         # InfoTest ist_app._handle_key — same session-ring order.
         if self._exec_approval is not None and self._handle_exec_approval_key(kp):
             return
@@ -4136,6 +4465,7 @@ class CircleSessionApp:
             self._fail(f"Reload partly failed: {exc}")
             return
         self._footer.update(model=self.settings.auth.model)
+        self._refresh_welcome_data()
         self._toast("Reloaded settings and the model")
 
     # ── busy / footer ──────────────────────────────────────────────────
@@ -4986,9 +5316,12 @@ def run_circle_session(
     model_override=None,
     **start: Any,
 ) -> int:
-    """Entry used by CLI: init/trust gates then CircleSessionApp. ``start`` is passed on to
-    it: ``resume`` (the thread id ``circle -c`` / ``--session`` opens), ``pick_session``,
-    ``fork``, ``thread_id``, ``initial`` messages and the ``run_options``."""
+    """Entry used by the CLI. One screen from the first frame: setup (when Circle is not set
+    up yet, or ``force_init``) and trust (when the folder is new) are cards in the session's
+    own frame, under the welcome block, and the session connects once they are answered.
+    ``start`` is passed on to the session: ``resume`` (the thread id ``circle -c`` /
+    ``--session`` opens), ``pick_session``, ``fork``, ``thread_id``, ``initial`` messages and
+    the ``run_options``."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print("Circle needs an interactive terminal.", file=sys.stderr)
         return 2
@@ -5000,104 +5333,7 @@ def run_circle_session(
     configure_file_logging(home)
     workspace = normalize_workspace(workspace)
     settings = load_settings(home)
-
-    # Reuse existing init/trust controllers (line-driven) inside ink for now
-    if force_init or not settings.is_ready():
-        from circle.tui.app import CircleApp
-
-        # Keep init/trust on the existing CircleApp path, then hand off
-        _ = CircleApp(
-            workspace, home=home, force_init=force_init, model_override=model_override
-        )
-        # Only run until main would start — simpler: run init/trust then session
-        return _run_gates_then_session(
-            workspace, home=home, force_init=force_init, model_override=model_override,
-            start=start)
-
-    if not is_folder_trusted(settings, workspace):
-        return _run_gates_then_session(
-            workspace, home=home, force_init=False, model_override=model_override, start=start)
-
     return CircleSessionApp(
-        settings, workspace, home=home, model_override=model_override, **start,
-    ).run()
-
-
-def _run_gates_then_session(
-    workspace: Path,
-    *,
-    home: Path,
-    force_init: bool,
-    model_override,
-    start: dict[str, Any] | None = None,
-) -> int:
-    """Init/trust via existing ink CircleApp controllers, then session shell."""
-    start = start or {}
-    # Use the gate portion of CircleApp by composing controllers directly in ink
-    from circle.tui.app import CircleApp
-
-    class _GateThenSession(CircleApp):
-        def run(self) -> int:  # type: ignore[override]
-            settings = load_settings(self.home)
-            init_palette_from_terminal(settings.theme)
-            if self.force_init or not settings.is_ready():
-                self.init = InitController(home=self.home)
-                self._stage = "init"
-            elif not is_folder_trusted(settings, self.workspace):
-                self.trust = TrustController(settings, self.workspace, home=self.home)
-                self._stage = "trust"
-            else:
-                self._ink.stop() if self._ink._running else None
-                return CircleSessionApp(
-                    settings,
-                    self.workspace,
-                    home=self.home,
-                    model_override=self.model_override,
-                    **start,
-                ).run()
-
-            self._rebuild()
-            self._ink.start()
-            try:
-                while self._ink._running:
-                    if self._stage == "done":
-                        return 1
-                    time.sleep(0.05)
-                    if self.init and self.init.done:
-                        settings = self.init.settings
-                        assert settings is not None
-                        if not is_folder_trusted(settings, self.workspace):
-                            self.trust = TrustController(
-                                settings, self.workspace, home=self.home
-                            )
-                            self.init = None
-                            self._stage = "trust"
-                            self._rebuild()
-                        else:
-                            self._ink.stop()
-                            return CircleSessionApp(
-                                settings,
-                                self.workspace,
-                                home=self.home,
-                                model_override=self.model_override,
-                                **start,
-                            ).run()
-                    if self.trust and self.trust.finished:
-                        if not self.trust.accepted:
-                            return 1
-                        assert self.trust.result is not None
-                        self._ink.stop()
-                        return CircleSessionApp(
-                            self.trust.result,
-                            self.workspace,
-                            home=self.home,
-                            model_override=self.model_override,
-                            **start,
-                        ).run()
-            finally:
-                self._ink.stop()
-            return 0
-
-    return _GateThenSession(
-        workspace, home=home, force_init=force_init, model_override=model_override
+        settings, workspace, home=home, model_override=model_override, connect=False,
+        setup=force_init, **start,
     ).run()

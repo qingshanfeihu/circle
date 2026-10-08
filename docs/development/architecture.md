@@ -31,7 +31,8 @@ Circle is a Python package, `circle/`. It assembles an agent from [deepagents](h
 | `ink/termio/terminal.py`, `ink/termio/winconsole.py` | Raw input, output and window size. POSIX uses `termios`; Windows switches the console to escape-sequence input and output and reads and writes UTF-16. |
 | `ink/escape_input.py` | Turns a lone ESC into the `esc` key after a short wait, on the setup screens and in the session. |
 | `ink/theme.py`, `ink/theme_watch.py` | The palette, and the watcher that keeps it in step with the terminal's colours while the theme is `auto`. |
-| `app.py`, `controllers.py` | The setup and trust screens shown before a session. |
+| `controllers.py` | Setup and trust: the questions, and the card each step shows in the session's frame before the session connects. |
+| `ink/components/welcome.py` | The welcome block at the top of every session: the logo, the identity, what the folder brings, the recent sessions. |
 | `harness_bridge.py` | Runs the agent graph on a worker thread and turns its stream into events. |
 | `progress_handler.py`, `reducer.py`, `sink.py`, `message_model.py` | Events in, a snapshot of the conversation out. |
 | `transcript_view.py`, `tool_display.py`, `content_blocks.py` | Draw the snapshot. |

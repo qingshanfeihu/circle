@@ -8,7 +8,7 @@ The first time you run `circle`, setup asks for three things:
 
 1. Choose **API URL + KEY**.
 2. Enter the base URL, then the key.
-3. Pick a model from the list.
+3. Pick a model from the list. Typing searches the list (every word has to appear); a model id the list does not have can be typed and chosen as `use "<id>"`.
 
 Circle asks the endpoint for its model list, with a two-and-a-half-second timeout per request. OpenAI discovery tries `<base>/models` with a bearer token, then `<base>/v1/models` if the supplied base has no version suffix. Anthropic discovery uses `<base>/v1/models` with `x-api-key`, without duplicating an existing `/v1`. A URL containing `anthropic` makes Anthropic the first protocol tried; otherwise OpenAI is first. The host and gateway prefix stay unchanged. Setup saves the working base URL for subsequent model requests.
 
@@ -43,7 +43,7 @@ Outside a session, `circle --init` runs the same setup. Both keep your other set
 
 ## OAuth
 
-The setup screen and `/login` list **OAuth sign-in**, but no real OAuth flow is built in yet. In setup, choosing it shows an error and returns you to the choice; in `/login` it is marked `not available yet` and choosing it does nothing. Use an API URL and key.
+Setup and `/login` list **OAuth sign-in**, but no real OAuth flow is built in yet. Both mark it `not available yet`, and it cannot be chosen. Use an API URL and key.
 
 ## Thinking depth
 

@@ -7,7 +7,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Callable
 
-from circle.oauth import OAuthNotConfiguredError, start_oauth_login
+from circle.ink.components.dialog_card import CardLine, CardOption, CardSpec
+from circle.oauth import OAuthNotConfiguredError, oauth_available, start_oauth_login
 from circle.paths import normalize_workspace
 from circle.probe import ProbeResult, normalize_base_url, resolve_endpoint
 from circle.settings import (
@@ -19,7 +20,23 @@ from circle.settings import (
     save_settings,
     with_connection,
 )
-from circle.trust import accept_trust
+from circle.trust import FolderItem, accept_trust, folder_inventory
+
+# The longest body line of a gate card, in columns
+CARD_MEASURE = 76
+# How many models the list shows at once
+MODEL_ROWS = 8
+
+
+def _home_path(path: Path) -> str:
+    """``path`` with your home folder written as ``~``."""
+    text = str(path)
+    user = str(Path.home())
+    return "~" + text[len(user):] if text == user or text.startswith(user + "/") else text
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:] if text else text
 
 
 class InitStep(Enum):
@@ -60,6 +77,8 @@ class InitController:
     persist: bool = True
     auth: ModelAuth | None = None
     credentials: dict[str, str] = field(default_factory=dict)
+    # What is typed under the model list: it keeps the models with every word in them
+    query: str = ""
 
     def __post_init__(self) -> None:
         if self.probe is None:
@@ -143,6 +162,9 @@ class InitController:
 
     def move(self, delta: int) -> None:
         if self.step == InitStep.AUTH_MODE:
+            if not oauth_available():
+                self.model_focus = 0  # the only way in that works
+                return
             self.model_focus = 0 if (self.model_focus + delta) % 2 == 0 else 1
         elif self.step in {InitStep.OAUTH_PROVIDER, InitStep.MANUAL_PROTOCOL}:
             self.model_focus = 0 if (self.model_focus + delta) % 2 == 0 else 1
@@ -153,6 +175,8 @@ class InitController:
         text = text.strip()
         self.error = ""
         if self.step == InitStep.AUTH_MODE:
+            if text == "2" and not oauth_available():
+                return  # listed so you know it is coming, but it cannot be chosen yet
             if text in {"1", "2"}:
                 self.model_focus = 0 if text == "1" else 1
             self._confirm_auth_mode()
@@ -213,6 +237,8 @@ class InitController:
             self._confirm_model()
 
     def _confirm_auth_mode(self) -> None:
+        if self.model_focus != 0 and not oauth_available():
+            return
         if self.model_focus == 0:
             self.mode = "api_key"
             self.step = InitStep.API_URL
@@ -248,7 +274,10 @@ class InitController:
 
     def run_probe(self) -> None:
         """Ask the endpoint for its models; it can take seconds (2.5 s per request)."""
-        probed = self.probe(self.base_url, self.api_key)
+        self.apply_probe(self.probe(self.base_url, self.api_key))
+
+    def apply_probe(self, probed: ProbeResult | None) -> None:
+        """Move on with what the endpoint answered (None: it could not be asked)."""
         if probed is None:
             probed = ProbeResult("openai", [], inferred=True, status="failed")
         self.protocol = probed.protocol
@@ -306,6 +335,120 @@ class InitController:
     def done(self) -> bool:
         return self.step == InitStep.DONE and self.auth is not None
 
+    # ── the card a full-screen session shows for each step ─────────────────
+
+    def matches(self) -> list[str]:
+        """The models with every word of ``query`` in them, in the endpoint's order."""
+        words = self.query.lower().split()
+        return [m for m in self.models if all(w in m.lower() for w in words)]
+
+    def _choices(self) -> list[str]:
+        """The model list's rows: the matches, then the typed id when it is not one of them."""
+        found = self.matches()
+        typed = self.query.strip()
+        return found + ([f"use:{typed}"] if typed and typed not in self.models else [])
+
+    def set_query(self, text: str) -> None:
+        if text != self.query:
+            self.query = text
+            self.model_focus = 0
+
+    def move_choice(self, delta: int) -> None:
+        rows = self._choices()
+        if rows:
+            self.model_focus = (self.model_focus + delta) % len(rows)
+
+    def pick_choice(self) -> None:
+        """Enter on the model list: the marked row, or the typed id."""
+        self.error = ""
+        rows = self._choices()
+        if not rows:
+            self.error = ("enter a model id: the endpoint listed none" if not self.models
+                          else "no model has that name")
+            return
+        chosen = rows[min(self.model_focus, len(rows) - 1)]
+        model = chosen.removeprefix("use:")
+        if model not in self.models:
+            self.models.insert(0, model)
+        self.model_focus = self.models.index(model)
+        self.query = ""
+        self._confirm_model()
+
+    def input_step(self) -> bool:
+        """Whether this step reads a line of text (the card shows the input row)."""
+        return self.step in {InitStep.API_URL, InitStep.API_KEY, InitStep.PICK_MODEL}
+
+    def placeholder(self) -> str:
+        if self.step == InitStep.API_URL and self.saved_url:
+            return f"enter keeps {self.saved_url}"
+        if self.step == InitStep.API_KEY and self._saved_key:
+            return "enter keeps the saved key"
+        if self.step == InitStep.PICK_MODEL:
+            return "type to search" if self.models else "model id"
+        return ""
+
+    def card_spec(self) -> CardSpec | None:
+        """The step as a card for the session's frame; None once there is nothing to ask."""
+        from circle.paths import circle_home
+
+        problem = [CardLine("", segments=(("✖ ", "warn"), (_sentence(self.error), "text")))] if self.error else []
+        if self.step == InitStep.AUTH_MODE:
+            oauth = oauth_available()
+            return CardSpec("How does Circle reach your model?", body=problem, options=[
+                CardOption("API URL + KEY"),
+                CardOption("OAuth sign-in", note="" if oauth else "not available yet", enabled=oauth)],
+                focus=self.model_focus, measure=CARD_MEASURE)
+        if self.step == InitStep.API_URL:
+            return CardSpec("What is the API's base URL?", body=problem + [
+                CardLine("An OpenAI-style or Anthropic-style API, such as https://api.openai.com/v1", "dim")],
+                input_row=True, measure=CARD_MEASURE)
+        if self.step == InitStep.API_KEY:
+            where = _home_path((self.home or circle_home()) / "credentials.json")
+            return CardSpec("What is the API key?", body=problem + [
+                CardLine("", segments=(("for ", "dim"), (self.base_url, "text"))),
+                CardLine(f"Saved in {where}, readable only by you.", "dim")],
+                input_row=True, measure=CARD_MEASURE)
+        if self.step == InitStep.OAUTH_PROVIDER:
+            return CardSpec("Sign in with OAuth", body=problem, options=[
+                CardOption("anthropic"), CardOption("openai")], focus=self.model_focus, measure=CARD_MEASURE)
+        if self.step == InitStep.OAUTH_WAIT:
+            return CardSpec(f"Signing in to {self.oauth_provider}…", lamp="running",
+                            body=[CardLine(self.status or "waiting for the browser", "dim")], measure=CARD_MEASURE)
+        if self.step == InitStep.PROBING:
+            return CardSpec("Looking for models…", lamp="running", body=[
+                CardLine("", segments=(("asking ", "dim"), (self.base_url, "text")))], measure=CARD_MEASURE)
+        if self.step == InitStep.MANUAL_PROTOCOL:
+            return CardSpec("Which kind of API is it?", body=problem + [
+                CardLine("", segments=(("✖ ", "warn"), (_sentence(self.status), "text"))),
+                CardLine("Pick the kind, then type the model id.", "dim")],
+                options=[CardOption("OpenAI-style API"), CardOption("Anthropic-style API")],
+                focus=self.model_focus, measure=CARD_MEASURE)
+        if self.step == InitStep.PICK_MODEL:
+            return self._model_card(problem)
+        return None
+
+    def _model_card(self, problem: list[CardLine]) -> CardSpec:
+        from urllib.parse import urlparse
+
+        if self.models and self.status.startswith("discovered"):
+            host = urlparse(self.base_url).hostname or self.base_url
+            about = CardLine("", segments=((f"{len(self.models)} models at ", "dim"), (host, "text")))
+        elif self.models:
+            about = CardLine(_sentence(self.status), "dim")
+        else:
+            about = CardLine(_sentence(self.status or "no models were listed") + ". Type the model id your "
+                             "endpoint uses.", "dim")
+        rows = self._choices()
+        focus = min(self.model_focus, max(0, len(rows) - 1))
+        top = min(max(0, focus - MODEL_ROWS + 1), max(0, len(rows) - MODEL_ROWS))
+        window = rows[top:top + MODEL_ROWS]
+        options = [CardOption(f'use "{row.removeprefix("use:")}"', note="not listed") if row.startswith("use:")
+                   else CardOption(row)
+                   for row in window]
+        position = f"({focus + 1}/{len(rows)})" if len(rows) > MODEL_ROWS else ""
+        return CardSpec("Which model?", body=problem + [about], options=options, focus=focus - top,
+                        keys=False, position=position, input_row=True, measure=CARD_MEASURE)
+
 
 @dataclass
 class TrustController:
@@ -339,6 +482,37 @@ class TrustController:
     def move(self, delta: int) -> None:
         self.focus = 0 if (self.focus + delta) % 2 == 0 else 1
 
+    def inventory(self) -> list[FolderItem]:
+        """What trusting loads from the folder, looked up once."""
+        found = getattr(self, "_inventory", None)
+        if found is None:
+            try:
+                found = folder_inventory(self.workspace, self.home)
+            except OSError:
+                found = []
+            self._inventory = found
+        return found
+
+    def card_spec(self) -> CardSpec:
+        from circle.paths import circle_home
+
+        items = self.inventory()
+        body = [CardLine(_home_path(self.workspace)), CardLine(""),
+                CardLine("Circle reads, edits and runs commands here."),
+                CardLine("It asks before anything that changes files."), CardLine("")]
+        if items:
+            body.append(CardLine(f"Trusting also loads {loads_summary(items)}.", "dim"))
+            extensions = next((item.count for item in items if item.kind == "extensions"), 0)
+            if extensions:
+                body.append(CardLine("The extension runs its own code when circle starts." if extensions == 1
+                                     else "The extensions run their own code when circle starts.", "warn"))
+        else:
+            body.append(CardLine("The folder brings no instructions, skills, commands or extensions.", "dim"))
+        saved = _home_path((self.home or circle_home()) / "settings.json")
+        return CardSpec("Trust this folder?", body=body, options=[
+            CardOption("Trust and continue", note=f"saved in {saved}"), CardOption("Quit")],
+            focus=self.focus, measure=CARD_MEASURE)
+
     def confirm(self) -> None:
         if self.focus == 0:
             self.result = accept_trust(self.settings, self.workspace, home=self.home)
@@ -355,3 +529,20 @@ class TrustController:
         elif t in {"n", "no", "2"}:
             self.focus = 1
             self.confirm()
+
+
+def loads_summary(items: list[FolderItem]) -> str:
+    """``its AGENTS.md, 3 skills, 2 commands and 1 extension``."""
+    parts: list[str] = []
+    for item in items:
+        if item.kind == "instructions":
+            parts.append("its " + " and ".join(item.names) if len(item.names) <= 2
+                         else f"its {item.count} instruction files")
+        elif item.kind == "settings":
+            parts.append("its settings")
+        else:
+            noun = item.kind if item.count != 1 else item.kind[:-1]
+            parts.append(f"{item.count} {noun}")
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]

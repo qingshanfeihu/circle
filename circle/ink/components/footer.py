@@ -154,17 +154,6 @@ class FooterPane:
         self._yolo_enabled = bool(enabled)
         self._refresh()
 
-    def set_status(self, *, phase: str = "", model: str = "") -> None:
-        """Gate UI helper used by CircleApp._rebuild (init/trust screens)."""
-        status = phase or self.status or "ready"
-        # Gate phases are not "running" — keep footer calm.
-        if status not in {"ready", "error", "running"}:
-            status = "ready"
-        kwargs: dict = {"status": status}
-        if model:
-            kwargs["model"] = model
-        self.update(**kwargs)
-
     def usage_totals(self) -> dict[str, int]:
         """This run's tokens, the main agent's and the subagents' together."""
         return {

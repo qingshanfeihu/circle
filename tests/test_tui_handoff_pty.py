@@ -131,21 +131,23 @@ def test_first_command_after_init_and_repeated_handoffs(kind, tmp_path):
             terminal = Terminal(["--init", str(workspace)], home, workspace, tui=True)
             try:
                 terminal.expect("API URL + KEY"); terminal.send("\r")
-                terminal.expect("The base URL of an OpenAI-style")
+                terminal.expect("An OpenAI-style or Anthropic-style API")
                 terminal.send(f"http://127.0.0.1:{server.server_port}/v1/\r")
-                terminal.expect("The key for"); terminal.send(KEY + "\r")
+                terminal.expect("What is the API key?"); terminal.send(KEY + "\r")
                 if kind == "failed":
-                    terminal.expect("select protocol for manual configuration:")
+                    terminal.expect("Which kind of API is it?")
                     terminal.send("2\r")
                     terminal.expect("(anthropic); model is unverified")
                 elif kind == "empty":
-                    terminal.expect("endpoint returned an empty model list")
+                    terminal.expect("returned an empty model list")
                     terminal.send("\r")
-                    terminal.expect("enter a model id")
+                    terminal.expect("Enter a model id")
                 else:
-                    terminal.expect("discovered 2 models")
+                    terminal.expect("2 models at 127.0.0.1")
                     terminal.expect("handoff-b")
-                terminal.send(("1" if kind == "valid" else "manual-handoff") + "\r")
+                # The list is searched by typing; enter takes the marked row (the first) or
+                # the id typed when no listed model has it
+                terminal.send(("" if kind == "valid" else "manual-handoff") + "\r")
                 terminal.expect("Trust this folder?"); terminal.send("y\r")
                 terminal.expect("for shortcuts", 30)
                 # No retry or settling sleep: the very first command must work.

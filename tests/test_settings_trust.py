@@ -185,37 +185,53 @@ def test_a_save_keeps_keys_circle_does_not_know(tmp_path: Path):
     assert raw["theme"] == "light" and raw["future_option"] == [1, 2]
 
 
+def _setup_screen(home: Path, workspace: Path, probe=None):
+    """The session screen at setup's first question, as ``circle --init`` opens it."""
+    from circle.tui.session_app import CircleSessionApp
+
+    app = CircleSessionApp(load_settings(home), workspace, home=home, connect=False, setup=True)
+    if probe is not None:
+        app._probe_endpoint = probe  # noqa: SLF001
+    app._begin_gate()  # noqa: SLF001
+    return app
+
+
+def _wait_for(condition, timeout: float = 5.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert condition()
+
+
 def test_enter_on_the_setup_screen_keeps_the_saved_url_and_key(tmp_path: Path):
     """The keys, not only the controller: enter on an empty box at the URL and key steps."""
     from circle.ink.parse_keypress import KeyPress
-    from circle.tui.app import CircleApp
-    from circle.tui.controllers import InitController, InitStep
+    from circle.tui.controllers import InitStep
 
     home, workspace = tmp_path / "home", tmp_path / "proj"
     _set_up_once(home, workspace)
-    app = CircleApp(workspace=workspace, home=home, force_init=True)
-    app.init = InitController(home=home, probe=lambda url, key: ProbeResult(
+    app = _setup_screen(home, workspace, probe=lambda url, key: ProbeResult(
         protocol="openai", models=["m1"], base_url=url) if key == "sk-first" else None)
-    app._rebuild()  # noqa: SLF001
-    app._on_input(KeyPress(key="enter"))  # noqa: SLF001  API URL + KEY
-    assert app.init.step == InitStep.API_URL
-    app._on_input(KeyPress(key="enter"))  # noqa: SLF001
-    assert app.init.step == InitStep.API_KEY and app.init.base_url == "https://one.example/v1"
-    app._on_input(KeyPress(key="enter"))  # noqa: SLF001
-    assert app.init.step == InitStep.PICK_MODEL
+    gate = app._gate  # noqa: SLF001
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001  API URL + KEY
+    assert gate.step == InitStep.API_URL
+    assert app._prompt.placeholder == "enter keeps https://one.example/v1"  # noqa: SLF001
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    assert gate.step == InitStep.API_KEY and gate.base_url == "https://one.example/v1"
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    _wait_for(lambda: gate.step == InitStep.PICK_MODEL)  # the endpoint is asked off the input thread
 
 
 def test_enter_on_an_empty_box_at_first_setup_says_what_is_missing(tmp_path: Path):
     from circle.ink.parse_keypress import KeyPress
-    from circle.tui.app import CircleApp
-    from circle.tui.controllers import InitController, InitStep
+    from circle.tui.controllers import InitStep
 
-    app = CircleApp(workspace=tmp_path, home=tmp_path / "home", force_init=True)
-    app.init = InitController(home=tmp_path / "home")
-    app._rebuild()  # noqa: SLF001
-    app._on_input(KeyPress(key="enter"))  # noqa: SLF001
-    app._on_input(KeyPress(key="enter"))  # noqa: SLF001
-    assert app.init.step == InitStep.API_URL and app.init.error == "Enter a URL"
+    app = _setup_screen(tmp_path / "home", tmp_path)
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    app._handle_key(KeyPress(key="enter"))  # noqa: SLF001
+    assert app._gate.step == InitStep.API_URL and app._gate.error == "Enter a URL"  # noqa: SLF001
 
 
 def test_esc_alone_leaves_the_setup_screen(tmp_path: Path):
@@ -223,14 +239,11 @@ def test_esc_alone_leaves_the_setup_screen(tmp_path: Path):
     short wait with nothing following, it is the esc key, and esc leaves setup."""
     import time
 
-    from circle.tui.app import CircleApp
-    from circle.tui.controllers import InitController
-
-    app = CircleApp(workspace=tmp_path, home=tmp_path / "home", force_init=True)
-    app.init = InitController(home=tmp_path / "home")
-    app._ink._running = True  # noqa: SLF001  as if started
-    assert app._ink._input_parser.feed("\x1b") == []  # noqa: SLF001  held: maybe a sequence
+    app = _setup_screen(tmp_path / "home", tmp_path)
+    app._app._running = True  # noqa: SLF001  as if started
+    assert app._app._input_parser.feed("\x1b") == []  # noqa: SLF001  held: maybe a sequence
     deadline = time.monotonic() + 2
-    while app._ink._running and time.monotonic() < deadline:  # noqa: SLF001
+    while app._app._running and time.monotonic() < deadline:  # noqa: SLF001
         time.sleep(0.02)
-    assert not app._ink._running  # noqa: SLF001
+    assert not app._app._running  # noqa: SLF001
+    assert app._gate_exit == 0  # noqa: SLF001

@@ -21,10 +21,47 @@ class Transcript:
         self._messages: list[str] = []
         # 与 _messages 同步增删改：每条消息的类型底色（hex），重建节点时照着恢复。
         self._messages_bg: list[str | None] = []
+        # The head: lines shown above the first message (the welcome block). They are not
+        # messages: indexes, snapshots, restore and clear leave them out and keep them.
+        self._head: list[str] = []
 
     @property
     def node(self) -> DOMElement:
         return self._node
+
+    def set_head(self, lines: list[str]) -> None:
+        """Show ``lines`` above the messages, in place of the head shown before."""
+        lines = list(lines)
+        if lines == self._head:
+            return
+        children = self._node.children
+        for child in children[:len(self._head)]:
+            child.parent = None
+        nodes = [_text_node(text, None) for text in lines]
+        for node in nodes:
+            node.parent = self._node
+        children[:len(self._head)] = nodes
+        self._head = lines
+        self._node.mark_dirty()
+        if self._node.sticky_scroll:
+            self._scroll_to_bottom()
+
+    @property
+    def head(self) -> list[str]:
+        return list(self._head)
+
+    def head_rows(self) -> int:
+        """How many screen rows the head takes at the current width."""
+        width = self._node.rect.width if self._node.rect.width > 0 else 80
+        return sum(child.wrapped_rows(width) for child in self._node.children[:len(self._head)]
+                   if isinstance(child, TextNode))
+
+    def head_in_view(self) -> bool:
+        """Whether any of the head is on screen (the view has not scrolled past it)."""
+        return bool(self._head) and int(getattr(self._node, "scroll_top", 0) or 0) < self.head_rows()
+
+    def _message_nodes(self) -> list:
+        return self._node.children[len(self._head):]
 
     def append_message(self, text: str, *, style: str = "", bg: str | None = None) -> None:
         self._messages.append(text)
@@ -50,7 +87,7 @@ class Transcript:
             self.append_message("")
 
     def update_last_message(self, text: str) -> None:
-        if self._node.children:
+        if self._messages and self._node.children:
             last = self._node.children[-1]
             if isinstance(last, TextNode):
                 last.set_value(text)
@@ -64,6 +101,8 @@ class Transcript:
         self._node.clear_children()
         self._messages.clear()
         self._messages_bg.clear()
+        for text in self._head:
+            self._node.append_child(_text_node(text, None))
         self._node.scroll_top = 0
         self._node.sticky_scroll = True
 
@@ -99,7 +138,7 @@ class Transcript:
             self._messages[idx] = text
             if bg is not None:
                 self._messages_bg[idx] = bg or None
-            children = list(self._node.children)
+            children = list(self._message_nodes())
             if idx < len(children):
                 child = children[idx]
                 if isinstance(child, TextNode):
@@ -119,20 +158,24 @@ class Transcript:
         line_bgs = [b or None for b in bgs] if bgs is not None else [bg or None] * len(new_lines)
         line_bgs = (line_bgs + [None] * len(new_lines))[:len(new_lines)]
         children = self._node.children
-        in_sync = len(children) == len(self._messages)
+        head = len(self._head)
+        in_sync = len(children) == head + len(self._messages)
         self._messages[start_idx:start_idx + count] = new_lines
         self._messages_bg[start_idx:start_idx + count] = line_bgs
         if not in_sync:
             self._node.clear_children()
+            for text in self._head:
+                self._node.append_child(_text_node(text, None))
             for msg, msg_bg in zip(self._messages, self._messages_bg):
                 self._node.append_child(_text_node(msg, msg_bg))
         else:
-            for child in children[start_idx:start_idx + count]:
+            start = head + start_idx
+            for child in children[start:start + count]:
                 child.parent = None
             nodes = [_text_node(msg, msg_bg) for msg, msg_bg in zip(new_lines, line_bgs)]
             for node in nodes:
                 node.parent = self._node
-            children[start_idx:start_idx + count] = nodes
+            children[start:start + count] = nodes
             self._node.mark_dirty()
         if self._node.sticky_scroll:
             self._scroll_to_bottom()
@@ -166,16 +209,17 @@ class Transcript:
             self._scroll_to_bottom()
 
     def row_of(self, idx: int) -> int:
-        """The screen row (from the top of the content) where message ``idx`` starts."""
+        """The screen row (from the top of the content, head included) where message ``idx``
+        starts."""
         width = self._node.rect.width if self._node.rect.width > 0 else 80
-        children = [c for c in self._node.children if isinstance(c, TextNode)]
-        return sum(child.wrapped_rows(width) for child in children[:max(0, idx)])
+        children = [c for c in self._message_nodes() if isinstance(c, TextNode)]
+        return self.head_rows() + sum(child.wrapped_rows(width) for child in children[:max(0, idx)])
 
     def message_at_row(self, row: int) -> int:
-        """The message shown at content row ``row``."""
+        """The message shown at content row ``row`` (the first one while the head is there)."""
         width = self._node.rect.width if self._node.rect.width > 0 else 80
-        seen = 0
-        for index, child in enumerate(c for c in self._node.children if isinstance(c, TextNode)):
+        seen = self.head_rows()
+        for index, child in enumerate(c for c in self._message_nodes() if isinstance(c, TextNode)):
             seen += child.wrapped_rows(width)
             if seen > row:
                 return index

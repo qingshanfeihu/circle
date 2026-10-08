@@ -226,24 +226,29 @@ def test_models_command_reports_result_in_both_themes(monkeypatch, tmp_path, sta
 def test_init_manual_protocol_keyboard_confirmation(monkeypatch, tmp_path, palette):
     from circle.ink import theme
     from circle.ink.parse_keypress import KeyPress
-    from circle.tui.app import CircleApp
+    from circle.settings import load_settings
+    from circle.tui.session_app import CircleSessionApp
     saved = theme._detected
     try:
         theme.set_detected(*(theme.DEFAULT_DARK if palette == 'dark' else theme.DEFAULT_LIGHT), {})
         theme.apply_theme('auto')
         monkeypatch.setattr(probe, '_get', lambda *a: (401, b'{}'))
-        app = CircleApp(workspace=tmp_path, home=tmp_path / 'home')
-        app.init = init_controller(tmp_path / 'home')
-        app._rebuild()
-        assert app.init.step == InitStep.MANUAL_PROTOCOL
-        app._on_input(KeyPress(key='down'))
-        app._on_input(KeyPress(key='enter'))
-        assert app.init.step == InitStep.PICK_MODEL
-        assert app.init.protocol == 'anthropic'
-        app._on_input(KeyPress(key='enter'))
-        assert not app.init.done
-        app._on_submit('manual-model')
-        assert app.init.done
+        app = CircleSessionApp(load_settings(tmp_path / 'home'), tmp_path, home=tmp_path / 'home', connect=False)
+        gate = init_controller(tmp_path / 'home')
+        app._gate = gate
+        app._sync_gate()
+        assert gate.step == InitStep.MANUAL_PROTOCOL
+        assert app._active_card().title == 'Which kind of API is it?'
+        app._handle_key(KeyPress(key='down'))
+        app._handle_key(KeyPress(key='enter'))
+        assert gate.step == InitStep.PICK_MODEL
+        assert gate.protocol == 'anthropic'
+        app._handle_key(KeyPress(key='enter'))
+        assert not gate.done
+        for ch in 'manual-model':
+            app._handle_key(KeyPress(key=ch, char=ch))
+        app._handle_key(KeyPress(key='enter'))
+        assert gate.done and gate.auth.model == 'manual-model'
     finally:
         theme._detected = saved
         theme.reset_palette()

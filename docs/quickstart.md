@@ -60,11 +60,11 @@ cd /path/to/project
 circle
 ```
 
-The first time, Circle walks you through two steps.
+The first time, Circle walks you through two steps. Both are asked in the input box at the bottom of the session screen, under the welcome block, so the screen you answer them on is the one you then work in.
 
 **Connect a model.** Choose **API URL + KEY**, paste the base URL and the key (it shows as dots), then pick a model from the list Circle fetches, or type its id. If Circle cannot list the endpoint's models, it says why, asks whether the API is OpenAI-style or Anthropic-style, and you type the model id your provider documents. See [Choose a model](models.md). The OAuth choice is not available yet.
 
-**Trust the folder.** Circle asks before it works in a folder for the first time. Trusting records the folder in your settings; nothing is written into the folder. Choose `y` to continue.
+**Trust the folder.** Circle asks before it works in a folder for the first time, and says what trusting loads from it: its instruction files, skills, commands, extensions and settings. Extensions run their own code, so the card says so when the folder has any. Trusting records the folder in your settings; nothing is written into the folder. Choose **Trust and continue** (or press `y`).
 
 After that, `circle` goes straight to the session.
 

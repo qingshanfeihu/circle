@@ -30,14 +30,18 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 class CardLine:
     text: str
     tone: str = "text"  # em | text | dim | warn | err | added | removed | faint
+    # A status row made of parts in their own tones, e.g. (("for ", "dim"), (url, "text")):
+    # one row, cut with "…" when it does not fit, never wrapped. ``text`` is then ignored.
+    segments: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
 class CardOption:
     label: str
-    note: str = ""              # dim text after the label
+    note: str = ""              # dim text after the label (a column of its own in a keyless list)
     selected: bool | None = None  # multi-select: True / False draw [x] / [ ]; None = plain
     key: str = ""               # key column text; "" = the option's number
+    enabled: bool = True        # False: drawn faint, and the card's owner never focuses it
 
 
 @dataclass
@@ -49,6 +53,10 @@ class CardSpec:
     notes: list[CardLine] = field(default_factory=list)
     tint: str = ""              # SGR background of the title and body rows ("" = none)
     input_row: bool = False     # the frame shows the prompt row under the options
+    lamp: str = "wait"          # the title's lamp: wait (your turn) or running (Circle is busy)
+    measure: int = 0            # longest body line in columns (0 = the card's width)
+    keys: bool = True           # False: a list without the key column, as a popup draws it
+    position: str = ""          # a dim row under the options, e.g. "(3/24)"
 
 
 @dataclass
@@ -139,18 +147,25 @@ def card_rows(spec: CardSpec, width: int, max_rows: int | None = None) -> list[s
     pal = palette()
     width = max(12, width)
     tint = spec.tint
-    lamp_code, lamp_glyph = status_light("wait", reset=False).rsplit("m", 1)
+    lamp_code, lamp_glyph = status_light(spec.lamp, reset=False).rsplit("m", 1)
     head = _compose(width, [(" ", ""), (lamp_glyph, lamp_code + "m"), (" ", ""), (spec.title, pal.em)], tint)
+    room = min(width - 4, spec.measure) if spec.measure > 0 else width - 4
     body: list[str] = []
     for line in spec.body:
-        for part in wrap(line.text, width - 4):
+        if line.segments:
+            body.append(_compose(width, [("   ", ""), *((text, _tone(pal, tone)) for text, tone in line.segments)],
+                                 tint))
+            continue
+        for part in wrap(line.text, room):
             body.append(_compose(width, [("   ", ""), (part, _tone(pal, line.tone))], tint))
     menu: list[str] = []
     if spec.options:
         menu.append(_compose(width, []))
-    keys = [opt.key or str(i + 1) for i, opt in enumerate(spec.options)]
+    if not spec.keys:
+        menu += _keyless_rows(spec, width)
+    keys = [opt.key or str(i + 1) for i, opt in enumerate(spec.options)] if spec.keys else []
     key_w = max((string_width(k) for k in keys), default=1)
-    for i, opt in enumerate(spec.options):
+    for i, opt in enumerate(spec.options if spec.keys else ()):
         mark = "" if opt.selected is None else ("[x] " if opt.selected else "[ ] ")
         text_w = width - 3 - key_w - string_width(mark)
         # label and note wrap as one text (an option is never cut), the note is dimmed by offset
@@ -165,13 +180,20 @@ def card_rows(spec: CardSpec, width: int, max_rows: int | None = None) -> list[s
             cut = max(0, len(opt.label) - used)  # how much of this row is still the label
             label_part, note_part = part[:cut], part[cut:]
             used += len(part) + (1 if k < len(parts) - 1 else 0)  # wrap drops the space at a break
+            label_tone = pal.text if opt.enabled else pal.faint
             segs: list[tuple[str, str]] = [(" ", ""), (lead, "" if focused else pal.dim), (" ", ""),
                                            (lead_mark, pal.green if opt.selected else ""),
-                                           (label_part, "" if focused else pal.text)]
+                                           (label_part, "" if focused else label_tone)]
             if note_part:
-                segs.append((note_part, "" if focused else pal.dim))
+                segs.append((note_part, "" if focused else (pal.dim if opt.enabled else pal.faint)))
             menu.append(_compose(width, [(t, on if focused and not s else s) for t, s in segs],
                                  pal.sel_bg if focused else ""))
+    if spec.position and spec.options:
+        menu.append(_compose(width, [("   ", ""), (spec.position, pal.dim)]))
+    if spec.input_row and (not spec.options or not spec.keys):
+        # the input row under the body or a searched list, one blank row apart (a menu's own
+        # input row, "Reject and explain", stays right under the option it belongs to)
+        menu.append(_compose(width, []))
     notes: list[str] = []
     for line in spec.notes:
         for part in wrap(line.text, width - 4):
@@ -183,6 +205,24 @@ def card_rows(spec: CardSpec, width: int, max_rows: int | None = None) -> list[s
             hidden = len(body) - keep
             body = body[:keep] + [_compose(width, [("   ", ""), (f"… +{hidden} lines", pal.dim)], tint)]
     return [head, *body, *menu, *notes]
+
+
+def _keyless_rows(spec: CardSpec, width: int) -> list[str]:
+    """A list inside a card (setup's models): label at the text column, the note in a column
+    of its own, the focused row painted whole. Long labels are cut, never wrapped."""
+    pal = palette()
+    room = max(8, width - 6 - max((string_width(opt.note) for opt in spec.options), default=0))
+    labels = [_fit(opt.label, room) for opt in spec.options]
+    name_w = max((string_width(label) for label in labels), default=0) + 3
+    rows: list[str] = []
+    for i, (opt, label) in enumerate(zip(spec.options, labels)):
+        pad = " " * max(0, name_w - string_width(label))
+        if i == spec.focus:
+            rows.append(_compose(width, [(f"   {label}{pad}{opt.note}", sgr_join(pal.sel_bg, pal.em))], pal.sel_bg))
+        else:
+            rows.append(_compose(width, [("   ", ""), (label + pad, pal.text if opt.enabled else pal.faint),
+                                         (opt.note, pal.dim)]))
+    return rows
 
 
 def popup_rows(title: str, items: list[PopupItem], focus: int, width: int,
