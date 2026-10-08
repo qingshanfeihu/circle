@@ -18,7 +18,7 @@
 
 Circle reads and edits the code in a folder you choose, and runs commands there. It works with any service or gateway that speaks the OpenAI or Anthropic API. It asks before it runs a command or changes a file, and the screen shows at a glance whether it is working or waiting for you.
 
-**Circle is early software (0.4.0).** There is no operating-system sandbox and OAuth sign-in is not available. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
+**Circle is early software (0.5.0).** There is no operating-system sandbox and OAuth sign-in is not available. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
 
 ## Install
 

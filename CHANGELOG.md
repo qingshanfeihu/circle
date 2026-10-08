@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-08
+
 ### Added
 
 - **Background jobs.** A command or a subagent can keep running while you and the model go on. The model starts one with `background: true` on `execute` or `task`; a command still running at the default timeout goes on as a job instead of being ended; `ctrl+b` moves the command being waited on (yours too) to the background; and processes a command leaves running (`server &`) become a job. Each job's output is kept in a file the model reads, rows below the input box show what runs, and `/jobs` opens or stops them. When a job ends the model gets a notice, and Circle starts a turn for it when nothing else runs, so the model no longer polls or sleeps. Leaving Circle, closing the terminal or a `SIGTERM` stops every job. See [Background jobs](docs/background-jobs.md).
