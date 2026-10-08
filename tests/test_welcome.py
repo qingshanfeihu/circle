@@ -186,9 +186,20 @@ def test_the_inventory_is_what_the_session_loads_from_the_folder(tmp_path: Path)
     assert list(items) == ["instructions", "skills", "commands", "extensions", "settings"]
     assert items["instructions"].names == ("AGENTS.md",)
     assert items["skills"].count == 2 and set(items["skills"].names) == {"diff", "shared"}  # up to the git root
-    assert items["commands"].count == 1 and items["commands"].where == ".circle/commands"
-    assert items["extensions"].names == ("xlsx",) and items["extensions"].where == ".circle/extensions"
-    assert items["settings"].where == ".circle/settings.json"
+    # paths inside the folder, written as the system writes them (".circle\\commands" on Windows)
+    assert items["commands"].count == 1 and items["commands"].where == str(Path(".circle", "commands"))
+    assert items["extensions"].names == ("xlsx",) and items["extensions"].where == str(Path(".circle", "extensions"))
+    assert items["settings"].where == str(Path(".circle", "settings.json"))
+
+
+def test_paths_under_your_home_folder_are_written_with_a_tilde(monkeypatch, tmp_path: Path):
+    import os
+
+    from circle.tui.controllers import _home_path
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert _home_path(tmp_path / ".circle" / "settings.json") == "~" + os.sep + str(Path(".circle", "settings.json"))
+    assert _home_path(tmp_path.parent / "elsewhere") == str(tmp_path.parent / "elsewhere")
 
 
 def test_an_ordinary_folder_brings_nothing(tmp_path: Path):

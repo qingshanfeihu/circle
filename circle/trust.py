@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def folder_inventory(workspace: str | Path, home: Path | None = None) -> list[Fo
         except ValueError:
             text = str(path)
             user = str(Path.home())
-            return "~" + text[len(user):] if text == user or text.startswith(user + "/") else text
+            return "~" + text[len(user):] if text == user or text.startswith(user + os.sep) else text
 
     def where_of(paths: list[Path]) -> str:
         roots = sorted({shown(p) for p in paths})

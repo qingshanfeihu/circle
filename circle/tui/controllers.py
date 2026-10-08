@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -32,7 +33,7 @@ def _home_path(path: Path) -> str:
     """``path`` with your home folder written as ``~``."""
     text = str(path)
     user = str(Path.home())
-    return "~" + text[len(user):] if text == user or text.startswith(user + "/") else text
+    return "~" + text[len(user):] if text == user or text.startswith(user + os.sep) else text
 
 
 def _sentence(text: str) -> str:
