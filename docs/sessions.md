@@ -79,9 +79,11 @@ The original session stays in `/resume`.
 
 ## Compaction
 
-Long conversations are summarized automatically when they pass about 85% of the model's context window (170,000 tokens if the model does not report one). Older messages are replaced by a summary and the recent ones are kept. The originals are saved in the data folder, under `projects/<folder>-<id>/conversation_history/`; the model can still read them at `/conversation_history/`.
+Long conversations are summarized automatically when they pass 85% of the model's context window, the number the footer shows after `ctx`, or sooner when the room kept for the answer needs it (see [Models](models.md#cost-and-context-in-the-footer)). Older messages are replaced by a summary and the most recent tenth of the window is kept. The originals are saved in the data folder, under `projects/<folder>-<id>/conversation_history/`; the model can still read them at `/conversation_history/`.
 
-`/compact [hint]` does it now. It asks the model to run the compaction, then shows what happened: `— compacted · summarized 12 messages into a concise summary —` and the summary, or `Nothing to compact yet` in the footer when the conversation still fits, or a red line when the model did not run it. The hint is added to the request as text; it is not passed to the summarizer. The request and its answer are not drawn as a turn, now or when the session is reopened.
+While a compaction runs, automatic or not, a row above the input box shows it with a progress bar, the step and the time, for example `auto-compacting · ████████░░░░░░░░ summarizing · 12s`. It cannot be stopped. When it is done, one faint line stays in the conversation: `auto-compacted · ~171.0k → ~18.0k tokens · summarized 40 messages, kept 6 · 34s · history: /conversation_history/….md` (the token counts are estimates of the whole request, on the scale of the footer's `ctx`). A compaction during a turn leaves its line under the turn. When it fails, a red line says why.
+
+`/compact [hint]` does it now. It asks the model to run the compaction; the row and the closing line are the same, reading `compacting` and `compacted`, followed by the model's answer. When the conversation still fits, `Nothing to compact yet` shows in the footer, and a red line says so when the model did not run the compaction. The hint is added to the request as text; it is not passed to the summarizer. The request and its answer are not drawn as a turn, now or when the session is reopened.
 
 The footer shows how full the context is: `ctx 12.5k/1.0M (1%)`.
 

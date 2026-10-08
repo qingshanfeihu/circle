@@ -17,6 +17,7 @@ from langchain_core.outputs import (
     LLMResult,
 )
 
+from circle import model_catalog
 from circle.events import EventBus
 from circle.harness import create_harness
 from circle.middleware.cancellation import CancellationToken, CircleCancelled
@@ -274,7 +275,23 @@ def test_bridge_main_usage_does_not_double_count_subagents(tmp_path: Path) -> No
     assert snap.fork_usage["input_tokens"] == 200
 
 
+# Prices come from models.dev for the connected endpoint (circle.model_catalog); a small
+# catalog of two models at one endpoint keeps these tests independent of models.dev's changes
+PRICED = {"schema": model_catalog.SCHEMA, "providers": {"anthropic": {"api": "", "models": {
+    "claude-sonnet-5": {"context": 200_000, "cost": {"input": 3.0, "output": 15.0,
+                                                     "cache_read": 0.3, "cache_write": 3.75}},
+    "claude-haiku-5": {"context": 200_000, "cost": {"input": 1.0, "output": 5.0,
+                                                    "cache_read": 0.1, "cache_write": 1.25}},
+}}}}
+
+
+def _priced_endpoint() -> None:
+    model_catalog.set_catalog(PRICED)
+    model_catalog.bind_endpoint("", "anthropic")
+
+
 def test_subagent_usage_keeps_its_model_price_and_cache_totals() -> None:
+    _priced_endpoint()
     reducer = MessageReducer()
     reducer.dispatch({"kind": "llm_token", "run_id": "run", "seq": 0,
                       "payload": {"content": "main is streaming"}})
@@ -299,13 +316,14 @@ def test_subagent_usage_keeps_its_model_price_and_cache_totals() -> None:
 
 
 def test_progress_handler_prices_each_subagent_model() -> None:
+    _priced_endpoint()
     bus = EventBus(run_id="prices")
     reducer = MessageReducer()
     bus.subscribe(reducer.dispatch)
     handler = ProgressHandler(bus)
     usage = {"input_tokens": 1000, "output_tokens": 100, "total_tokens": 1100,
              "input_token_details": {"cache_read": 600}}
-    for model in ("claude-sonnet-5", "qwen3.8-flash"):
+    for model in ("claude-sonnet-5", "claude-haiku-5"):
         run_id = uuid4()
         metadata = {"lc_agent_name": "general-purpose"}
         handler.on_chat_model_start({"name": "test"}, [[]], run_id=run_id,
@@ -319,4 +337,8 @@ def test_progress_handler_prices_each_subagent_model() -> None:
     assert snap.fork_usage["input_tokens"] == 2000
     assert snap.fork_usage["prompt_cache_hit_tokens"] == 1200
     assert snap.fork_usage_cost["calls"] == 2
-    assert set(snap.fork_usage_cost["amounts"]) == {"USD", "RMB"}
+    # each call at its own model's price: 400 new + 600 cached in, 100 out
+    sonnet = (400 * 3.0 + 600 * 0.3 + 100 * 15.0) / 1_000_000
+    haiku = (400 * 1.0 + 600 * 0.1 + 100 * 5.0) / 1_000_000
+    assert set(snap.fork_usage_cost["amounts"]) == {"USD"}
+    assert abs(snap.fork_usage_cost["amounts"]["USD"] - (sonnet + haiku)) < 1e-12

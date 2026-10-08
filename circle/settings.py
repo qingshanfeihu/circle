@@ -57,6 +57,9 @@ class CircleSettings:
     double_escape: str = "tree"
     # Start sessions with the model's thinking rows hidden (/thinking shows them)
     hide_thinking: bool = False
+    # Per model: {"glm-5.3": {"context_window": 1000000}}. The window replaces the one from
+    # models.dev for the footer and the automatic compaction (circle/model_catalog.py)
+    models: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def is_ready(self) -> bool:
         if not self.initialized:
@@ -112,6 +115,10 @@ def load_settings_from_dict(raw: dict[str, Any]) -> CircleSettings:
     enabled_raw = raw.get("enabled_models") or []
     enabled_models = [str(p) for p in enabled_raw if str(p).strip()] if isinstance(
         enabled_raw, list) else []
+    models_raw = raw.get("models") or {}
+    models = {str(name): dict(entry) for name, entry in models_raw.items()
+              if str(name).strip() and isinstance(entry, dict)} if isinstance(
+        models_raw, dict) else {}
     return CircleSettings(
         version=int(raw.get("version") or SETTINGS_VERSION),
         initialized=bool(raw.get("initialized")),
@@ -126,6 +133,7 @@ def load_settings_from_dict(raw: dict[str, Any]) -> CircleSettings:
         enabled_models=enabled_models,
         double_escape=_double_escape(raw.get("double_escape")),
         hide_thinking=bool(raw.get("hide_thinking")),
+        models=models,
     )
 
 

@@ -165,4 +165,45 @@ def build_chat_model(
 
     model = init_chat_model(model_name, **kwargs)
     apply_reasoning(model, effort, auth.protocol, requested=bool(chosen))
+    apply_context_window(model, settings, model_name)
     return guard_model(model)
+
+
+# The answer shares the window with the request: deepagents keeps a request under 95% of the
+# window less the answer's max_tokens. A quarter of the window at most leaves the rest to talk.
+_ANSWER_SHARE = 4
+
+
+def _assign(model: Any, name: str, value: Any) -> None:
+    try:
+        setattr(model, name, value)
+    except (AttributeError, TypeError, ValueError):
+        object.__setattr__(model, name, value)
+
+
+def apply_context_window(model: BaseChatModel, settings: CircleSettings, model_name: str) -> int:
+    """Give the model the context window the footer shows (circle.model_catalog): the
+    automatic compaction reads ``profile["max_input_tokens"]`` and compacts at 85% of it, so
+    the footer's ``ctx`` and the compaction work from one number. ``max_tokens`` is held to a
+    quarter of it (a thinking budget under that), so a small window still leaves room for the
+    conversation. Returns the window."""
+    from circle import model_catalog
+
+    model_catalog.bind(settings)
+    facts = model_catalog.facts(model_name)
+    profile = dict(getattr(model, "profile", None) or {})
+    profile["max_input_tokens"] = facts.context_window
+    if facts.output_limit:
+        profile["max_output_tokens"] = facts.output_limit
+    # The size asked for before any cap, so a window that grows later gives it back
+    wanted = profile.get("circle_max_tokens") or getattr(model, "max_tokens", None)
+    if isinstance(wanted, int) and not isinstance(wanted, bool) and wanted > 0:
+        profile["circle_max_tokens"] = wanted
+        cap = min(wanted, max(1024, facts.context_window // _ANSWER_SHARE))
+        _assign(model, "max_tokens", cap)
+        thinking = getattr(model, "thinking", None)
+        if isinstance(thinking, dict) and int(thinking.get("budget_tokens") or 0) >= cap:
+            # Anthropic wants the thinking budget below max_tokens
+            _assign(model, "thinking", {**thinking, "budget_tokens": max(1024, cap // 2)})
+    _assign(model, "profile", profile)
+    return facts.context_window

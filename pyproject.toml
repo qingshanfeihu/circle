@@ -31,7 +31,7 @@ include = ["circle*"]
 exclude = ["tests*", "packaging*"]
 
 [tool.setuptools.package-data]
-circle = ["prompts/**/*.md"]
+circle = ["prompts/**/*.md", "data/*.json.gz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

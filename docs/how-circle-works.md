@@ -36,7 +36,7 @@ The model sees the conversation history and a system prompt that Circle assemble
 
 [Skills](skills.md) add a short list of names and descriptions. The full text of a skill is read only when it is needed.
 
-When the conversation passes about 85% of the model's context window (170,000 tokens if the model does not report one), Circle summarizes older messages automatically and keeps the recent ones. The full text of what was summarized is saved in the data folder (`projects/<folder>-<id>/conversation_history/`), not in your project. `/compact` does it on request. Older tool output outside a recent window is also replaced by a short stub in requests, so long sessions stay within budget. The stored conversation keeps the full output.
+When the conversation passes 85% of the model's context window (from models.dev or `models` in settings, else 128,000), or sooner when the room kept for the answer needs it (see [Models](models.md#cost-and-context-in-the-footer)), Circle summarizes older messages automatically and keeps the most recent tenth. The full text of what was summarized is saved in the data folder (`projects/<folder>-<id>/conversation_history/`), not in your project. `/compact` does it on request. Older tool output outside a recent window is also replaced by a short stub in requests, so long sessions stay within budget. The stored conversation keeps the full output.
 
 ## Subagents
 

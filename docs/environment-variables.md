@@ -29,7 +29,7 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 | `CIRCLE_LLM_STALL_TIMEOUT` | Cut a stream that sends only keep-alive chunks for this many seconds. | `180` |
 | `CIRCLE_LLM_REPEAT_GUARD` | `0`, `false`, `off` or `no` turns off the repetition guard. | on |
 | `CIRCLE_LLM_VERIFY_FINISH` | Same values. Turns off the check for a response that ends without a finish reason. | on |
-| `CIRCLE_MODEL_CTX` | Override the context window (in tokens) shown in the footer. | from the model name |
+| `CIRCLE_NO_MODELS_REFRESH` | Set to anything to stop the daily background fetch of models.dev. The snapshot shipped with Circle, or the last copy fetched, is used. See [Models](models.md#cost-and-context-in-the-footer). | fetch once a day |
 | `SSL_CERT_FILE` | A PEM file of certificate authorities for Circle's HTTPS requests: the model, model discovery, `webfetch`, `websearch` and `circle update`. Set it when your network inspects HTTPS. | model requests: the certificates bundled with Circle; the others: the system's, or the bundled ones where the system's cannot be found |
 
 ## Agent guards

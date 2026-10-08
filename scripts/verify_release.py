@@ -29,7 +29,9 @@ def verify(folder: Path, commit: str, version: str) -> None:
         executable = 'circle/circle.exe' if os_tag == 'windows' else 'circle/circle'
         assert executable in names, executable
         assert any(n.startswith('circle/_internal/circle/prompts/') and n.endswith('.md') for n in names), asset.name
-    print('verified five archives: checksums, commit, version, target, executable and prompts')
+        assert 'circle/_internal/circle/data/models_dev.json.gz' in names, asset.name
+    print('verified five archives: checksums, commit, version, target, executable, prompts and '
+          'the models.dev snapshot')
 
 
 if __name__ == '__main__':

@@ -1,89 +1,72 @@
+"""What a model call costs, priced as it arrives.
+
+Prices are models.dev's pay-as-you-go ones for the connected endpoint
+(``circle.model_catalog``), in US dollars per million tokens: a reference, not a bill. Each
+call is priced once when its usage arrives and only summed after that, so switching models
+never re-prices earlier calls. Receipts written by older versions in ¥ still add up under
+their own currency.
+"""
 
 from __future__ import annotations
 
-import math
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
+from circle import model_catalog
 
-# 官方参考刊例，每百万 tokens；不识别实际账户、地域、渠道折扣或结算时段，不代表账单。
-# 每行保留参考范围供说明与诊断读取；页脚仅显示金额，改价先核官方页。
-# cache_write = 显式缓存创建价（Anthropic 5m 写 / 百炼显式创建）；缺省时写按 input_miss 计。
-# cache_write_1h = Anthropic 1h TTL 写价；缺省时按 cache_write 计。
-# currency 缺省 RMB（¥）；官方仅有美元价的标 "USD"（$）。
-PRICING: dict[str, dict[str, float | str]] = {
-    # mimo.mi.com/docs/zh-CN/price/pay-as-you-go 国内定价，2026-09-21 核对；缓存写限时免费
-    "mimo-v2.5":     {"input_miss": 1.0, "input_hit": 0.02,  "output": 2.0, "cache_write": 0.0,
-                     "reference_basis": "MiMo list price (China); cache writes free for now"},
-    "mimo-v2.5-pro": {"input_miss": 3.0, "input_hit": 0.025, "output": 6.0, "cache_write": 0.0,
-                     "reference_basis": "MiMo list price (China); cache writes free for now"},
-    # api-docs.deepseek.com/quick_start/pricing 高峰价，2026-09-21 核对（空闲时段半价，未分时段按高峰估）；自动缓存无写费
-    "deepseek-flash":    {"input_miss": 0.30, "input_hit": 0.006, "output": 1.20, "currency": "USD",
-                         "reference_basis": "DeepSeek peak list price; off-peak is half"},
-    "deepseek-v4-flash": {"input_miss": 0.30, "input_hit": 0.006, "output": 1.20, "currency": "USD",
-                         "reference_basis": "DeepSeek peak list price; off-peak is half"},  # 旧名仍受理，按 Flash 价
-    "deepseek-v4-pro":   {"input_miss": 1.32, "input_hit": 0.044, "output": 3.96, "currency": "USD",
-                         "reference_basis": "DeepSeek peak list price; off-peak is half"},
-    # help.aliyun.com/zh/model-studio/qwen3-8-flash 中国站按量，2026-09-21 核对（2026-08-27 调价后）
-    "qwen3.8-flash": {"input_miss": 0.8, "input_hit": 0.1, "output": 2.7, "cache_write": 1.25,
-                     "reference_basis": "Alibaba Cloud China (Beijing) list price"},
-    # https://help.aliyun.com/zh/model-studio/qwen3-8-max，2026-09-21 核对；显/隐式读价不同。
-    "qwen3.8-max":   {"input_miss": 12.0, "input_hit": 1.5, "input_hit_explicit": 1.0,
-                     "output": 36.0, "cache_write": 15.0, "reference_basis": "Alibaba Cloud China (Beijing) list price"},
-    # Anthropic Sonnet 刊例：$3 / $15 每百万，缓存读 0.1×、5 分钟写 1.25×。网关别名按此参考，不是账单。
-    "claude-sonnet-5": {"input_miss": 3.0, "input_hit": 0.30, "output": 15.0,
-                        "cache_write": 3.75, "currency": "USD",
-                        "reference_basis": "Claude Sonnet list price for reference, not a bill"},
-    "claude-sonnet-4-5": {"input_miss": 3.0, "input_hit": 0.30, "output": 15.0,
-                          "cache_write": 3.75, "currency": "USD",
-                          "reference_basis": "Claude Sonnet list price for reference, not a bill"},
-    "claude-sonnet-4": {"input_miss": 3.0, "input_hit": 0.30, "output": 15.0,
-                        "cache_write": 3.75, "currency": "USD",
-                        "reference_basis": "Claude Sonnet list price for reference, not a bill"},
-}
-
-_CURRENCY_SYMBOL = {"RMB": "¥", "USD": "$"}
+_CURRENCY_SYMBOL = {"USD": "$", "RMB": "¥"}
+_TIER_INPUT = 200_000
 
 
-def _row_for(model: str) -> dict[str, float | str] | None:
-    return PRICING.get(model) or PRICING.get(model.rpartition("/")[-1])
+def _rates(prices: Mapping[str, Any]) -> dict[str, float] | None:
+    """models.dev prices → the four rates a call is charged at. A missing or zero cache
+    price is charged as input: models.dev writes 0 where a provider lists no separate price."""
+    try:
+        base = float(prices["input"])
+        out = float(prices["output"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    read = float(prices.get("cache_read") or 0) or base
+    write = float(prices.get("cache_write") or 0) or base
+    return {"input_miss": base, "input_hit": read, "output": out, "cache_write": write}
 
 
-_CONTEXT_WINDOWS = {
-    "claude-sonnet-5": 200_000,
-    "claude-sonnet-4-5": 200_000,
-    "claude-sonnet-4": 200_000,
-    "qwen3.8-flash": 1_000_000,
-    "qwen3.8-max": 262_144,
-}
+def _row_for(model: str) -> dict[str, Any] | None:
+    facts = model_catalog.facts(model)
+    if not facts.rates:
+        return None
+    row: dict[str, Any] | None = _rates(facts.rates)
+    if row is None:
+        return None
+    tier = facts.rates.get(model_catalog.TIER_KEY)
+    tier_rates = _rates(tier) if isinstance(tier, Mapping) else None
+    if tier_rates:
+        row["over_200k"] = tier_rates
+    row["currency"] = "USD"
+    row["reference_basis"] = (f"models.dev {facts.price_provider} pay-as-you-go price "
+                              "for reference, not a bill")
+    return row
 
 
 def context_window_for(model: str) -> int:
-    """Context window used for the footer rate. Override with CIRCLE_MODEL_CTX."""
-    import os
+    """The context window the footer and the automatic compaction share: the setting, else
+    models.dev, else 128,000."""
+    return model_catalog.facts(model).context_window
 
-    raw = (os.environ.get("CIRCLE_MODEL_CTX") or "").strip()
-    if raw.isdigit():
-        return max(1, int(raw))
-    name = (model or "").strip().rpartition("/")[-1]
-    if name in _CONTEXT_WINDOWS:
-        return _CONTEXT_WINDOWS[name]
-    low = name.lower()
-    if any(token in low for token in ("sonnet", "opus", "haiku")):
-        return 200_000
-    return 128_000
+
+def context_window_known(model: str) -> bool:
+    """False when the window is only the 128,000 fallback (the footer shows ``N/A``)."""
+    return model_catalog.facts(model).window_known
 
 
 def cost_currency(model: str) -> str:
-    row = _row_for(model)
-    if row is None:
-        return ""
-    return _CURRENCY_SYMBOL.get(str(row.get("currency") or "RMB"), "¥")
+    return "$" if _row_for(model) else ""
 
 
 def cost_reference_basis(model: str) -> str:
-    """参考价的适用域；不是从模型名推断实际请求的地域或账户币种。"""
+    """Where the price comes from; it says nothing about the account or region billed."""
     return str((_row_for(model) or {}).get("reference_basis") or "")
 
 
@@ -96,27 +79,25 @@ def compute_cost(
     input_write: int = 0,
     input_write_1h: int = 0,
     cache_mode: str | None = None,
+    tiered: bool = True,
 ) -> float | None:
-    """按模型价格表计算；未指定模式时用该行默认读价，不据此声明实际缓存模式。"""
+    """Dollars for one call's tokens, or ``None`` when the model has no price. A call with more
+    than 200k input tokens is charged at the model's long-context rates when models.dev lists
+    them (``tiered=False`` for sums of several calls). ``cache_mode`` is accepted for older
+    callers; models.dev has one cache-read price."""
     row = _row_for(model)
     if not row:
         return None
     if cache_mode not in {None, "implicit", "explicit"}:
         return None
-    hit_rate = float(row["input_hit"])
-    explicit_hit_rate = float(row.get("input_hit_explicit", hit_rate))
-    if cache_mode == "explicit":
-        hit_rate = explicit_hit_rate
-    write_rate = float(row["cache_write"]) if "cache_write" in row else float(row["input_miss"])
-    write_1h_rate = float(row["cache_write_1h"]) if "cache_write_1h" in row else write_rate
-    write_1h = min(max(input_write_1h, 0), max(input_write, 0))
-    write_short = max(input_write, 0) - write_1h
+    write = max(input_write, 0)
+    total = max(input_miss, 0) + max(input_hit, 0) + write
+    rates = row["over_200k"] if tiered and total > _TIER_INPUT and "over_200k" in row else row
     return (
-        input_miss * float(row["input_miss"]) / 1_000_000
-        + input_hit * hit_rate / 1_000_000
-        + write_short * write_rate / 1_000_000
-        + write_1h * write_1h_rate / 1_000_000
-        + output * float(row["output"]) / 1_000_000
+        input_miss * float(rates["input_miss"]) / 1_000_000
+        + input_hit * float(rates["input_hit"]) / 1_000_000
+        + write * float(rates["cache_write"]) / 1_000_000
+        + output * float(rates["output"]) / 1_000_000
     )
 
 
@@ -178,7 +159,7 @@ def price_call(model: str, usage: Mapping[str, Any]) -> dict[str, Any]:
     except (KeyError, TypeError, ValueError, OverflowError):
         # 计价配置异常不能中断原有 token 结算，更不能把 NaN 写进耐久账。
         amount, rates = None, {}
-    return {"model": model, "currency": str(row.get("currency") or "RMB") if row else "",
+    return {"model": model, "currency": str(row.get("currency") or "USD") if row else "",
             "amount": amount, "tokens": counts, "rates": rates}
 
 
@@ -226,6 +207,6 @@ def format_usage_costs(*summaries: Mapping[str, Any], empty_model: str = "",
             for currency in _CURRENCY_SYMBOL if currency in amounts
         ) + ("+" if unpriced else "")
     if calls or has_settled_tokens:
-        return "—"
+        return "N/A"
     currency = cost_currency(empty_model)
-    return f"{currency}0.0000" if currency else "—"
+    return f"{currency}0.0000" if currency else "N/A"

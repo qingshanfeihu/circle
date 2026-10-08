@@ -18,6 +18,7 @@ from ...pricing import (
     UsageCostTotals,
     compute_cost,
     context_window_for,
+    context_window_known,
     cost_currency,
     cost_reference_basis,
     format_usage_costs,
@@ -91,6 +92,8 @@ class FooterPane:
         self.status: str = "ready"
         self.tokens_used: int = 0
         self.tokens_budget: int = 128_000
+        # False while the window is only the 128k fallback: ``ctx`` then reads ``…/N/A``
+        self.tokens_budget_known: bool = False
         self.model: str = ""
         self._usage_model_uncertain = False
         self._main_costs: dict = {}
@@ -185,6 +188,7 @@ class FooterPane:
         status: str | None = None,
         tokens_used: int | None = None,
         tokens_budget: int | None = None,
+        tokens_budget_known: bool | None = None,
         model: str | None = None,
         input_tokens: int | None = None,
         context_input_tokens: int | None | _Unset = _UNSET,
@@ -222,6 +226,7 @@ class FooterPane:
             self.tokens_used = tokens_used
         if tokens_budget is not None:
             self.tokens_budget = tokens_budget
+            self.tokens_budget_known = True if tokens_budget_known is None else tokens_budget_known
         if main_costs is not None:
             self._main_costs = main_costs
             self._costs_supplied = True
@@ -234,6 +239,7 @@ class FooterPane:
             self.model = model
             if tokens_budget is None:
                 self.tokens_budget = context_window_for(model)
+                self.tokens_budget_known = context_window_known(model)
         if input_tokens is not None:
             self.input_tokens = input_tokens
         if not isinstance(context_input_tokens, _Unset):
@@ -451,7 +457,7 @@ class FooterPane:
         # 旧快照没有逐调用费用时保留旧口径；新事件不再按页脚当前模型重算累计量。
         elif any((self.fork_input, self.fork_output, self.fork_cache_hit,
                 self.fork_cache_write, self.fork_live_output)) or self._usage_model_uncertain:
-            parts.append("—")
+            parts.append("N/A")
         else:
             basis = cost_reference_basis(self.model)
             cost = compute_cost(
@@ -461,15 +467,18 @@ class FooterPane:
                 output=settled_out,
                 input_write=write,
                 input_write_1h=write_1h,
+                tiered=False,
             ) if basis else None
             if cost is None or not basis:
-                parts.append("—")
+                parts.append("N/A")
             else:
                 parts.append(f"{cost_currency(self.model)}{cost:.4f}")
         rate = (hit / total_in * 100.0) if total_in else 0.0
         parts.append(f"cache {rate:.1f}%")
         budget = self.tokens_budget or 0
-        if budget > 0 and self.context_input_tokens is not None:
+        if self.context_input_tokens is not None and not self.tokens_budget_known:
+            parts.append(f"ctx {_format_token_count(self.context_input_tokens)}/N/A")
+        elif budget > 0 and self.context_input_tokens is not None:
             pct = min(999.0, self.context_input_tokens / budget * 100.0)
             ctx = (f"ctx {_format_token_count(self.context_input_tokens)}/"
                    f"{_format_context_budget(budget)} ({pct:.0f}%)")

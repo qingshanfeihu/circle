@@ -9,26 +9,26 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from deepagents.backends.protocol import BackendProtocol
-from deepagents.middleware.summarization import (
-    create_summarization_tool_middleware,
-)
+from deepagents.middleware.summarization import SummarizationToolMiddleware
+
+from circle.compaction import create_circle_summarization
 
 
 def build_context_middleware(
     model: BaseChatModel,
     backend: BackendProtocol,
 ) -> list[Any]:
-    """Return middleware that exposes ``compact_conversation`` (manual compact).
+    """The compaction, automatic and ``/compact``, through one engine that reports its steps.
 
-    Auto-summarization is already added by ``create_deep_agent`` via
-    ``create_summarization_middleware``. This layer only adds the tool + nudge
-    so ``/compact`` and the model can trigger the same engine.
+    ``create_deep_agent`` adds deepagents' own ``SummarizationMiddleware``; the engine here
+    has the same name, so it takes that one's place in the stack (custom middleware replaces
+    a built-in of the same name). ``compact_conversation`` (``/compact``, or the model's own
+    call) runs the same engine, so both kinds report to the screen the same way
+    (circle/compaction.py). Thresholds come from ``model.profile``, which carries the window
+    the footer shows (circle.model.apply_context_window).
     """
-    # create_summarization_tool_middleware already builds its own summarization
-    # middleware instance; create_deep_agent also adds auto summarization.
-    # Using the tool middleware alone is enough for manual compact — it wraps
-    # a dedicated summarization engine that shares the same state key.
-    return [create_summarization_tool_middleware(model, backend)]
+    engine = create_circle_summarization(model, backend)
+    return [engine, SummarizationToolMiddleware(engine, system_prompt=None)]
 
 
 def thread_config(thread_id: str) -> dict[str, Any]:

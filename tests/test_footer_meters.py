@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from typing import ClassVar
 
+from circle import model_catalog
 from circle.ink.components.footer import FooterPane
 from circle.pricing import price_call
 from circle.tui.harness_bridge import HarnessBridge, format_tool_args
@@ -10,7 +11,22 @@ from circle.tui.reducer import MessageReducer
 from tests.test_approvals import _session
 
 
+# Prices and windows come from models.dev for the connected endpoint (circle.model_catalog);
+# these tests use a small catalog of their own so models.dev's changes do not move them.
+CATALOG = {"schema": model_catalog.SCHEMA, "providers": {
+    "anthropic": {"api": "", "models": {"claude-sonnet-5": {
+        "context": 200_000, "output": 64_000,
+        "cost": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}}}},
+}}
+
+
+def _anthropic_endpoint() -> None:
+    model_catalog.set_catalog(CATALOG)
+    model_catalog.bind_endpoint("https://api.anthropic.com", "anthropic")
+
+
 def test_footer_shows_price_effort_cache_and_context():
+    _anthropic_endpoint()
     footer = FooterPane()
     footer.update(
         model="claude-sonnet-5",
@@ -64,6 +80,7 @@ def test_session_passes_latest_context_input_to_footer(tmp_path, monkeypatch):
 
 
 def test_footer_includes_subagents_but_context_stays_main(tmp_path, monkeypatch):
+    _anthropic_endpoint()
     app = _session(tmp_path, monkeypatch)
     app._turn_base = 0
     app._footer.update(model="claude-sonnet-5")
@@ -81,12 +98,15 @@ def test_footer_includes_subagents_but_context_stays_main(tmp_path, monkeypatch)
     reducer.dispatch({"kind": "llm_end", "run_id": "r", "seq": 2,
                       "tags": {"parent_subagent": "general-purpose"},
                       "payload": {"name": "subagent_usage", "usage_call_id": "fork",
-                                  "usage_cost": price_call("qwen3.8-flash", fork_usage)},
+                                  "usage_cost": price_call("claude-sonnet-5", fork_usage)},
                       "usage": fork_usage})
     app._on_snapshot(reducer.snapshot())
     summary = app._footer._session_summary()
     assert "↑ 1.0k · ↓ 100" in summary
-    assert "¥" in summary and "$" in summary
+    # both calls are priced, in dollars: 100 in + 10 out, and 300 new + 600 cached in + 90 out
+    main = (80 * 3.0 + 20 * 0.3 + 10 * 15.0) / 1_000_000
+    fork = (300 * 3.0 + 600 * 0.3 + 90 * 15.0) / 1_000_000
+    assert f"${main + fork:.4f}" in summary and "¥" not in summary
     assert "cache 62.0% · ctx 80/200.0k" in summary
     app._footer.shutdown()
 

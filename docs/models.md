@@ -88,16 +88,10 @@ The footer shows tokens used, an estimated cost, the cache hit rate, and how ful
 
 Endpoints report the usage of a streamed answer in different ways: once at the end, split between the first and last chunk, or (some OpenAI-compatible gateways) as the running total on every chunk. Circle counts each answer once whichever way it comes, so the footer, the cost and the point at which a long conversation is compacted are the same for all of them.
 
-Cost uses a built-in list of reference prices per million tokens. It is an estimate, not a bill. Models that are not in the list show `—`.
+The context window and the price come from [models.dev](https://models.dev), which lists each model once per provider: the same model can have a different window or price at another provider. Circle takes the entry of the provider whose API host is the host of your `base_url`. For providers models.dev lists without an address (Anthropic, OpenAI, Google, xAI, Mistral, Groq, Together, DeepInfra, Cerebras, Perplexity), their usual host counts, and with no `base_url` at all (an OAuth sign-in) the protocol's host does.
 
-| Model | Currency | Input | Cached input | Output |
-|---|---|---|---|---|
-| `qwen3.8-flash` | ¥ | 0.8 | 0.1 | 2.7 |
-| `qwen3.8-max` | ¥ | 12.0 | 1.5 | 36.0 |
-| `mimo-v2.5` | ¥ | 1.0 | 0.02 | 2.0 |
-| `mimo-v2.5-pro` | ¥ | 3.0 | 0.025 | 6.0 |
-| `claude-sonnet-5`, `claude-sonnet-4-5`, `claude-sonnet-4` | $ | 3.0 | 0.30 | 15.0 |
-| `deepseek-flash`, `deepseek-v4-flash` | $ | 0.30 | 0.006 | 1.20 |
-| `deepseek-v4-pro` | $ | 1.32 | 0.044 | 3.96 |
+A snapshot of models.dev ships with Circle. Once a day, when the full-screen interface starts, Circle fetches a newer copy in the background and keeps it in the data folder (`cache/models-dev.json`); without the network the copy or the snapshot is used. `CIRCLE_NO_MODELS_REFRESH=1` turns the fetch off.
 
-The context window comes from the model name: 200,000 for the Claude models above and other names containing `sonnet`, `opus` or `haiku`; 1,000,000 for `qwen3.8-flash`; 262,144 for `qwen3.8-max`; 128,000 for anything else. Set `CIRCLE_MODEL_CTX` if your model is different.
+**Context window.** `models` in [settings](settings.md#keys) sets it for a model; otherwise models.dev's figure is used; otherwise 128,000, and the footer shows `ctx 12.5k/N/A`. The footer and the automatic [compaction](sessions.md#compaction) use this one number. The answer takes part of the window too: its limit (`max_tokens`) is held to a quarter of the window, and a request must fit in 95% of the window less that limit. Compaction starts at 85% of the window, or where a request would no longer fit if that comes first: with a 200,000-token window and a 50,000-token answer, at 70%.
+
+**Cost.** Pay-as-you-go prices in US dollars per million tokens: input, cached input, cache writes and output, and the long-context rates for a request over 200,000 tokens where models.dev lists them. A cache price models.dev gives as 0 is charged as input. When the endpoint is a subscription (a coding plan or token plan, which models.dev prices at 0), the same vendor's pay-as-you-go price is shown as a reference. Each call is priced when its usage arrives, including the calls a compaction makes: the summary, and with `/compact` the request and the answer around it. It is an estimate, not a bill; a model without a price shows `N/A`.

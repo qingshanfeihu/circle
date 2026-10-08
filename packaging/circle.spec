@@ -30,7 +30,7 @@ for pkg in ("deepagents", "langgraph", "langchain", "langchain_core", "langsmith
 # Everything under circle/ (modules that are only imported by name, extensions, the TUI), and the
 # prompt files the agent reads at start: they are data, not imports, so nothing else finds them.
 hiddenimports += collect_submodules("circle")
-datas += collect_data_files("circle", includes=["prompts/**/*.md"])
+datas += collect_data_files("circle", includes=["prompts/**/*.md", "data/*.json.gz"])
 
 datas += copy_metadata("circle")
 

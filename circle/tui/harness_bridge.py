@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.messages.ai import add_usage
 from langgraph.types import Command
 
+from circle.compaction import CompactionWatcher
 from circle.events import EventBus, bind_bus, unbind_bus
 from circle.jobs import is_job_notice
 from circle.middleware.cancellation import CancellationToken
@@ -109,8 +110,11 @@ class HarnessBridge:
         on_status: Callable[[str], None] | None = None,
         on_snapshot: Callable[[MessageSnapshot], None] | None = None,
         snapshot_lock: Any = None,
+        on_compaction: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._agent = agent
+        # Each compaction step during a run (circle/compaction.py), for the progress row
+        self._on_compaction = on_compaction
         self._thread_id = thread_id
         self._on_update = on_update
         self._on_interrupt = on_interrupt
@@ -148,6 +152,11 @@ class HarnessBridge:
     @property
     def thread_id(self) -> str:
         return self._thread_id
+
+    @property
+    def reducer(self) -> Any:
+        """Folds the turns' events and keeps the session's usage and cost totals."""
+        return self._sink.reducer
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -459,9 +468,11 @@ class HarnessBridge:
         start_from, self._start_from = getattr(self, "_start_from", None), None
         if start_from and not isinstance(payload, Command):
             configurable["checkpoint_id"] = start_from  # a new branch from there
-        config = {**self._config, "configurable": configurable,
-                  "callbacks": [CancellationHandler(self._cancel_token), ProgressHandler(
-                      bus, path_resolver=resolver if callable(resolver) else None)]}
+        callbacks: list[Any] = [CancellationHandler(self._cancel_token), ProgressHandler(
+            bus, path_resolver=resolver if callable(resolver) else None)]
+        if self._on_compaction is not None:
+            callbacks.append(CompactionWatcher(self._on_compaction))
+        config = {**self._config, "configurable": configurable, "callbacks": callbacks}
         # 中间件拒掉的调用经这条总线补发工具行（circle.tool_events）
         token = bind_bus(bus)
         bus.emit("run_start")

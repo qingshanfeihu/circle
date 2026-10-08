@@ -27,6 +27,9 @@ def assets(tmp_path, monkeypatch):
         prompts = tree / '_internal/circle/prompts'
         prompts.mkdir(parents=True, exist_ok=True)
         (prompts / 'session.md').write_text('prompt')
+        data = tree / '_internal/circle/data'
+        data.mkdir(parents=True, exist_ok=True)
+        (data / 'models_dev.json.gz').write_bytes(b'snapshot')
         packer.pack(os_tag, arch, tmp_path / 'dist', tmp_path)
     return tmp_path, verifier, __version__
 
@@ -55,3 +58,20 @@ def test_missing_target_blocks_publication(assets):
     (folder / 'circle-windows-x86_64.zip').unlink()
     with pytest.raises(FileNotFoundError):
         verifier.verify(folder, 'abc123', version)
+
+
+def test_an_archive_without_the_models_dev_snapshot_is_rejected(tmp_path, monkeypatch):
+    packer, verifier = load('pack_release'), load('verify_release')
+    monkeypatch.delenv('GITHUB_SHA', raising=False)
+    monkeypatch.setattr(packer.subprocess, 'check_output', lambda *a, **k: 'abc123\n')
+    from circle import __version__
+    for os_tag, arch in verifier.TARGETS:
+        tree = tmp_path / 'dist/circle'
+        tree.mkdir(parents=True, exist_ok=True)
+        (tree / ('circle.exe' if os_tag == 'windows' else 'circle')).write_bytes(b'program')
+        prompts = tree / '_internal/circle/prompts'
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / 'session.md').write_text('prompt')
+        packer.pack(os_tag, arch, tmp_path / 'dist', tmp_path)
+    with pytest.raises(AssertionError):
+        verifier.verify(tmp_path, 'abc123', __version__)

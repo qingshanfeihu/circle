@@ -12,7 +12,8 @@ the compile-engine hooks left out:
 - ``write_todos`` updates become ``todo_list`` events;
 - events from a subagent carry ``parent_subagent`` (from ``lc_agent_name``);
 - model calls marked internal by middleware (summarization, ``/compact``) are not
-  shown as conversation.
+  shown as conversation; their usage still counts (``internal_usage``), with the work
+  outside the main conversation.
 """
 
 from __future__ import annotations
@@ -188,6 +189,53 @@ def extract_message_usage(message: Any, *, token_usage: Any = None,
     return _finalize(dict(usage)) if usage else {}
 
 
+def priced_usage(response: Any, pricing_model: str = "") -> tuple[dict[str, Any], dict] | None:
+    """A finished call's usage and its price, or None when it reported no usage."""
+    try:
+        usage = extract_llm_usage(response)
+    except Exception:  # noqa: BLE001
+        return None
+    if not usage:
+        return None
+    reported = response_model_name(response)
+    cost = price_call(pricing_model or reported, usage)
+    cost["response_model"] = reported
+    return usage, cost
+
+
+class UsageOnlyHandler(BaseCallbackHandler):
+    """For a run that is not drawn as a turn (/compact): hands each model call's priced usage
+    to ``report(usage, cost, call_id)`` and nothing else."""
+
+    raise_error = False
+
+    def __init__(self, report: Callable[[dict[str, Any], dict, str], None]) -> None:
+        self._report = report
+        self._lock = threading.Lock()
+        self._models: dict[str, str] = {}
+
+    def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        with self._lock:
+            self._models[str(kwargs.get("run_id") or "")] = callback_model_name(
+                serialized, metadata=kwargs.get("metadata"),
+                invocation_params=kwargs.get("invocation_params"))
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        rid = str(kwargs.get("run_id") or "")
+        with self._lock:
+            model = self._models.pop(rid, "")
+        priced = priced_usage(response, model)
+        if priced is not None:
+            try:
+                self._report(priced[0], priced[1], rid)
+            except Exception:  # noqa: BLE001 — the footer must not break the run
+                logger.debug("usage report failed", exc_info=True)
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        with self._lock:
+            self._models.pop(str(kwargs.get("run_id") or ""), None)
+
+
 def extract_llm_usage(response: Any) -> dict[str, Any]:
     try:
         generations = getattr(response, "generations", None) or []
@@ -321,6 +369,9 @@ class ProgressHandler(BaseCallbackHandler):
             if self._is_internal(kwargs):
                 with self._lock:
                     self._internal_runs.add(key)
+                    self._pricing_models[key] = callback_model_name(
+                        serialized, metadata=kwargs.get("metadata"),
+                        invocation_params=kwargs.get("invocation_params"))
                 return
             tags = self._subagent_tags(kwargs)
             name = str(serialized.get("name") or "") if isinstance(serialized, dict) else ""
@@ -370,9 +421,18 @@ class ProgressHandler(BaseCallbackHandler):
         key = self._key(kwargs)
         rid = str(kwargs.get("run_id") or "")
         with self._lock:
-            if key in self._internal_runs:
+            internal = key in self._internal_runs
+            if internal:
                 self._internal_runs.discard(key)
-                return
+                pricing_model = self._pricing_models.pop(key, "")
+        if internal:
+            # A compaction's summary is not conversation, but it is billed like any call
+            priced = priced_usage(response, pricing_model)
+            if priced is not None:
+                usage, cost = priced
+                self._emit("llm_end", payload={"name": "internal_usage", "usage_call_id": rid,
+                                               "usage_cost": cost}, usage=usage)
+            return
         channels = extract_display_channels(response)
         text, thinking_text = channels.text, channels.reasoning
         has_tool_calls = False
@@ -444,6 +504,7 @@ class ProgressHandler(BaseCallbackHandler):
         with self._lock:
             if key in self._internal_runs:
                 self._internal_runs.discard(key)
+                self._pricing_models.pop(key, None)
                 return
             normalizer = self._runs.pop(key, None)
             tags = dict(self._run_tags.pop(key, {}) or {})

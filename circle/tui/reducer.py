@@ -617,6 +617,11 @@ class MessageReducer:
 
     def _on_llm_end(self, event: CircleEvent) -> None:
         payload = event.get("payload") or {}
+        if payload.get("name") == "internal_usage":
+            self._count_internal(str(event.get("run_id") or ""),
+                                 str(payload.get("usage_call_id") or ""),
+                                 event.get("usage"), payload.get("usage_cost"))
+            return
         is_subagent = self._is_subagent_event(event)
         if is_subagent and payload.get("name") == "subagent_usage":
             usage_id = str(payload.get("usage_call_id") or "")
@@ -1013,6 +1018,26 @@ class MessageReducer:
             if owner:
                 return owner
         return self._subagent_parent_stack[-1] if self._subagent_parent_stack else ""
+
+    def _count_internal(self, run_id: str, usage_id: str, usage: Any, cost: Any) -> None:
+        """A call that is not conversation (a compaction's summary, /compact): counted with the
+        work outside the main conversation, as a subagent's is, so the footer's ↑ ↓ and cost
+        include it and ctx does not."""
+        identity = (run_id, usage_id)
+        if usage_id and identity in self._fork_usage_call_ids:
+            return
+        if usage_id:
+            self._fork_usage_call_ids.add(identity)
+        if isinstance(usage, dict):
+            self._merge_usage_into(self._fork_usage, usage)
+            self._fork_usage_cost.add(cost)
+
+    def add_internal_usage(self, usage: dict[str, Any], cost: Any, *, usage_id: str = "") -> None:
+        """Count a call from a run outside the turns (/compact). It holds whatever state the
+        last turn left, a cancelled one included."""
+        with self._lock:
+            self._count_internal("", usage_id, usage, cost)
+            self._rev += 1
 
     @staticmethod
     def _merge_usage_into(totals: dict[str, int], usage: dict[str, Any]) -> None:

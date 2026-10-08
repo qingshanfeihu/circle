@@ -79,7 +79,7 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | 终帧 `✖` 失败红 / 中止暗；回合用量 `12s · ↑ 1.2k · ↓ 340` | 回合结束 | 转录 |
 | 页眉：版本 · 模型（有思考深度时 `模型 • high`）· 目录 · `? for shortcuts` | 欢迎块滚出屏幕后；欢迎块在屏上时只留右侧提示，setup / trust 期间空行（行一直占着，转录不跳） | 常驻 |
 | 欢迎块：logo · `circle 版本` · 模型与端点 · 目录与分支；文件夹带来的指令、技能、命令、扩展、项目设置（各带灯）；recent 最近 3 个会话 | 每个会话开始 | 转录第一块，只画不存 |
-| 页脚：`↑ ↓ · 费用 · cache · ctx` | 始终 | 常驻 |
+| 页脚：`↑ ↓ · 费用 · cache · ctx`（费用美元，窗口与价格来自 models.dev；不知道的读 `N/A`） | 始终 | 常驻 |
 | 忙碌词 `Verb… · 12.4s · ↓ 1.9k` | 模型回合中 | 常驻，框上沿左 |
 | 模式词 `read-only` / `auto` | 非默认模式 | 常驻，框下沿右 |
 | 在途条 | ≥ 1 个子代理在跑，或 ≥ 1 个后台任务没结束 | 常驻，页脚下方；表头只写有的 `Agents · 2 · Jobs · 3`；子代理行在上，任务行在下（最多 4 行，余下 `… +N more jobs`）：灯 · `j1 命令` · 最后一行输出 / 当前步骤 / `waiting for you` · 时长；没回合时每 0.5 秒重画 |
@@ -94,6 +94,7 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | 登录方式，接着 URL、key（圆点）、模型，问法同 setup（`InitController`）；没做好的方式列出来、标 `not available yet`、选不动 | `/login` 无参数 | 弹窗；选完模型才保存，成了进转录淡色一行 |
 | key 被端点拒（401 / 403） | 回合失败 | 转录，红色 `✖` 行尾加 `· /login to change the key` |
 | 等着被读的插话 `steering: …`、回合后才发的 `follow-up: …` | 回合进行中你按了 enter | 常驻，输入框上方，淡色一行一条；读到后进转录 |
+| 压缩进行中 `auto-compacting · ████░░░░ summarizing · 12s`（`/compact` 为 `compacting`；不写触发条件；不能取消） | 压缩开始到结束 | 常驻，输入框上方，排在插话之前；结束撤下，转录落一条淡色 `auto-compacted · …` 或 `compacted · …`（失败红色 `✖`），回合进行中则等回合结束、落在用量行之下 |
 | 子代理详情 | 在途条 enter / 点名字 | 页面 |
 | `/jobs` 任务列表（跑着的在前，状态 `running · 1m 12s` / `waiting for you` / `exit 1 · 4s` / `stopped`，别的对话的 `· other session`） | `/jobs`、`/tasks` | 弹窗 |
 | 后台任务页 | `/jobs` 里 enter | 页面 |

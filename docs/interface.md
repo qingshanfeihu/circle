@@ -27,7 +27,7 @@ Circle's screen has a few parts, and each kind of information always goes to the
 ╭────────────────────────────────────────────────────────────────────────────╮
 │ ›                                                                          │
 ╰──────────────────────────────────────────────────────────────── read-only ─╯
- ↑ 36.6k · ↓ 560 · ¥0.0145 · cache 63.7% · ctx 12.5k/1.0M (1%)
+ ↑ 36.6k · ↓ 560 · $0.0145 · cache 63.7% · ctx 12.5k/1.0M (1%)
 ```
 
 ## The parts
@@ -38,9 +38,9 @@ Circle's screen has a few parts, and each kind of information always goes to the
 | **Welcome** | The first block of the conversation. See [The welcome](#the-welcome). |
 | **Conversation** | Everything that happened: your messages, Circle's answers, thinking, tool calls and their results, notices, and after each turn a line with time and tokens. It scrolls and never loses anything. |
 | **Plan box** | Circle's own plan, when it has one. |
-| **Waiting messages** | Above the input box, while a turn runs: each message you sent that the model has not read yet, `steering: …`, and each that waits for the turn to end, `follow-up: …`. See [Steer a running turn](usage.md#steer-a-running-turn). |
+| **Waiting messages** | Above the input box, while a turn runs: a compaction under way, with its progress bar (see [Compaction](sessions.md#compaction)); each message you sent that the model has not read yet, `steering: …`; and each that waits for the turn to end, `follow-up: …`. See [Steer a running turn](usage.md#steer-a-running-turn). |
 | **Input box** | The one framed box on the screen. It is where you type, and where questions appear. |
-| **Footer** | One line of numbers: tokens sent and received, estimated cost, cache hit rate, how full the context is (yellow from 70%, red from 90%). A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. |
+| **Footer** | One line of numbers: tokens sent and received, estimated cost in US dollars, cache hit rate, how full the context is (yellow from 70%, red from 90%). A cost or context window Circle does not know reads `N/A`; see [Models](models.md#cost-and-context-in-the-footer). A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. |
 | **Subagent strip** | Below the footer, only while subagents or [background jobs](background-jobs.md) run: a header such as `Agents · 2 · Jobs · 1`, a row per subagent, then a row per job with its lamp, id, command, the last line it printed, and how long it has run. |
 
 A few things appear briefly and are not kept: the confirmations in the footer, the popup of `/approvals`, and the lists of `/models`, `/effort`, `/resume`, `/tree`, `/fork` and `/jobs`, which open above the input box and close when you choose or press `esc`. Some views take over the whole conversation area, such as a subagent's record or a background job's page.

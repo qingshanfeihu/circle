@@ -29,6 +29,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from circle import __version__, secret_prompt, session_index, update
 from circle.approvals import REJECTED_BY_USER, default_policy
 from circle.checkpoint_store import make_checkpointer, make_store
+from circle.compaction import CompactionProgress, CompactionWatcher, done_text
 from circle.commands import (
     CustomCommand,
     discover_custom_commands,
@@ -92,10 +93,15 @@ from circle.ink.theme_watch import ThemeWatcher
 from circle.mcp_loader import format_mcp_status
 from circle.mentions import attach_files, complete
 from circle.middleware.cancellation import CancellationToken
-from circle.model import EFFORT_LEVELS, build_chat_model, reasoning_effort_of
+from circle import model_catalog
+from circle.model import (
+    EFFORT_LEVELS,
+    apply_context_window,
+    build_chat_model,
+    reasoning_effort_of,
+)
 from circle.model_guard import _chain, add_retry_listener
 from circle.paths import circle_home, ensure_home, normalize_workspace
-from circle.pricing import context_window_for
 from circle.run_options import RunOptions
 from circle.session_tree import SessionTree
 from circle.settings import (
@@ -150,7 +156,7 @@ from circle.tui.slash_commands import (
     known_slash_names,
     parse_slash,
 )
-from circle.tui.progress_handler import extract_message_usage
+from circle.tui.progress_handler import UsageOnlyHandler, extract_message_usage
 from circle.tui.replay import draft_of, first_turns, is_user_message, saved_turns, write_history
 from circle.tui.tool_display import approval_preview
 from circle.tui.transcript_view import (
@@ -489,6 +495,10 @@ class CircleSessionApp:
         self._plan_mode = False
         self._session_tree = SessionTree()
         self._msg_queue: list[tuple[str, str]] = []  # (steering|followup, text)
+        # The compaction under way (automatic or /compact): its row sits above the input box
+        self._compaction: CompactionProgress | None = None
+        # A compaction's closing lines while a turn draws (see _compaction_note)
+        self._held_notes: list[tuple[str, str]] = []
         self._shell_stop: CancellationToken | None = None  # a running !command
         # Background jobs of this session; they outlive turns and agent rebuilds
         self._jobs = JobRegistry()
@@ -680,6 +690,7 @@ class CircleSessionApp:
             on_status=self._on_status,
             on_snapshot=self._on_snapshot,
             snapshot_lock=self._app.lock,
+            on_compaction=self._on_compaction,
         )
         bridge.auto_approve = self._approvals.yolo_enabled(self._thread_id)
         self._footer.set_yolo(bridge.auto_approve)
@@ -708,6 +719,8 @@ class CircleSessionApp:
             for problem in [*self._keybinding_problems, *self._settings_problems]:
                 self._fail(problem)
             self._start_update_check()
+            # models.dev once a day, in the background: windows and prices of new models
+            model_catalog.refresh_in_background(self.home, on_refreshed=self._on_models_refreshed)
             if self._resume_at_start:
                 self._open_saved(self._resume_at_start)
             elif self._fork_at_start:
@@ -1204,20 +1217,90 @@ class CircleSessionApp:
         self._composer_gap.style.height = int(active_view.message_count() > 0)
 
     def _sync_pending(self, width: int) -> None:
-        """One faint row per message waiting: ``steering:`` for the running turn's next
-        step, ``follow-up:`` for after it."""
+        """Above the input box: the compaction under way, then one faint row per message
+        waiting: ``steering:`` for the running turn's next step, ``follow-up:`` for after it."""
         box = getattr(self, "_pending_box", None)
         if box is None:
             return
+        progress = getattr(self, "_compaction", None)
+        head = [self._compaction_row(progress, width)] if progress is not None else []
         inbox = getattr(getattr(self, "_bridge", None), "inbox", None)
         rows = [("steering", shown) for shown in (inbox.waiting() if inbox is not None else [])]
         shown_as = getattr(self, "_shown_as", {})
         rows += [("follow-up", shown_as.get(full, (full, {}))[0])
                  for _kind, full in getattr(self, "_msg_queue", [])]
-        lines = [" " + _faint(_cut_end(f"{label}: {' '.join(text.split())}", max(8, width - 2)))
-                 for label, text in rows]
+        lines = head + [" " + _faint(_cut_end(f"{label}: {' '.join(text.split())}", max(8, width - 2)))
+                        for label, text in rows]
         self._pending_text.set_value("\n".join(lines))
         box.style.height = len(lines)
+
+    # ── compaction ─────────────────────────────────────────────────────
+
+    _BAR_CELLS = 16
+
+    def _compaction_row(self, progress: CompactionProgress, width: int) -> str:
+        """``auto-compacting · ████░░░░ summarizing · 12s``: a status row (契约 R6: what is
+        under way stays resident and goes when it is done). Drops the stage and the clock
+        before the bar when the screen is narrow."""
+        pal = palette()
+        fraction = progress.fraction()
+        filled = round(fraction * self._BAR_CELLS)
+        if fraction < 1.0:
+            filled = min(filled, self._BAR_CELLS - 1)  # full only once the summary is in
+        bar = f"{pal.text}{'█' * filled}{pal.faint}{'░' * (self._BAR_CELLS - filled)}"
+        head = f"{progress.label} · "
+        tail = f" {progress.stage} · {progress.elapsed():.0f}s"
+        room = max(8, width - 2)
+        if string_width(head) + self._BAR_CELLS + string_width(tail) > room:
+            tail = ""
+        if string_width(head) + self._BAR_CELLS > room:
+            return " " + _faint(_cut_end(head + tail, room))
+        return f" {pal.faint}{head}{bar}{pal.reset}{pal.faint}{tail}{pal.reset}"
+
+    def _on_compaction(self, event: dict[str, Any]) -> None:
+        """A compaction step, from a run's callbacks (a worker thread): the row follows it,
+        and the end leaves one line in the transcript — faint when done, ✖ when it failed —
+        under the turn's usage line when a turn is drawing."""
+        phase = str(event.get("phase") or "")
+        with self._app.lock:
+            progress = self._compaction
+            if phase == "start" and (progress is None or progress.trigger in ("", "tool")):
+                progress = progress or CompactionProgress()
+                self._compaction = progress
+            if progress is None:
+                return
+            progress.apply(event)
+            if phase == "done":
+                self._compaction = None
+                self._footer.update(context_input_tokens=None)
+                self._compaction_note("toast", done_text(event, automatic=progress.automatic))
+                return
+            if phase == "failed":
+                self._compaction = None
+                self._compaction_note(
+                    "fail", f"Compaction failed: {event.get('error') or 'unknown error'}")
+                return
+        self._app.render()
+
+    def _compaction_note(self, kind: str, text: str) -> None:
+        """The closing line. A turn on screen is redrawn in place until it ends, so a line
+        added now would come between its answer and its usage line: it waits for the end
+        (``_leave_busy``)."""
+        if self._turn_base >= 0 and self._is_loading and getattr(self._bridge, "is_running", False):
+            self._held_notes.append((kind, text))
+            self._app.render()
+        elif kind == "fail":
+            self._fail(text)
+        else:
+            self._toast(text)
+
+    def _flush_held_notes(self) -> None:
+        held = getattr(self, "_held_notes", None)
+        if not held:
+            return
+        self._held_notes = []
+        for kind, text in held:
+            self._notice([_error_line(text) if kind == "fail" else f" {_faint(text)}"])
 
     # ── subagents: strip, selection, detail page ───────────────────────────
 
@@ -3638,9 +3721,13 @@ class CircleSessionApp:
             config = {"configurable": {**config["configurable"],
                                        "checkpoint_id": self._leaf_checkpoint}}
             self._forget_leaf()
-        self._flash("Compacting context…", 8.0)
+        # The progress row stands from the start: the model first has to call the tool
+        self._compaction = CompactionProgress(trigger="tool", requested=True)
         self._enter_busy()
         self._app.render()
+        # Its calls are billed like a compaction's summary: in ↑ ↓ and the cost, not in ctx
+        config = {**config, "callbacks": [CompactionWatcher(self._on_compaction),
+                                          UsageOnlyHandler(self._count_side_usage)]}
 
         def _work() -> None:
             summary = ""
@@ -3676,6 +3763,10 @@ class CircleSessionApp:
             except BaseException as exc:  # noqa: BLE001
                 err = exc
             with self._app.lock:
+                # The compaction's own line came with its done or failed step; a row still up
+                # means it never got that far (no tool call, nothing to compact, an error)
+                reported = self._compaction is None
+                self._compaction = None
                 self._footer.update(context_input_tokens=None)
                 if err is not None:
                     self._leave_busy()
@@ -3688,10 +3779,12 @@ class CircleSessionApp:
                 self._leave_busy()
                 if outcome.startswith("Conversation compacted"):
                     done = outcome.removeprefix("Conversation compacted. ").rstrip(".")
-                    self._notice([" " + _faint(f"— compacted · {done.lower()} —")]
-                                 + [f" {line}" for line in summary.splitlines() if summary])
+                    head = [] if reported else [" " + _faint(f"— compacted · {done.lower()} —")]
+                    self._notice(head + [f" {line}" for line in summary.splitlines() if summary])
                 elif outcome.startswith("Nothing to compact"):
                     self._flash("Nothing to compact yet · the conversation fits in the context", 4.0)
+                elif reported:
+                    pass  # the compaction failed and said so already
                 else:
                     self._fail("Not compacted: the model did not run the compaction"
                                + (f" · it said: {summary.splitlines()[0][:80]}" if summary else ""))
@@ -4987,11 +5080,26 @@ class CircleSessionApp:
     # ── busy / footer ──────────────────────────────────────────────────
 
     def _sync_model_meter(self) -> None:
-        self._footer.update(
-            model=self.settings.auth.model,
-            tokens_budget=context_window_for(self.settings.auth.model),
-            reasoning_effort=reasoning_effort_of(getattr(self, "_chat_model", None)),
-        )
+        """The footer's ``ctx`` uses the window the compaction uses: the live model's
+        ``profile["max_input_tokens"]`` (circle.model.apply_context_window). A model built
+        elsewhere (a test's) has none, and the footer looks the name up itself."""
+        name = self.settings.auth.model
+        chat = getattr(self, "_chat_model", None)
+        window = (getattr(chat, "profile", None) or {}).get("max_input_tokens")
+        kwargs: dict[str, Any] = {"model": name, "reasoning_effort": reasoning_effort_of(chat)}
+        if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+            kwargs["tokens_budget"] = window
+            kwargs["tokens_budget_known"] = model_catalog.facts(name).window_known
+        self._footer.update(**kwargs)
+
+    def _on_models_refreshed(self) -> None:
+        """New models.dev data: the live model gets the new window, and the footer with it."""
+        with self._app.lock:
+            chat = getattr(self, "_chat_model", None)
+            if chat is not None and self.model_override is None:
+                apply_context_window(chat, self.settings, self.settings.auth.model)
+            self._sync_model_meter()
+        self._app.render()
 
     def _apply_usage(self, usage: dict | None) -> None:
         if not usage:
@@ -5034,6 +5142,7 @@ class CircleSessionApp:
         self._seen_call_ids.clear()
         self._sync_agent_strip()
         self._call_started_at = 0.0
+        self._flush_held_notes()
 
     def _on_status(self, status: str) -> None:
         with self._app.lock:
@@ -5149,16 +5258,7 @@ class CircleSessionApp:
             if (previous is None or previous.usage_cost != snap.usage_cost
                     or previous.fork_usage != snap.fork_usage
                     or previous.fork_usage_cost != snap.fork_usage_cost):
-                fork = snap.fork_usage
-                self._footer.update(
-                    main_costs=dict(snap.usage_cost),
-                    fork_costs=dict(snap.fork_usage_cost),
-                    fork_input=int(fork.get("input_tokens") or 0),
-                    fork_output=int(fork.get("output_tokens") or 0),
-                    fork_cache_hit=int(fork.get("prompt_cache_hit_tokens") or 0),
-                    fork_cache_write=int(fork.get("prompt_cache_write_tokens") or 0),
-                    fork_cache_write_1h=int(fork.get("prompt_cache_write_1h_tokens") or 0),
-                )
+                self._sync_usage(snap)
             self._sync_plan_panel(snap)
             # 流式 token 很密：同一形态的快照 40ms 内只画一次；消息数、状态或流式段起止一变就立刻画
             now = time.monotonic()
@@ -5169,6 +5269,31 @@ class CircleSessionApp:
             self._snap_rendered_at = now
             self._render_turn_region()
             self._app.render()
+
+    def _sync_usage(self, snap: MessageSnapshot) -> None:
+        """The session's totals as the reducer keeps them: the footer's cost, and ↑ ↓ for the
+        work outside the main conversation."""
+        fork = snap.fork_usage
+        self._footer.update(
+            main_costs=dict(snap.usage_cost),
+            fork_costs=dict(snap.fork_usage_cost),
+            fork_input=int(fork.get("input_tokens") or 0),
+            fork_output=int(fork.get("output_tokens") or 0),
+            fork_cache_hit=int(fork.get("prompt_cache_hit_tokens") or 0),
+            fork_cache_write=int(fork.get("prompt_cache_write_tokens") or 0),
+            fork_cache_write_1h=int(fork.get("prompt_cache_write_1h_tokens") or 0),
+        )
+
+    def _count_side_usage(self, usage: dict, cost: dict, call_id: str) -> None:
+        """A /compact call, from its worker thread: into the session's totals and onto the
+        footer now, since no turn is drawn to bring a snapshot."""
+        reducer = getattr(getattr(self, "_bridge", None), "reducer", None)
+        if reducer is None:
+            return
+        reducer.add_internal_usage(usage, cost, usage_id=call_id)
+        with self._app.lock:
+            self._sync_usage(reducer.snapshot())
+        self._app.render()
 
     def _render_turn_region(self) -> None:
         if self._last_snap is None or self._turn_base < 0:
@@ -5239,6 +5364,11 @@ class CircleSessionApp:
             said = _format_llm_error(exc)
             if _refused_the_key(exc):
                 said += " · /login to change the key"
+            if any(kind == "fail" for kind, _text in self._held_notes):
+                # the compaction's failure is what ended the turn: one red line says both
+                self._held_notes = [n for n in self._held_notes if n[0] != "fail"]
+                said = f"Compaction failed: {said}"
+            self._flush_held_notes()
             self._transcript.append_message(_error_line(said))
             self._settle_inbox()
             self._leave_busy()

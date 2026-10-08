@@ -60,6 +60,9 @@ def main(argv: list[str]) -> int:
         if not prompts:
             print("smoke: no prompt files inside the bundle", file=sys.stderr)
             return 1
+        if not (folder / "_internal" / "circle" / "data" / "models_dev.json.gz").is_file():
+            print("smoke: no models.dev snapshot inside the bundle", file=sys.stderr)
+            return 1
 
         for protocol in ('openai', 'anthropic'):
             settings = complete_api_key_init(

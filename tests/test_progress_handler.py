@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 from langgraph.types import Command
@@ -320,3 +321,33 @@ def test_calls_refused_by_middleware_still_get_a_muted_row(tmp_path, monkeypatch
 
     rows = [line for line in raw.splitlines() if "Read(" in line or "no_such_tool(" in line]
     assert len(rows) == 2 and all(palette().muted_strike in row for row in rows)
+
+
+def test_an_internal_calls_usage_still_counts_without_showing_it():
+    """A compaction's summary is billed: its usage goes with the work outside the main
+    conversation (footer ↑ ↓ and cost), never with the conversation or its ctx."""
+    from circle import model_catalog
+
+    model_catalog.set_catalog({"schema": model_catalog.SCHEMA, "providers": {
+        "anthropic": {"api": "", "models": {"claude-sonnet-5": {
+            "context": 200_000, "cost": {"input": 3.0, "output": 15.0}}}}}})
+    model_catalog.bind_endpoint("", "anthropic")
+    bus = EventBus()
+    seen: list[dict] = []
+    bus.subscribe(seen.append)
+    handler = ProgressHandler(bus)
+    run_id = uuid4()
+    handler.on_chat_model_start({"name": "M"}, [[]], run_id=run_id,
+                                metadata={"lc_source": "summarization"},
+                                invocation_params={"model": "claude-sonnet-5"})
+    message = AIMessage(content="the summary", usage_metadata={
+        "input_tokens": 100_000, "output_tokens": 2_000, "total_tokens": 102_000})
+    handler.on_llm_end(LLMResult(generations=[[ChatGeneration(message=message)]]), run_id=run_id)
+    assert [(e["kind"], e["payload"]["name"]) for e in seen] == [("llm_end", "internal_usage")]
+    reducer = MessageReducer()
+    for event in seen:
+        reducer.dispatch(event)
+    snap = reducer.snapshot()
+    assert snap.fork_usage["input_tokens"] == 100_000 and snap.fork_usage["output_tokens"] == 2_000
+    assert snap.fork_usage_cost["amounts"]["USD"] == pytest.approx(0.1 * 3 + 0.002 * 15)
+    assert snap.usage_cost["calls"] == 0 and not snap.messages
