@@ -1,3 +1,4 @@
+import { scratch, cleanup } from './helpers.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -33,11 +34,7 @@ import { Harness } from '../src/harness.js';
 import { buildTools } from '../src/tools.js';
 import { applyPatch } from '../src/apply_patch.js';
 import type { Message, Tool } from '../src/types.js';
-function scratch(t: { after(fn: () => void): void }): string {
-  const root = mkdtempSync(join(tmpdir(), 'circle-next-test-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return root;
-}
+
 const assistant = (
   content: string,
   calls: Message['tool_calls'] = [],
@@ -213,7 +210,7 @@ test('checkpoints survive restart, retain alternate branches, and enforce concur
 test('append-only summary changes model projection while retaining raw results', (t) => {
   const root = scratch(t);
   const store = new CheckpointStore(root);
-  t.after(() => store.close());
+  cleanup(t, () => store.close());
   const session = store.create(root, 'test');
   const checkpoint = store.append(session.id, [
     { id: 'u1', role: 'user', content: 'large original' },
@@ -268,7 +265,7 @@ test('headless runs real tools, persists tool output, and sends it in the next m
   const { harness, store, policy, session } = runtime(root, model, tools, {
     headless: true,
   });
-  t.after(() => store.close());
+  cleanup(t, () => store.close());
   policy.setYolo(session.id, true);
   const result = await harness.run('write a file');
   assert.equal(result.answer, 'done');
@@ -296,7 +293,7 @@ test('read-only prevents writes and unknown-effect integration tools', async (t)
     { message: assistant('blocked') },
   ]);
   const { harness, store } = runtime(root, model, [tool]);
-  t.after(() => store.close());
+  cleanup(t, () => store.close());
   harness.planMode = true;
   await harness.run('test');
   assert.equal(sideEffect, false);
@@ -332,7 +329,7 @@ test('cancel during approval does not execute the tool and persists a matching e
       });
     },
   });
-  t.after(() => store.close());
+  cleanup(t, () => store.close());
   const run = harness.run('write');
   const caught = assert.rejects(run, /Interrupted/);
   await waiting;
@@ -369,7 +366,7 @@ test('steering is consumed in the next request before follow-up starts', async (
     { message: assistant('follow-up done') },
   ]);
   const { harness, store } = runtime(root, model, [tool]);
-  t.after(() => store.close());
+  cleanup(t, () => store.close());
   const running = harness.run('initial');
   await ready;
   harness.queue('steering', 'steer');
