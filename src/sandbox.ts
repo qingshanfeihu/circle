@@ -125,6 +125,7 @@ export class Sandbox {
       let timedOut = false;
       let timer: NodeJS.Timeout | undefined;
       let escalation: NodeJS.Timeout | undefined;
+      let windowsKill: Promise<void> | undefined;
       const collect = (chunk: Buffer): void => {
         output += chunk.toString('utf8');
         if (output.length > 2_000_000) output = output.slice(-2_000_000);
@@ -134,10 +135,10 @@ export class Sandbox {
       const kill = (force: boolean): void => {
         if (!child.pid) return;
         if (process.platform === 'win32')
-          execFile(
-            'taskkill',
-            ['/PID', String(child.pid), '/T', ...(force ? ['/F'] : [])],
-            () => {},
+          windowsKill = new Promise<void>((resolveKilled) =>
+            execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], () =>
+              resolveKilled(),
+            ),
           );
         else
           try {
@@ -167,8 +168,9 @@ export class Sandbox {
         cleanup();
         reject(error);
       });
-      child.once('close', (code) => {
+      child.once('close', async (code) => {
         if (stopping) kill(true);
+        await windowsKill;
         cleanup();
         resolveResult({
           output: signal.aborted

@@ -143,10 +143,8 @@ async function kill(entry: Entry, force: boolean): Promise<void> {
   if (!entry.pid) return;
   if (process.platform === 'win32') {
     await new Promise<void>((resolve) =>
-      execFile(
-        'taskkill',
-        ['/PID', String(entry.pid), '/T', ...(force ? ['/F'] : [])],
-        () => resolve(),
+      execFile('taskkill', ['/PID', String(entry.pid), '/T', '/F'], () =>
+        resolve(),
       ),
     );
   } else {
