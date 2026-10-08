@@ -23,6 +23,8 @@ import { discoverCustomCommands } from './commands.js';
 import { LspManager } from './lsp_tool.js';
 import type { Tool, ToolContext } from './types.js';
 import { ContextManager, restoredTodos } from './context_middleware.js';
+import { migrateLegacy } from './migration.js';
+import type { MigrationReport } from './legacy_sessions.js';
 const BUILTIN_TOOL_NAMES = new Set([
   'ls',
   'read_file',
@@ -72,6 +74,7 @@ export interface RuntimeOptions {
   ) => Promise<string>;
 }
 export class AgentRuntime {
+  readonly migration: MigrationReport;
   readonly options: RuntimeOptions;
   readonly store: CheckpointStore;
   readonly bus = new EventBus();
@@ -105,6 +108,9 @@ export class AgentRuntime {
     this.store = new CheckpointStore(
       this.runOptions.no_session ? undefined : options.home,
     );
+    this.migration = this.runOptions.no_session
+      ? { imported: [], skipped: [], errors: [] }
+      : migrateLegacy(options.home, this.store);
     this.sandbox = new Sandbox(
       options.workspace,
       projectDataDir(options.workspace, options.home),

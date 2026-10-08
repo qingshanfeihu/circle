@@ -374,6 +374,10 @@ export class SessionApp {
       this.repaint();
     });
     await this.runtime.initialize();
+    for (const error of this.runtime.migration.errors)
+      this.fail(
+        `Could not migrate ${error.thread || 'legacy data'}: ${error.message}`,
+      );
     this.repaint();
   }
   private askChoice(
@@ -861,6 +865,8 @@ export class SessionApp {
         })),
         async (item) => {
           const checkpoint = runtime.store.checkpoint(item.key)!;
+          if (!checkpoint.message)
+            throw new Error('selected entry has no message');
           const head =
             checkpoint.message.role === 'user'
               ? checkpoint.parent

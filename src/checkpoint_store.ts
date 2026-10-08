@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { ensureHome, normalizeWorkspace } from './paths.js';
 import type { Message } from './types.js';
+import type { LegacyImportPlan } from './legacy_sessions.js';
+import { createHash } from 'node:crypto';
 export interface Session {
   id: string;
   workspace: string;
@@ -16,7 +18,7 @@ export interface Checkpoint {
   id: string;
   session_id: string;
   parent: string | null;
-  message: Message;
+  message: Message | null;
   created: number;
 }
 export interface ContextState {
@@ -52,7 +54,10 @@ export class CheckpointStore {
       CREATE TABLE IF NOT EXISTS context_projections (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, at_checkpoint TEXT NOT NULL, summary TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS context_versions (version INTEGER PRIMARY KEY AUTOINCREMENT, checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id) ON DELETE CASCADE, state TEXT NOT NULL, created REAL NOT NULL);
       CREATE INDEX IF NOT EXISTS context_versions_checkpoint ON context_versions(checkpoint_id, version);
-      PRAGMA user_version = 2;`);
+      CREATE TABLE IF NOT EXISTS labels (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, message_id TEXT NOT NULL, label TEXT NOT NULL, PRIMARY KEY(session_id, message_id));
+      CREATE TABLE IF NOT EXISTS legacy_imports (source_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, receipt TEXT NOT NULL, created REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS legacy_checkpoints (source_key TEXT NOT NULL, legacy_id TEXT NOT NULL, native_head TEXT, PRIMARY KEY(source_key, legacy_id));
+      PRAGMA user_version = 3;`);
   }
   create(
     workspace: string,
@@ -115,13 +120,16 @@ export class CheckpointStore {
       .get(id);
     return row ? this.decode(row) : undefined;
   }
-  tree(session: string): Checkpoint[] {
+  tree(session: string): (Checkpoint & { message: Message })[] {
     return this.db
       .prepare(
         'SELECT * FROM checkpoints WHERE session_id = ? ORDER BY created, rowid',
       )
       .all(session)
-      .map((row) => this.decode(row));
+      .map((row) => this.decode(row))
+      .filter(
+        (row): row is Checkpoint & { message: Message } => row.message !== null,
+      );
   }
   append(
     sessionId: string,
@@ -162,7 +170,7 @@ export class CheckpointStore {
       const row = this.checkpoint(cursor);
       if (!row || row.session_id !== sessionId)
         throw new Error('invalid checkpoint ancestry');
-      messages.push(row.message);
+      if (row.message) messages.push(row.message);
       cursor = row.parent;
     }
     return messages.reverse();
@@ -187,6 +195,195 @@ export class CheckpointStore {
   }
   delete(sessionId: string): void {
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+  }
+  labels(sessionId: string): Record<string, string> {
+    return Object.fromEntries(
+      this.db
+        .prepare('SELECT message_id, label FROM labels WHERE session_id = ?')
+        .all(sessionId)
+        .map((row) => [String(row.message_id), String(row.label)]),
+    );
+  }
+  setLabel(sessionId: string, messageId: string, label: string): void {
+    const clean = label.trim().replace(/\s+/gu, ' ').slice(0, 40);
+    if (
+      !this.tree(sessionId).some(
+        (checkpoint) => checkpoint.message.id === messageId,
+      )
+    )
+      throw new Error('label names no message');
+    if (clean)
+      this.db
+        .prepare('INSERT OR REPLACE INTO labels VALUES (?, ?, ?)')
+        .run(sessionId, messageId, clean);
+    else
+      this.db
+        .prepare('DELETE FROM labels WHERE session_id = ? AND message_id = ?')
+        .run(sessionId, messageId);
+  }
+  migrationReceipts(): Record<string, unknown>[] {
+    return this.db
+      .prepare('SELECT receipt FROM legacy_imports ORDER BY created')
+      .all()
+      .map((row) => JSON.parse(String(row.receipt)) as Record<string, unknown>);
+  }
+  importedLegacyKeys(): Set<string> {
+    return new Set(
+      this.db
+        .prepare('SELECT source_key FROM legacy_imports')
+        .all()
+        .map((row) => String(row.source_key)),
+    );
+  }
+  legacyHead(
+    sourceKey: string,
+    checkpointId: string,
+  ): string | null | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT native_head FROM legacy_checkpoints WHERE source_key = ? AND legacy_id = ?',
+      )
+      .get(sourceKey, checkpointId);
+    return row
+      ? row.native_head === null
+        ? null
+        : String(row.native_head)
+      : undefined;
+  }
+  importLegacy(plan: LegacyImportPlan): 'imported' | 'skipped' {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (
+        this.db
+          .prepare('SELECT source_key FROM legacy_imports WHERE source_key = ?')
+          .get(plan.sourceKey)
+      ) {
+        this.db.exec('ROLLBACK');
+        return 'skipped';
+      }
+      if (this.get(plan.session.thread_id))
+        throw new Error(
+          'legacy session ID conflicts with an existing native session',
+        );
+      const session = plan.session;
+      this.db
+        .prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, NULL, ?, ?)')
+        .run(
+          session.thread_id,
+          session.workspace,
+          session.title,
+          session.model,
+          session.created * 1000,
+          session.updated * 1000,
+        );
+      const paths = new Map<
+        string,
+        { messages: Message[]; ids: string[]; head: string | null }
+      >();
+      const maps = new Map<string, string | null>();
+      for (const snapshot of plan.snapshots) {
+        const parent = snapshot.parent ? paths.get(snapshot.parent) : undefined;
+        if (snapshot.parent && !parent)
+          throw new Error('migration checkpoint parent is missing');
+        const parentMessages = parent?.messages ?? [];
+        const ids = parent?.ids ?? [];
+        let prefix = 0;
+        while (
+          prefix < Math.min(parentMessages.length, snapshot.messages.length) &&
+          JSON.stringify(parentMessages[prefix]) ===
+            JSON.stringify(snapshot.messages[prefix])
+        )
+          prefix++;
+        const current = ids.slice(0, prefix);
+        let head =
+          parent && prefix === parentMessages.length
+            ? parent.head
+            : (current.at(-1) ?? null);
+        for (let index = prefix; index < snapshot.messages.length; index++) {
+          const message = snapshot.messages[index]!;
+          const id =
+            'legacy-' +
+            createHash('sha256')
+              .update(
+                plan.sourceKey +
+                  ':' +
+                  snapshot.id +
+                  ':' +
+                  index +
+                  ':' +
+                  JSON.stringify(message),
+              )
+              .digest('hex');
+          this.db
+            .prepare('INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?)')
+            .run(
+              id,
+              session.thread_id,
+              head,
+              JSON.stringify(message),
+              snapshot.timestamp || session.updated * 1000,
+            );
+          current.push(id);
+          head = id;
+        }
+        const boundary =
+          'legacy-boundary-' +
+          createHash('sha256')
+            .update(plan.sourceKey + ':' + snapshot.id)
+            .digest('hex');
+        this.db
+          .prepare('INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?)')
+          .run(
+            boundary,
+            session.thread_id,
+            head,
+            'null',
+            snapshot.timestamp || session.updated * 1000,
+          );
+        head = boundary;
+        paths.set(snapshot.id, {
+          messages: snapshot.messages,
+          ids: current,
+          head,
+        });
+        maps.set(snapshot.id, head);
+        this.db
+          .prepare('INSERT INTO legacy_checkpoints VALUES (?, ?, ?)')
+          .run(plan.sourceKey, snapshot.id, head);
+        if (head)
+          this.db
+            .prepare(
+              'INSERT INTO context_versions (checkpoint_id,state,created) VALUES (?, ?, ?)',
+            )
+            .run(
+              head,
+              JSON.stringify(snapshot.context),
+              snapshot.timestamp || session.updated * 1000,
+            );
+      }
+      if (!maps.has(plan.selected))
+        throw new Error('migration selected checkpoint is missing');
+      this.db
+        .prepare('UPDATE sessions SET head = ? WHERE id = ?')
+        .run(maps.get(plan.selected)!, session.thread_id);
+      for (const [id, label] of Object.entries(plan.labels))
+        this.db
+          .prepare('INSERT INTO labels VALUES (?, ?, ?)')
+          .run(session.thread_id, id, label);
+      this.db
+        .prepare('INSERT INTO legacy_imports VALUES (?, ?, ?, ?)')
+        .run(
+          plan.sourceKey,
+          session.thread_id,
+          JSON.stringify(plan.receipt),
+          Date.now(),
+        );
+      this.db.exec('COMMIT');
+      return 'imported';
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   requireBalancedTools(messages: Message[]): void {
     const pending = new Set<string>();
@@ -220,11 +417,11 @@ export class CheckpointStore {
   }
   setSummary(sessionId: string, at: string, summary: string): void {
     const checkpoint = this.checkpoint(at);
-    if (checkpoint?.session_id !== sessionId)
+    if (checkpoint?.session_id !== sessionId || !checkpoint.message)
       throw new Error('invalid summary checkpoint');
     if (
       !this.messages(sessionId).some(
-        (message) => message.id === checkpoint.message.id,
+        (message) => message.id === checkpoint.message?.id,
       )
     )
       throw new Error('summary checkpoint is not on the active branch');
@@ -258,9 +455,9 @@ export class CheckpointStore {
     if (legacy) {
       const checkpoint = this.checkpoint(String(legacy.at_checkpoint));
       if (
-        checkpoint &&
+        checkpoint?.message &&
         this.messages(sessionId, head).some(
-          (message) => message.id === checkpoint.message.id,
+          (message) => message.id === checkpoint.message?.id,
         )
       )
         return {

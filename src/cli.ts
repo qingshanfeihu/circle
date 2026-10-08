@@ -307,6 +307,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const { toHtml, toJsonl } = await import('./session_export.js');
       const store = new CheckpointStore(home);
       try {
+        const { migrateLegacy } = await import('./migration.js');
+        const migration = migrateLegacy(home, store);
+        for (const error of migration.errors)
+          process.stderr.write(
+            `Could not migrate ${error.thread || 'legacy data'}: ${error.message}\n`,
+          );
         const session = store.find(options.export[0]!);
         if (!session) throw new UsageError('unknown session');
         const path = options.export[1] || session.id + '.html';
@@ -398,6 +404,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     for (const problem of problems) process.stderr.write(problem + '\n');
     const { AgentRuntime } = await import('./runtime.js');
     runtime = new AgentRuntime({ ...runtimeOptions, headless: true });
+    for (const error of runtime.migration.errors)
+      process.stderr.write(
+        `Could not migrate ${error.thread || 'legacy data'}: ${error.message}\n`,
+      );
     runtime.policy.setYolo(runtime.session.id, options.yolo);
     if (options.mode === 'rpc') {
       const { runRpc } = await import('./rpc.js');

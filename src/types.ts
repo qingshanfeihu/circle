@@ -12,7 +12,7 @@ export interface Usage {
 }
 export interface Message {
   id: string;
-  role: 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
   thinking?: string;
   tool_calls?: ToolCall[];
@@ -25,6 +25,7 @@ export interface Message {
   internal?: string;
   truncated?: boolean;
   recoverable?: boolean;
+  legacy_data?: { type: string; data: Record<string, unknown> };
 }
 export type Effect = 'read' | 'write' | 'execute' | 'unknown';
 export interface Tool {

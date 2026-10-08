@@ -1,0 +1,540 @@
+{
+  "initialBaseline": "645ac4357fa4e7977c2812b133be8d65c277bf0b",
+  "additionalBaseline": "472f5e38871ed47a27373704e78a441d271b8c45",
+  "changes": [
+    {
+      "path": "CHANGELOG.md",
+      "change": "M",
+      "sha256": "88ac9a7949a4265464e7aea2ca47fbbbc0f6eb19086c81750a90062c31e3dc09",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/approvals.py",
+      "change": "M",
+      "sha256": "7bcf97ac4083e47f8c201c5628f77fe864a05968132126ddfd31f2f7c03538b4",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/compaction.py",
+      "change": "A",
+      "sha256": "33b5a9f6c8d1d9d441affded4ada44339d630f3e382f9ebd9eccbbfd5d19e093",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/context_middleware.py",
+      "change": "M",
+      "sha256": "c87a2c729111b1cd844b627e298dae7580df0a77f197274eb39d946dac394247",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/data/models_dev.json.gz",
+      "change": "A",
+      "sha256": "4b47f1fb4c63c8ea71f722de501495894fbd321079dea15550b16e36c4059ba5",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/display_lexicon.py",
+      "change": "M",
+      "sha256": "cc1c860ae0d4652fbbc88eb4b2eab1e41033dbac9bae63d9d6cc84872947c59b",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/extensions.py",
+      "change": "M",
+      "sha256": "8196808495be4cf4df098ce85b1ff94d9852eb7358928c7d7690101987527b0a",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/harness.py",
+      "change": "M",
+      "sha256": "b6e21b2da16980a2fea0aa9404e7ae995f39e6f373a4a1d6c36b372b47abbcdd",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/headless.py",
+      "change": "M",
+      "sha256": "47cebab41594dedb59dac6b8cee7c66c6f35803a66182691c5464e77db927c04",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/ink/components/ask_user_view.py",
+      "change": "M",
+      "sha256": "3a08177665efe127c47eb569a2d6fa392ffbe3ae82302bb8cdfaab79483d2df2",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/ink/components/exec_approval_view.py",
+      "change": "M",
+      "sha256": "d7a53c6e896fd8237b1a920ebf4362a1db21596065ffd6e0757e7d9cb99b5a3a",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/ink/components/footer.py",
+      "change": "M",
+      "sha256": "f16d16b5b025f0dc30aa46a6b16370ef9ebb142f6a73b32e2541ca7647c95d18",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/job_agents.py",
+      "change": "A",
+      "sha256": "27ea8fa37323c02ad996945c7a62151f3757201cdc8a042f458936d1c606bda5",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/job_tools.py",
+      "change": "A",
+      "sha256": "b4a3bdec04db990c073884fcf6bfb8afb72b351561cffe0a07b3c70115e0b4f3",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/jobs.py",
+      "change": "A",
+      "sha256": "989f72a44708f5d62f5c1ecb3c14ba30af9fb13787d98493be9a328b816211a3",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/keybindings.py",
+      "change": "M",
+      "sha256": "25dde936f4046c74fac724c195d699aca194c5dca641fe0062cdcdabda4a8d7d",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/main_session.py",
+      "change": "M",
+      "sha256": "a932b71fd979e1b9ebe5f0d6e94478e0a5c3026d3c1944a8c6f22af1fd7d81f9",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/middleware/job_notice.py",
+      "change": "A",
+      "sha256": "6f40a000e8c4d3d56150a60b754dedd185acf19744b97c95be710dcfb23bb54c",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/middleware/loop_guard.py",
+      "change": "M",
+      "sha256": "359c4ab185d596ca5e18b0bf8907de90632dd15805eb9db666d66d9161075d0e",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/middleware/tool_selection.py",
+      "change": "M",
+      "sha256": "ea1e5a97562becb677476d219b657c556250a0b1682b1a1ce5647367162be1e0",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/model.py",
+      "change": "M",
+      "sha256": "eba3718fdbc72f047651f8ce38a4cc04a9f85c47eeb15ce2f86dec2da290644f",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/model_catalog.py",
+      "change": "A",
+      "sha256": "c97b24d131aa30010f7cfcc4a5f97daeed465cd5e96fd3ae4328df77d46cc1e8",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/plan_backend.py",
+      "change": "M",
+      "sha256": "3f2ca8c9b3bd4cb434864c158dbdb85ac2f9010011058aa06464d081b5f5fefa",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/pricing.py",
+      "change": "M",
+      "sha256": "b400b89a788bf850c35c10d63c2b829c416ed8c0738eed5593ff2e08fa5bc11a",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/prompts/session/gemini.md",
+      "change": "M",
+      "sha256": "cac8615bbfc8f9ac244ce2f9f024be62ab9ac0424d2db41a917516cece72f9ae",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/prompts/tools/execute.md",
+      "change": "M",
+      "sha256": "3910c934924003a3215bc22f048bdbb8193722ba7869a3193ef5979e25e48629",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/prompts/tools/list_jobs.md",
+      "change": "A",
+      "sha256": "7b752f55fa2ea7d880b0d9e3c3f9640cb11dfdb0fa83d823418808b7309ae69e",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/prompts/tools/stop_job.md",
+      "change": "A",
+      "sha256": "3ec9ad5d7485d7d276bf89942dd62198970d2d71511c6d291723ff1e49518a9a",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/prompts/tools/wait_jobs.md",
+      "change": "A",
+      "sha256": "99aa9d292de8177ff6009a2f8d5d64a7b839deb10ce639e1ec95d771da6b9039",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/rpc.py",
+      "change": "M",
+      "sha256": "db73cd33a048225dbfc7537ed25c87d34028ed8d0ac190dd4c7c36ae186a1fde",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/sandbox.py",
+      "change": "M",
+      "sha256": "3744c437c468f307b2fcda2e45639efe6db72b37b7d444b398164cc7865cf328",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/settings.py",
+      "change": "M",
+      "sha256": "9b1f5aea6de8a1382d27bbb9d6b9f6770df3bff8415a7dc54110ab515768f4de",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/testing.py",
+      "change": "M",
+      "sha256": "28cc5ed035c73c02dc87e26f1d5e858becdfbb201805fb89691d08d6496d5f73",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/agent_strip.py",
+      "change": "M",
+      "sha256": "45b11032f5fc8fad6105b94f8d709ab4b04c700d72457157b0505618f543a900",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/harness_bridge.py",
+      "change": "M",
+      "sha256": "9e0a5fcf9b4b19cdef9d0d7696d6124b97a96b4fc5f2ccb26449a43df19cd34f",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/job_rows.py",
+      "change": "A",
+      "sha256": "65122c44a705ba7cdeeb35736c4142439ea10622ef66b712a16de02b153a1353",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/message_model.py",
+      "change": "M",
+      "sha256": "6785798817491ede7b10920d992a60ea432bca92cca45b39af113778bca9d466",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/progress_handler.py",
+      "change": "M",
+      "sha256": "311ca13de1b171622f0e9eac56654ca7a733da374def7be8a7fe7384bd07e2f8",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/reducer.py",
+      "change": "M",
+      "sha256": "4ddf37f6b26ec0d3ce454f2de6612dde599accf72cec946bf8fa867b2567bbc8",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/replay.py",
+      "change": "M",
+      "sha256": "2ceb16461f6a1fc052869a7aff8ba252463c23c055cab392d3e5a084a83e078b",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/session_app.py",
+      "change": "M",
+      "sha256": "38e96288bb43d40ca3d1530b5b2e97a90158715e2b30cfa5e30277d6b958b719",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/slash_commands.py",
+      "change": "M",
+      "sha256": "8a32e6b6cbff37d318495e45c569d068a7ff291d288586c0295b1e712c8b91aa",
+      "acceptance": "pending"
+    },
+    {
+      "path": "circle/tui/transcript_view.py",
+      "change": "M",
+      "sha256": "12df70a6ebe5f880c954da312a969760da57f6b280dde9f6a51dd4b93823dad4",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/background-jobs.md",
+      "change": "A",
+      "sha256": "a2ce034482a3659296419c8d070bdce59a6014d258bd9c0023c48170fda1ce4f",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/cli.md",
+      "change": "M",
+      "sha256": "653c986c9a27394348196ef09631d687b87a6cb17fc355a70a0ee74f6fb3241d",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/configuration.md",
+      "change": "M",
+      "sha256": "cd4199c49e1526cc26f5886a15224176925ef56dc0fa6bcd88288070464dad41",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/development/architecture.md",
+      "change": "M",
+      "sha256": "6bf1765826976e53c28465cdde3f854efa60f074a39bd48fa347d7ed96bd2525",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/development/tui-contract.md",
+      "change": "M",
+      "sha256": "659df3138722b3e4ff15b408a9b5ea95c71505ce2283ece891b1011cc3b56234",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/environment-variables.md",
+      "change": "M",
+      "sha256": "4e719257bcccd21464724a169324acd9fc913ebf5ab13cf67d45d1aeb8f4932e",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/extensions.md",
+      "change": "M",
+      "sha256": "b81cb2b4ac945da7b7840e4a8bf1c833c23d638341492696f0cdee1b4255d4e2",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/how-circle-works.md",
+      "change": "M",
+      "sha256": "6e26b780d6ceaee565c121c45b46a05beec89c48778f1b18523d151db6e9deb9",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/index.md",
+      "change": "M",
+      "sha256": "010ee8d082d991e59fc84ea6d82f9cd800da0907cce89f4903c3497a2aeb28ae",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/interface.md",
+      "change": "M",
+      "sha256": "66b717336f8f6a382084154f9c80e4586c8c54a725d4ea9dd424ee01e7afa690",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/keybindings.md",
+      "change": "M",
+      "sha256": "a593c9ac8028eabc63436d00fe0584b902338918bdd6a6c75f8fabfe2bfdff67",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/known-issues.md",
+      "change": "M",
+      "sha256": "692941290b6555b8119f00d3ccf08b6e5a8e5cd65824ab9da8cf92afe47e2f8a",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/models.md",
+      "change": "M",
+      "sha256": "01c5932b19f5858cf7abe1214c7941eaa3d803a3610e16833a36bd5a9709c09e",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/security.md",
+      "change": "M",
+      "sha256": "146fa8b0e019f00d0ee5fb69096b0607ecb624770a0b7fec60898b585375de15",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/sessions.md",
+      "change": "M",
+      "sha256": "f767fc0d0448a2ae8be0d165edccbdfe787dc1a769a0fd2054b1183be955e26c",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/settings.md",
+      "change": "M",
+      "sha256": "d48717dc8441882c2d98067495add11892d80a70800c5609d0c71f8db48918fc",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/slash-commands.md",
+      "change": "M",
+      "sha256": "c7477624f75e387cc2bcc6ef1476fc5a0d42470e8965a95997938449f8ffea69",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/tools.md",
+      "change": "M",
+      "sha256": "d68562c2fde11a1018d9ac3dc92a1e60f7f0efa08878bd870853e3be916b2462",
+      "acceptance": "pending"
+    },
+    {
+      "path": "docs/usage.md",
+      "change": "M",
+      "sha256": "c1d84b5ec7b465918ac03ef7c096217a213c58880f9e2a64e59c8232f63c5175",
+      "acceptance": "pending"
+    },
+    {
+      "path": "packaging/circle.spec",
+      "change": "M",
+      "sha256": "23db127a0ca82d560e922a63e6e5068fc99ce457f7c251e7428d71a410e3793b",
+      "acceptance": "pending"
+    },
+    {
+      "path": "pyproject.toml",
+      "change": "M",
+      "sha256": "24a9f27da96750077dd515532d1c0beedb984ee638f35a377f67017b47cf7ae0",
+      "acceptance": "pending"
+    },
+    {
+      "path": "scripts/smoke_frozen.py",
+      "change": "M",
+      "sha256": "4ba8492303a39113c3050bf504602cb7b5add30cf0d054fafe09f7d6bb27a0c5",
+      "acceptance": "pending"
+    },
+    {
+      "path": "scripts/update_models_dev.py",
+      "change": "A",
+      "sha256": "aeab4f234e2a3c51ee9a04bf48553e818c908495087af4da704df9185f476347",
+      "acceptance": "pending"
+    },
+    {
+      "path": "scripts/verify_release.py",
+      "change": "M",
+      "sha256": "52920c421335e6d37967fb07930deed0dd9484d86c68db7ebc50d589d9ab854f",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/conftest.py",
+      "change": "M",
+      "sha256": "9fad5fdb63c5d03248dcbee7a81f258ea2b28082d1279920ebb9b5c4b810da62",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_background_jobs.py",
+      "change": "A",
+      "sha256": "4ccdc70d18fe4255b5447b4f9b6112cb6ec503f00ef1d532ffa50e1c69295a4e",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_cli_options.py",
+      "change": "M",
+      "sha256": "f63d60c6d228d94f4728d6b2f27fa2904a0044312f7f52aeb6b8bdd84e000aea",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_compaction_progress.py",
+      "change": "A",
+      "sha256": "35a94f955023badde5541990bcbd7b18cee02217e93143c4c731a15e3581e82e",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_footer_meters.py",
+      "change": "M",
+      "sha256": "c6aa8a786afd41eef113a0c410845d61ab55a903edd24a8a4b31c246791d9009",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_headless_jobs.py",
+      "change": "A",
+      "sha256": "b9a67c58a00181ceee6749799fec1db9ccafb0580028abf15c5dceee378ffb3d",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_job_agents.py",
+      "change": "A",
+      "sha256": "14cba7fc525d46af33369a3ea2b8ce1430f6e9cac7b05e3c2b02e4483ff8dfee",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_job_cards.py",
+      "change": "A",
+      "sha256": "3f23ed498ff607f201d785933095056511eef87a899136c7b66ddddec36d4ac7",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_job_interface.py",
+      "change": "A",
+      "sha256": "0761cecd79386b242ec6bc7d16190496f0d773d42484b907470ea86d8c57fe9c",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_job_triggers.py",
+      "change": "A",
+      "sha256": "d07f54bbaa0dc0fa677244534ee66852e3477271318f97cf77bc91a420341a7e",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_job_wake.py",
+      "change": "A",
+      "sha256": "d29ee6d9061a8b1c2450baf5947ad98818080a3683d2a016bcf6370e193218ad",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_jobs.py",
+      "change": "A",
+      "sha256": "eff28c7c8920ba631fef1b5e527433b581ae50652ab84c2e831fea7a1d1edf4f",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_model_catalog.py",
+      "change": "A",
+      "sha256": "c7f1bdddd8bdb940b1f52af1db0ed0fdd9ba0a3cc3126d8635fbf15b800328fb",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_progress_handler.py",
+      "change": "M",
+      "sha256": "c7c7b9d0ab0e1bcf7c3dc8ae4aa04ae1ba2eb14a05442cf434ca35136202e31c",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_release_assets.py",
+      "change": "M",
+      "sha256": "6bce7489867b772fd21b81649a14c2a321e7ab18623951916137ca10330e52c2",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_render_colors.py",
+      "change": "M",
+      "sha256": "6cdc91ec39a662b09c6652f8f87c6c5b15fa5e687879544c7911326981832e28",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_shell_cancel.py",
+      "change": "M",
+      "sha256": "2fb493653f71436f8ff4b52deda4ac25c71689c80792de8f60a0c19a54b8519a",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_slash_all_commands.py",
+      "change": "M",
+      "sha256": "6d2802e47db27e5b70731fc253bc3109a7439bc2a02bdf16ae014470dbaf1c07",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_slash_behaviors.py",
+      "change": "M",
+      "sha256": "e10304f5f63f786194eef424e3eb709dcffb099e33c854d521e3226943625de8",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_stream_cancel_usage.py",
+      "change": "M",
+      "sha256": "820929293818b75a6f9916b665f3f1e06b4acef0b02b6c4181ec41a63b66233f",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_subagent_readonly.py",
+      "change": "M",
+      "sha256": "f0798224a10749c81b3adaf2ee3d802f8dc34661b27b377d2cdf52b07d1605d2",
+      "acceptance": "pending"
+    },
+    {
+      "path": "tests/test_tui_handoff_pty.py",
+      "change": "M",
+      "sha256": "2b21b9f9e8f5af060f5af259c69f0775ca108dcd14e5e67df6c19d2e35cd1d69",
+      "acceptance": "pending"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { fromLegacyMessage } from './legacy_message.js';
 import type { Message } from './types.js';
 import { isRecord } from './settings.js';
 export interface SessionMeta {
@@ -48,69 +49,24 @@ export function fromJsonl(text: string): {
     const data = raw.data;
     if (raw.type === 'message') {
       if (
-        !['user', 'assistant', 'tool'].includes(String(data.role)) ||
+        !['user', 'assistant', 'tool', 'system'].includes(String(data.role)) ||
         typeof data.id !== 'string' ||
         typeof data.content !== 'string'
       )
         throw new Error(`line ${index + 1} has an invalid message`);
       messages.push(data as unknown as Message);
     } else {
-      const role =
-        raw.type === 'human'
-          ? 'user'
-          : raw.type === 'ai'
-            ? 'assistant'
-            : raw.type === 'tool'
-              ? 'tool'
-              : null;
-      if (!role)
-        throw new Error(`unsupported legacy message type: ${raw.type}`);
-      const blocks = Array.isArray(data.content) ? data.content : [];
-      const content =
-        typeof data.content === 'string'
-          ? data.content
-          : blocks
-              .filter(isRecord)
-              .filter((block) => block.type === 'text')
-              .map((block) => String(block.text || ''))
-              .join('');
-      const thinking = blocks
-        .filter(isRecord)
-        .filter(
-          (block) => block.type === 'thinking' || block.type === 'reasoning',
-        )
-        .map((block) => String(block.thinking || block.reasoning || ''))
-        .join('');
-      messages.push({
-        id: typeof data.id === 'string' ? data.id : crypto.randomUUID(),
-        role,
-        content,
-        thinking,
-        ...(isRecord(data.additional_kwargs) &&
-        data.additional_kwargs.circle_plan_reminder === true
-          ? { internal: 'plan-reminder' }
-          : isRecord(data.additional_kwargs) &&
-              data.additional_kwargs.circle_loop_guard === true
-            ? { internal: 'loop-guard' }
-            : isRecord(data.additional_kwargs) &&
-                data.additional_kwargs.circle_internal
-              ? { internal: String(data.additional_kwargs.circle_internal) }
-              : {}),
-        tool_calls:
-          role === 'assistant' && Array.isArray(data.tool_calls)
-            ? (data.tool_calls as Message['tool_calls'])
-            : undefined,
-        tool_call_id:
-          typeof data.tool_call_id === 'string' ? data.tool_call_id : undefined,
-        name: typeof data.name === 'string' ? data.name : undefined,
-        status: data.status === 'error' ? 'error' : 'success',
-      });
+      messages.push(
+        fromLegacyMessage({ type: raw.type, data }, messages.length),
+      );
     }
   }
   if (!messages.length) throw new Error('no messages in it');
   const pending = new Set<string>();
-  const seen = new Set<string>();
   for (const message of messages) {
+    if (message.tool_calls?.length && pending.size)
+      throw new Error('new tool calls before pending results');
+    const seen = new Set<string>();
     for (const call of message.tool_calls ?? []) {
       if (
         !call ||

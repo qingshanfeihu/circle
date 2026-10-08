@@ -1,0 +1,28 @@
+{
+  "baseline": "645ac4357fa4e7977c2812b133be8d65c277bf0b",
+  "kind": "controlled ScriptedModel session with two branches, a selected earlier leaf, signed thinking and a real read result",
+  "dependencies": {
+    "deepagents": "0.7.17",
+    "langgraph": "1.2.12",
+    "langgraph-checkpoint": "4.2.0",
+    "langgraph-checkpoint-sqlite": "3.1.1",
+    "langchain-core": "1.6.4"
+  },
+  "files": [
+    {
+      "name": "checkpoints.sqlite",
+      "sha256": "0389cd7260b6636c8a82d37f03d8adb935a3af9c0a08733f57c696b42cbd34ce",
+      "bytes": 172032
+    },
+    {
+      "name": "sessions.sqlite",
+      "sha256": "2dda28e04e45d56b5612c98d3b9d0a0222814546abe2117ddfdd71b46921367c",
+      "bytes": 20480
+    },
+    {
+      "name": "truth.json",
+      "sha256": "0570e47e0a8ec302feaa2d1b8030aebfbbcc76f4ff4c29fb51a0199041d6aed6",
+      "bytes": 82077
+    }
+  ]
+}

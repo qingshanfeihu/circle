@@ -119,7 +119,9 @@ export class GatewayModel implements ChatModel {
       { role: 'system', content: request.system },
     ];
     for (const message of request.messages) {
-      if (message.role === 'tool')
+      if (message.role === 'system')
+        messages.push({ role: 'system', content: message.content });
+      else if (message.role === 'tool')
         messages.push({
           role: 'tool',
           content: message.content,
@@ -274,7 +276,16 @@ export class GatewayModel implements ChatModel {
     request: ModelRequest,
   ): Promise<ModelResponse> {
     const messages: MessageParam[] = [];
+    let system = request.system;
     for (const message of request.messages) {
+      if (message.role === 'system') {
+        if (messages.length)
+          throw new Error(
+            'Anthropic system messages must precede conversation messages',
+          );
+        system += '\n\n' + message.content;
+        continue;
+      }
       let role: 'user' | 'assistant';
       let content: ContentBlockParam[];
       if (message.role === 'tool') {
@@ -313,7 +324,7 @@ export class GatewayModel implements ChatModel {
     }
     const body: MessageCreateParamsNonStreaming = {
       model: this.model,
-      system: request.system,
+      system,
       messages,
       max_tokens: 32000,
     };
