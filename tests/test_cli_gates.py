@@ -20,6 +20,14 @@ def test_help_describes_update_in_english(capsys):
     assert "update: install the latest release (circle update --help)" in capsys.readouterr().out
 
 
+def test_help_says_init_keeps_the_other_settings(capsys):
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())  # argparse wraps the help column
+    assert "replaces the endpoint, key and model; keeps the rest" in out
+    assert "resets" not in out
+
+
 def test_version_and_print_home(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setenv("CIRCLE_HOME", str(tmp_path))
     assert main(["--version"]) == 0

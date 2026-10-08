@@ -184,7 +184,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--init",
         action="store_true",
-        help="run model setup again (resets settings.json)",
+        help="run model setup again (replaces the endpoint, key and model; keeps the rest)",
     )
     parser.add_argument(
         "--print-home",
