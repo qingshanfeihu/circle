@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-08
+
 ### Added
 
 - **A welcome block opens every session.** At the top of the conversation: Circle's logo, the version, the model and its endpoint, the folder and its git branch, what the folder brings (its instruction files, skills, commands, extensions and settings) with a lamp each, and the folder's three most recent sessions. It is not saved or exported. Once it scrolls away, the header shows the version, model and folder again. See [The welcome](docs/interface.md#the-welcome).
