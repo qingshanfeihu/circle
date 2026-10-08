@@ -34,6 +34,7 @@ from circle.pricing import UsageCostTotals
 from circle.tui.message_model import (
     BLOCK_AGENT_CARD,
     BLOCK_ASK_USER,
+    BLOCK_JOB_NOTICE,
     BLOCK_STEER,
     BLOCK_ERROR,
     BLOCK_TODO_LIST,
@@ -93,6 +94,8 @@ class MessageReducer:
         self._waiting_tool_calls: dict[str, str] = {}
         # The model tool_call_id survives a resumed task; LangChain run ids do not.
         self._task_call_cards: dict[str, tuple[str, str]] = {}
+        # task calls with background: true (their subagent is a job, not a card here)
+        self._background_task_runs: set[str] = set()
         self._task_run_cards: dict[str, str] = {}
         # 子代理调用栈：栈顶是当前子代理事件的父调用
         self._subagent_parent_stack: list[str] = []
@@ -156,6 +159,7 @@ class MessageReducer:
             self._tool_run_id_map.clear()
             self._waiting_tool_calls.clear()
             self._task_call_cards.clear()
+            self._background_task_runs.clear()
             self._task_run_cards.clear()
             self._subagent_parent_stack.clear()
             self._agent_card_idx.clear()
@@ -301,6 +305,13 @@ class MessageReducer:
             self._messages.append(make_user_message(
                 uuid=make_uuid(event.get("run_id") or "", event.get("seq") or 0),
                 content=make_payload_block(BLOCK_STEER, {"text": str(payload.get("text") or "")}),
+                timestamp=event.get("ts") or ""))
+        elif kind == "job_notice":
+            payload = event.get("payload") or {}
+            jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else []
+            self._messages.append(make_user_message(
+                uuid=make_uuid(event.get("run_id") or "", event.get("seq") or 0),
+                content=make_payload_block(BLOCK_JOB_NOTICE, {"jobs": jobs}),
                 timestamp=event.get("ts") or ""))
         elif kind == "todo_list":
             self._on_todo_list(event)
@@ -678,6 +689,10 @@ class MessageReducer:
         parent_tool_use_id = self._current_subagent_parent(event)
         lc_tool_run_id = str(tags.get("lc_tool_run_id") or "")
         stable_call_id = str(tags.get("lc_tool_call_id") or "")
+        if tool_name in SUBAGENT_TOOLS and structured_args(input_dict).get("background") is True:
+            # a subagent started in the background is a job, not a card of this turn
+            self._background_task_runs.add(lc_tool_run_id or stable_call_id)
+            tool_name = "task:background"
         if (tool_name not in SUBAGENT_TOOLS and stable_call_id
                 and stable_call_id in self._waiting_tool_calls):
             tool_use_id = self._waiting_tool_calls.pop(stable_call_id)
@@ -715,9 +730,10 @@ class MessageReducer:
                 self._agent_board_rev += 1
                 return
         tool_use_id = make_uuid(run_id, seq)
+        shown_name = "task" if tool_name == "task:background" else tool_name
         self._messages.append(make_assistant_message(
             uuid=tool_use_id,
-            content=make_tool_use_block(tool_use_id=tool_use_id, name=tool_name, input=input_dict,
+            content=make_tool_use_block(tool_use_id=tool_use_id, name=shown_name, input=input_dict,
                                         status="running"),
             timestamp=event.get("ts") or "", parent_tool_use_id=parent_tool_use_id,
             subagent_type=tags.get("parent_subagent") or ""))
@@ -775,7 +791,11 @@ class MessageReducer:
         output = payload.get("output") or ""
         if not isinstance(output, str):
             output = str(output)
-        if tool_name in SUBAGENT_TOOLS and not tags.get("parent_subagent"):
+        run_key = str(tags.get("lc_tool_run_id") or "") or stable_call_id
+        background = tool_name in SUBAGENT_TOOLS and run_key in self._background_task_runs
+        if background:
+            self._background_task_runs.discard(run_key)
+        if tool_name in SUBAGENT_TOOLS and not tags.get("parent_subagent") and not background:
             self._close_card(event, output, str(payload.get("status") or ""))
             if stable_call_id:
                 self._task_call_cards.pop(stable_call_id, None)
@@ -789,7 +809,7 @@ class MessageReducer:
             tool_use_id = self._inflight_tool_use_ids.pop(0)
         if tool_use_id:
             self._update_tool_use_status(tool_use_id, status="done")
-        if tool_name in SUBAGENT_TOOLS and self._subagent_parent_stack:
+        if tool_name in SUBAGENT_TOOLS and self._subagent_parent_stack and not background:
             if self._subagent_parent_stack[-1] == tool_use_id:
                 self._subagent_parent_stack.pop()
             elif tool_use_id in self._subagent_parent_stack:
@@ -805,6 +825,8 @@ class MessageReducer:
             block_payload["recoverable"] = True
         if isinstance(payload.get("display_lines"), list):
             block_payload["display_lines"] = payload["display_lines"]
+        if isinstance(payload.get("job"), Mapping):
+            block_payload["job"] = dict(payload["job"])
         self._messages.append(make_user_message(
             uuid=make_uuid(event.get("run_id") or "", event.get("seq") or 0),
             content=make_tool_result_block(tool_use_id=tool_use_id, output=output, name=tool_name,

@@ -41,9 +41,9 @@ Circle's screen has a few parts, and each kind of information always goes to the
 | **Waiting messages** | Above the input box, while a turn runs: each message you sent that the model has not read yet, `steering: …`, and each that waits for the turn to end, `follow-up: …`. See [Steer a running turn](usage.md#steer-a-running-turn). |
 | **Input box** | The one framed box on the screen. It is where you type, and where questions appear. |
 | **Footer** | One line of numbers: tokens sent and received, estimated cost, cache hit rate, how full the context is (yellow from 70%, red from 90%). A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. |
-| **Subagent strip** | Below the footer, only while subagents run. |
+| **Subagent strip** | Below the footer, only while subagents or [background jobs](background-jobs.md) run: a header such as `Agents · 2 · Jobs · 1`, a row per subagent, then a row per job with its lamp, id, command, the last line it printed, and how long it has run. |
 
-A few things appear briefly and are not kept: the confirmations in the footer, the popup of `/approvals`, and the lists of `/models`, `/effort`, `/resume`, `/tree` and `/fork`, which open above the input box and close when you choose or press `esc`. Some views take over the whole conversation area, such as a subagent's record.
+A few things appear briefly and are not kept: the confirmations in the footer, the popup of `/approvals`, and the lists of `/models`, `/effort`, `/resume`, `/tree`, `/fork` and `/jobs`, which open above the input box and close when you choose or press `esc`. Some views take over the whole conversation area, such as a subagent's record or a background job's page.
 
 Circle also sets the terminal window's title to `circle - <folder>`, or `circle - <session title> - <folder>` once the session has a title (the first line of your first message, or what `/name` set), and gives the old title back when it exits, in terminals that keep a title stack.
 
@@ -101,7 +101,7 @@ Every row that has a state gets one round lamp `●`.
 | Cyan, steady | Waiting for you |
 | None | Not run |
 
-Lamps appear on tool calls, subagents, the plan and its steps, the title of a card, the folder's rows in the welcome, and the header of a subagent's page. Cyan, the "waiting for you" lamp, is the one to look for when nothing seems to be happening: something is waiting for your answer.
+Lamps appear on tool calls, subagents, background jobs, the plan and its steps, the title of a card, the folder's rows in the welcome, and the header of a subagent's or a job's page. Cyan, the "waiting for you" lamp, is the one to look for when nothing seems to be happening: something is waiting for your answer.
 
 ## Tints
 
@@ -123,7 +123,8 @@ Answers from the model are never tinted.
 | `›` (blue) | You |
 | `⏺` | The model speaking |
 | `∴` | Thinking |
-| `⎿` | The result of the row above it |
+| `⎿` | The result of the row above it. Under a call that went on as a background job: `in background · j3`, `moved to background · j4`, or `left running · j5` for processes a command left running |
+| `◆` | A background job ended: ` ◆ j3 done · npm test · 12s`, green when it is done, red when it failed, dim when it was stopped. When it opens a turn, it stands where your message would |
 | `✖` | An error (red) or a stop (dim, `Interrupted`) |
 
 ## What is shown, and what is hidden
@@ -164,4 +165,4 @@ Use `dark` or `light` when the terminal cannot be asked. Some `ssh` and `tmux` s
 
 ## Narrow terminals
 
-Circle reads the size of the terminal on every redraw. On a narrow screen the header drops its shortcut hint, then shortens the folder path from the left, then the model name. Below 50 columns the welcome leaves out the logo. In the subagent strip the description column shrinks first, then the `tokens` word, and last the name. Text you and Circle wrote wraps rather than being cut; only rows that summarise something are shortened, and never the lamp, the name or the numbers.
+Circle reads the size of the terminal on every redraw. On a narrow screen the header drops its shortcut hint, then shortens the folder path from the left, then the model name. Below 50 columns the welcome leaves out the logo. In the subagent strip the description column shrinks first, then the `tokens` word, and last the name; a job's row gives up the last line it printed first. Text you and Circle wrote wraps rather than being cut; only rows that summarise something are shortened, and never the lamp, the name or the numbers.

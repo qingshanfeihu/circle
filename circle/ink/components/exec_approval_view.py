@@ -75,6 +75,9 @@ class ExecApprovalSession:
         name = tool_short_name(str(p.get("tool") or p.get("title") or "tool"))
         more = int(p.get("more") or 0)
         title = f"{name} needs your permission" + (f" · {more} more" if more else "")
+        origin = str(p.get("origin") or "")
+        if origin:  # a background agent asks: its job comes first
+            title = f"{origin} · {title}"
         body: list[CardLine] = []
         for i, ln in enumerate(str(p.get("body") or "").splitlines() or [""]):
             body.append(CardLine(ln, "em" if i == 0 else "text"))

@@ -48,8 +48,10 @@ from circle.tui.agent_strip import (
     snapshot_cards,
 )
 from circle.tui.content_blocks import render_thinking_line
+from circle.tui.job_rows import background_line, notice_rows, plain_output
 from circle.tui.message_model import (
     BLOCK_ERROR,
+    BLOCK_JOB_NOTICE,
     BLOCK_STEER,
     BLOCK_TEXT,
     BLOCK_THINKING,
@@ -68,6 +70,10 @@ COLLAPSED_WRAP_ROWS = 3
 SUBAGENT_RECENT_CALLS = 3
 _HIDDEN_TOOLS = frozenset({"write_todos"})  # 由计划面板显示，不占工具行
 _READ_RANGE = re.compile(r"^@@ lines (\d+)-(\d+) of \d+ @@")
+# What the model is told when a command goes on in the background, and the exit status
+# deepagents adds after it: the transcript says it in one line instead
+_JOB_NOTE = re.compile(r"\[The command[^\[\]]*stop_job\.\]\s*$", re.S)
+_EXIT_STATUS = re.compile(r"\n*\[Command (?:succeeded|failed) with exit code -?\d+\]\s*$")
 
 # 动作类型 → 底色（InfoTest 07 章 §11.25(2)，同类同色）：读＝查阅文件/代码/网页/skill，
 # 写＝改文件，agent＝子代理；执行命令、问询这类不归类的不铺底色。
@@ -228,8 +234,38 @@ def _tool_row(block: ContentBlock, result: ContentBlock | None, opts: ViewOption
     return f" {light} {pal.text}{call}{pal.reset}"
 
 
+def _job_result_lines(job: Any, result: ContentBlock, opts: ViewOptions) -> list[str]:
+    """A call that went on as a background job: what it printed before (for a command moved
+    there, or one that left processes running), then one faint line naming the job. The
+    note to the model about notices is not shown."""
+    pal = palette()
+    text = str(result.output or "")
+    if job.get("how") == "started":
+        text = ""
+    text = _EXIT_STATUS.sub("", text).rstrip()
+    text = plain_output(_JOB_NOTE.sub("", text).rstrip())
+    out: list[str] = []
+    if text and text != "<no output>":
+        raw = text.splitlines()
+        shown = raw if opts.tools_expanded else raw[:PREVIEW_LINES]
+        for index, line in enumerate(shown):
+            prefix = "   ⎿ " if index == 0 else "     "
+            for part_index, part in enumerate(_wrap(line, max(20, opts.width - 6),
+                                                    max_rows=COLLAPSED_WRAP_ROWS)[0]):
+                out.append(f"{prefix if part_index == 0 else '     '}{pal.faint}{part}{pal.reset}")
+        hidden = len(raw) - len(shown)
+        if hidden >= COLLAPSED_HINT_MIN_HIDDEN:
+            out.append(f"     {pal.faint}… +{hidden} {_line_word(hidden)} · ctrl+o{pal.reset}")
+    prefix = "     " if out else "   ⎿ "
+    out.append(f"{prefix}{pal.faint}{background_line(job)}{pal.reset}")
+    return out
+
+
 def _result_lines(block: ContentBlock, result: ContentBlock, opts: ViewOptions) -> list[str]:
     pal = palette()
+    job = (result.payload or {}).get("job")
+    if isinstance(job, Mapping) and not result.is_error:
+        return _job_result_lines(job, result, opts)
     lines = display_lines(str(result.output or ""), result.payload, is_error=result.is_error)
     while lines and not lines[-1]["text"]:
         lines.pop()
@@ -380,6 +416,8 @@ def render_turn_rows(snap: MessageSnapshot, opts: ViewOptions) -> list[Row]:
             elif block.type == BLOCK_STEER:
                 add("\n".join(user_rows(str((block.payload or {}).get("text") or ""),
                                          opts.width)), "steer")
+            elif block.type == BLOCK_JOB_NOTICE:
+                add("\n".join(notice_rows((block.payload or {}).get("jobs") or [])), "notice")
             elif block.type == BLOCK_TOOL_USE:
                 if block.name not in _HIDDEN_TOOLS:
                     add(_tool_entry(block, results.get(block.tool_use_id), opts,

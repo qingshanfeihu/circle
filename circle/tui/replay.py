@@ -10,13 +10,16 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from circle.jobs import NOTICE_MARKER, is_job_notice
 from circle.middleware.loop_guard import is_loop_reminder
 from circle.middleware.plan_tail import is_plan_reminder
 from circle.tui.content_blocks import parse_content
 from circle.tui.message_model import (
+    BLOCK_JOB_NOTICE,
     Message,
     MessageSnapshot,
     make_assistant_message,
+    make_payload_block,
     make_text_block,
     make_thinking_block,
     make_tool_result_block,
@@ -75,10 +78,24 @@ def first_turns(messages: list[Any], turns: int) -> list[Any]:
 
 
 def saved_turns(messages: list[Any]) -> list[tuple[str, MessageSnapshot]]:
-    """``(what the user wrote, the turn's snapshot)`` for each turn, oldest first."""
+    """``(what the user wrote, the turn's snapshot)`` for each turn, oldest first. A turn
+    that Circle started for finished background jobs has no text: its snapshot opens with
+    the jobs' rows."""
     turns: list[tuple[str, list[Message]]] = []
     hidden = False  # inside a /compact exchange, which the screen did not show as a turn
+    answered = True  # the last turn has ended with an answer (no call left to run)
     for index, msg in enumerate(messages):
+        if is_job_notice(msg):
+            jobs = list((msg.additional_kwargs or {}).get(NOTICE_MARKER) or [])
+            notice = make_assistant_message(uuid=f"saved:{index}", content=[
+                make_payload_block(BLOCK_JOB_NOTICE, {"jobs": jobs})])
+            if answered or not turns:
+                turns.append(("", [notice]))  # it started a turn of its own
+            else:
+                turns[-1][1].append(notice)  # it reached the model in the running turn
+            hidden = False
+            answered = False
+            continue
         if isinstance(msg, HumanMessage) and (msg.additional_kwargs or {}).get("circle_internal"):
             hidden = hidden or (msg.additional_kwargs or {}).get("circle_internal") == "compact"
             continue
@@ -86,6 +103,7 @@ def saved_turns(messages: list[Any]) -> list[tuple[str, MessageSnapshot]]:
             if not is_user_message(msg):
                 continue
             hidden = False
+            answered = False
             shell = (msg.additional_kwargs or {}).get("circle_shell")
             if isinstance(shell, dict):
                 # A command the user ran with ``!``: drawn as they saw it
@@ -97,8 +115,9 @@ def saved_turns(messages: list[Any]) -> list[tuple[str, MessageSnapshot]]:
                                             status="done"),
                         make_tool_result_block(tool_use_id=call_id,
                                                output=str(shell.get("output", "")),
-                                               is_error=shell.get("exit_code") != 0,
+                                               is_error=shell.get("exit_code") not in (0, None),
                                                name="execute")])]))
+                answered = True
                 continue
             turns.append((shown_text(msg), []))
             continue
@@ -106,6 +125,7 @@ def saved_turns(messages: list[Any]) -> list[tuple[str, MessageSnapshot]]:
             continue
         blocks = []
         if isinstance(msg, AIMessage):
+            answered = not msg.tool_calls
             parsed = parse_content(msg.content)
             thinking = parsed.thinking or (msg.additional_kwargs or {}).get("reasoning_content")
             if isinstance(thinking, str) and thinking.strip():
@@ -118,9 +138,11 @@ def saved_turns(messages: list[Any]) -> list[tuple[str, MessageSnapshot]]:
                     input=call.get("args") or {}, status="done"))
         elif isinstance(msg, ToolMessage):
             output = msg.content if isinstance(msg.content, str) else parse_content(msg.content).text
+            job = (msg.additional_kwargs or {}).get("circle_job")
             blocks.append(make_tool_result_block(
                 tool_use_id=str(msg.tool_call_id or ""), output=output,
-                is_error=getattr(msg, "status", "") == "error", name=str(msg.name or "")))
+                is_error=getattr(msg, "status", "") == "error", name=str(msg.name or ""),
+                payload={"job": dict(job)} if isinstance(job, dict) else None))
         if blocks:
             turns[-1][1].append(make_assistant_message(uuid=f"saved:{index}", content=blocks))
     return [(text, MessageSnapshot(messages=tuple(msgs), status="idle")) for text, msgs in turns]

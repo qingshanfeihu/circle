@@ -17,6 +17,7 @@ Press `?` in an empty input box, or run `/hotkeys`, to see the shortcuts in the 
 | `ctrl+c` | While Circle works: stop the turn. With text in the box: clear it (it stays in the history). With an empty box: press twice within 1.5 seconds to exit. |
 | `ctrl+d` | With an empty box: exit at once. With text: delete the character after the cursor. |
 | `ctrl+z` | Suspend Circle and go back to the shell. `fg` brings it back as it was. |
+| `ctrl+b` | Move the command being waited on to the [background](background-jobs.md): the model's, a subagent's, or your own `!command`. It goes on as a job. In tmux, `ctrl+b` is tmux's prefix: press it twice, or give the action another key (`job.background`, below). |
 | `←` `→` | Move the cursor. |
 | `alt+←` `alt+→`, `ctrl+←` `ctrl+→`, `alt+b` `alt+f` | Move by word. On macOS, option+arrow sends `alt+b` and `alt+f`. |
 | `ctrl+w`, `alt+backspace` | Delete the word before the cursor. |
@@ -64,7 +65,7 @@ The card that asks you to approve something or answers a question from the model
 | `n`, `esc` | Approval: reject. |
 | `↑` `↓` `←` `→`, `tab`, `ctrl+p` `ctrl+n`, `k` `j` `h` `l` | Move between options. |
 | `enter` | Confirm the marked option. |
-| `ctrl+c` | Stop the turn. |
+| `ctrl+c` | Stop the turn. It does not answer a background subagent's card (its title starts with the job, such as `j3 general-purpose`). |
 
 Letters other than these are ignored while a card is showing, so a key you were typing cannot answer for you.
 
@@ -95,7 +96,7 @@ Any other key goes to the input box and narrows the list.
 
 ## Lists
 
-`/models`, `/effort`, `/resume`, `/tree` and `/fork` open a list above the input box.
+`/models`, `/effort`, `/resume`, `/tree`, `/fork` and `/jobs` open a list above the input box.
 
 | Key | Action |
 |---|---|
@@ -106,7 +107,7 @@ Any other key goes to the input box and narrows the list.
 | `enter` | Choose the marked row. |
 | `esc` | Clear the search, or close the list. |
 
-Some lists add keys, shown under their title: `ctrl+s` in `/models` and `/effort` also saves the choice as the default; `tab` in `/models` adds the model to the ones `ctrl+p` goes through or takes it out; `tab`, `ctrl+r` and `ctrl+d` in `/resume` switch folders, rename and delete; `L` and `ctrl+u` in `/tree` label a message and show only yours.
+Some lists add keys, shown under their title: `ctrl+s` in `/models` and `/effort` also saves the choice as the default; `tab` in `/models` adds the model to the ones `ctrl+p` goes through or takes it out; `tab`, `ctrl+r` and `ctrl+d` in `/resume` switch folders, rename and delete; `L` and `ctrl+u` in `/tree` label a message and show only yours; `ctrl+d` in `/jobs` stops a job or removes one that has ended.
 
 ## The popup of `/approvals`
 
@@ -142,7 +143,7 @@ Any other key leaves the search and does what it normally does.
 
 ## Subagents
 
-While subagents run, `↓` in an empty input box selects the strip below the footer.
+While subagents run, `↓` in an empty input box selects the strip below the footer. Background jobs are listed under the subagents in the same strip, but are not selected there: `/jobs` opens them.
 
 | Key | Action |
 |---|---|
@@ -151,7 +152,7 @@ While subagents run, `↓` in an empty input box selects the strip below the foo
 | `esc` | Leave the strip. |
 | A letter | Leave the strip and start typing. |
 
-In a subagent's record: `esc` or `backspace` go back, `←` `→` move to the previous or next subagent, `pageup` `pagedown` `home` `end` scroll.
+In a subagent's record: `esc` or `backspace` go back, `←` `→` move to the previous or next subagent, `pageup` `pagedown` `home` `end` scroll. A job's page (from `/jobs`) works the same way.
 
 ## Mouse
 
@@ -197,6 +198,7 @@ A key named there does that action everywhere, in a card or a list too. The acti
 | `history.search` | `ctrl+r` |
 | `secret.enter` | `ctrl+s` |
 | `newline` | `ctrl+j` |
+| `job.background` | `ctrl+b` |
 
 Key names are written as on this page: `ctrl+k`, `alt+up`, `shift+tab`, `f1` to `f12`. `/hotkeys` lists the default keys.
 

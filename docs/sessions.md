@@ -114,3 +114,4 @@ These are limits of the current version:
 - **The undo history is kept in memory only.** The tree is read from the saved messages, so it survives a restart; `/undo` does not.
 - **`/fork` and `/clone` copy the messages only.** The plan, the files the agent noted and an earlier compaction are not carried over, so a long session may be compacted again sooner.
 - **A session closed while a card was waiting** reopens without the card. Send a message to go on.
+- **Background jobs end with Circle.** A reopened session has none running; when you left normally, the conversation has a note naming the jobs that were stopped. A job of another session goes on while you switch with `/resume` or `/new`, and its notice waits until that session is open again. See [Background jobs](background-jobs.md).

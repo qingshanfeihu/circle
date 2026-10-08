@@ -88,11 +88,11 @@ Auto mode applies to the current conversation only and is not saved. `/new`, `/f
 
 ## Print mode and line mode
 
-`circle -p` and `--line` cannot show a card. A call that would ask is not run, and the model is told why, unless you pass `--yolo`. With `--yolo` such calls run, except the ones that always ask, which are still not run. Refused commands stay refused. See [CLI](cli.md#print-mode).
+`circle -p` and `--line` cannot show a card. A call that would ask is not run, and the model is told why, unless you pass `--yolo`. With `--yolo` such calls run, except the ones that always ask, which are still not run. Refused commands stay refused. The same rule decides for [background subagents](background-jobs.md#background-subagents), and standard error names their job. See [CLI](cli.md#print-mode).
 
 ## The shell environment
 
-Commands run with your user rights, in the workspace folder, with no input. Standard output and error are joined. A command has 120 seconds by default; the model can ask for up to an hour. Output is cut at 100,000 characters. Each command runs in its own process group: when it times out, or you press `esc`, the command and every process it started are ended. On Windows `esc` does not stop a command yet; it runs until it finishes or times out (see [Known issues](known-issues.md#install-and-release)).
+Commands run with your user rights, in the workspace folder, with no input. Standard output and error are joined, in the order they were written. A command still running after 120 seconds goes on as a [background job](background-jobs.md); the model can instead give a timeout of up to an hour, after which the command is ended. Output is cut at 100,000 characters. Each command runs in its own process group: when you press `esc`, or its own timeout passes, the command and every process it started are ended. Processes a command leaves running become a background job; a background job runs until it ends, you or the model stop it, or Circle ends, which stops every job. On Windows a command is ended with `taskkill /T`; this has not been tried on a real Windows machine (see [Known issues](known-issues.md#install-and-release)).
 
 Circle removes secrets from the command's environment: any variable whose name has a word such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` in it. The API key Circle uses for the model is not passed on. `OPENAI_BASE_URL` and `CIRCLE_MODEL` are.
 
@@ -104,7 +104,7 @@ Nothing restricts the network, other processes, or which files a command can rea
 
 Relative paths and paths that start with `/` inside the project are resolved under the workspace. Real system paths such as `/Users/...`, `/etc/...` and `~/...` are taken as they are, so Circle can read outside the workspace without asking. Writes outside the workspace ask every time, with no "for this session" option. `..` is rejected.
 
-Circle writes nothing of its own into your workspace. Older messages after a summary and very long tool output are kept in the data folder under `projects/`; the model reads them at `/conversation_history/` and `/large_tool_results/`.
+Circle writes nothing of its own into your workspace. Older messages after a summary, very long tool output and background jobs' output are kept in the data folder under `projects/`; the model reads them at `/conversation_history/`, `/large_tool_results/` and `/background_jobs/`, and cannot change the jobs' output.
 
 ## Workspace trust
 
@@ -124,7 +124,8 @@ Circle makes one request of its own that has nothing to do with your model: once
 
 ## What is not protected
 
-- There is no operating-system sandbox. A command can read any file you can, use the network, and start background processes.
+- There is no operating-system sandbox. A command can read any file you can, use the network, and start background processes. A process that leaves its process group (`setsid`, a daemon) is not a [background job](background-jobs.md#what-is-not-tracked): Circle does not stop it.
+- A background subagent works while you do other things. Its approvals appear as cards of their own, named after its job; "allow for this session" there applies to its whole conversation.
 - **MCP tools, and `!` snippets in custom commands, run without asking.** See [MCP](mcp.md) and [Custom commands](custom-commands.md).
 - `apply_patch` can write outside the workspace with an absolute or `../` path, and its approval check resolves a path differently from where it writes.
 - `webfetch` refuses obvious local addresses only. Any URL can carry data out in its query string.

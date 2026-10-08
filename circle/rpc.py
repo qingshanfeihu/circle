@@ -9,6 +9,10 @@ where Circle has the same thing; see docs/cli.md#rpc-mode.
 Turns run one at a time on a worker thread, so ``steer``, ``abort`` and ``get_state``
 answer while a turn runs. Nobody can approve a call here, so calls that would ask are
 decided as in print mode (``--yolo`` runs them, except the ones Circle always asks about).
+
+Background jobs are reported as ``{"type": "job", ...}`` events. When one the model started
+ends while nothing runs, a turn starts for its notice (not after ``abort``, until the next
+prompt); when standard input closes, Circle waits for such jobs as print mode does.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import logging
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
@@ -25,7 +30,8 @@ from typing import Any, TextIO
 from langchain_core.messages import AIMessage, ToolMessage, message_to_dict
 
 from circle import session_index
-from circle.headless import HeadlessRun, new_thread_id
+from circle.headless import HeadlessRun, job_record, job_wait_seconds, new_thread_id
+from circle.jobs import Job, JobRegistry
 from circle.middleware.cancellation import CancellationToken
 from circle.middleware.steering import SteeringInbox
 from circle.model import EFFORT_LEVELS
@@ -33,6 +39,9 @@ from circle.tui.content_blocks import message_text
 from circle.tui.replay import is_user_message
 
 logger = logging.getLogger(__name__)
+
+# A marker on the work queue: start a turn for the notices of finished background jobs
+_NOTICES = object()
 
 
 class RpcServer:
@@ -46,7 +55,8 @@ class RpcServer:
                  remember: Callable[[HeadlessRun, str], None] | None = None,
                  list_models: Callable[[], list[str]] | None = None,
                  model_name: Callable[[], str] | None = None,
-                 set_model: Callable[[str], None] | None = None) -> None:
+                 set_model: Callable[[str], None] | None = None,
+                 jobs: JobRegistry | None = None) -> None:
         self._make_run = make_run
         self._home = home
         self._out = out or sys.stdout
@@ -58,12 +68,17 @@ class RpcServer:
         self._title = title
         self._inbox = SteeringInbox()
         self._follow_ups: list[str] = []
-        self._work: queue.Queue[str | None] = queue.Queue()
+        self._work: queue.Queue[Any] = queue.Queue()
         self._busy = threading.Event()
         self._idle = threading.Condition()
         self._cancel: CancellationToken | None = None
         self._last_answer = ""
+        # after abort, a finished job starts no turn until the next prompt
+        self._jobs_hold = False
         self.run = self._new_run(thread_id or new_thread_id())
+        self._jobs = jobs if jobs is not None else self.run.jobs
+        if self._jobs is not None:
+            self._jobs.subscribe(self._on_job)
         self._worker = threading.Thread(target=self._loop, name="circle-rpc", daemon=True)
         self._worker.start()
 
@@ -93,6 +108,37 @@ class RpcServer:
         run.inbox = self._inbox
         return run
 
+    def _on_job(self, event: str, job: Job) -> None:
+        self.emit({"type": "job", "event": event, "job": job_record(job)})
+        if event == "ended":
+            self._wake()
+
+    def _wake(self) -> None:
+        """Start a turn for finished jobs' notices when nothing runs."""
+        jobs = self._jobs
+        if jobs is None or self._jobs_hold:
+            return
+        with self._idle:
+            if self.streaming or not jobs.has_notices(self.run.thread_id):
+                return
+            if not any(n.wake for n in jobs.pending_notices(self.run.thread_id)):
+                return
+            self._busy.set()
+            self._work.put(_NOTICES)
+
+    def _notice_turn(self) -> str | None:
+        jobs = self._jobs
+        thread = self.run.thread_id
+        deadline = time.monotonic() + 5
+        # notices that arrive close together go in one turn
+        while (jobs is not None and not jobs.notice_ready(thread)
+               and time.monotonic() < deadline and jobs.has_notices(thread)):
+            time.sleep(0.05)
+        notices = jobs.take_notices(thread) if jobs is not None else []
+        if not notices:
+            return None
+        return self.run.notice_turn(notices)
+
     def _loop(self) -> None:
         while True:
             text = self._work.get()
@@ -102,10 +148,15 @@ class RpcServer:
             self._cancel = CancellationToken()
             self.run.cancel = self._cancel
             try:
-                self._last_answer = self.run.turn(text)
-                if self._remember is not None:
-                    self._remember(self.run, self._title or text.strip().split("\n")[0])
-                    self._title = ""
+                if text is _NOTICES:
+                    answer = self._notice_turn()
+                    if answer is not None:
+                        self._last_answer = answer
+                else:
+                    self._last_answer = self.run.turn(text)
+                    if self._remember is not None:
+                        self._remember(self.run, self._title or text.strip().split("\n")[0])
+                        self._title = ""
             except Exception as exc:  # noqa: BLE001 - reported as an event, the loop goes on
                 if self._cancel.cancelled:
                     self.emit({"type": "turn_end", "aborted": True})
@@ -125,12 +176,15 @@ class RpcServer:
                     self._busy.clear()
                     self.emit({"type": "agent_settled"})
                     self._idle.notify_all()
+            if not self._cancel.cancelled:
+                self._wake()
 
     @property
     def streaming(self) -> bool:
         return self._busy.is_set()
 
     def _start(self, text: str) -> None:
+        self._jobs_hold = False
         self._busy.set()
         self._work.put(text)
 
@@ -216,10 +270,26 @@ class RpcServer:
 
     def _cmd_abort(self, command: dict[str, Any]) -> None:
         if self._cancel is not None and self.streaming:
+            self._jobs_hold = True
             self._cancel.cancel()
             self._follow_ups.clear()
             self.wait_idle(timeout=30)
         self._respond(command)
+
+    def _cmd_list_jobs(self, command: dict[str, Any]) -> None:
+        jobs = self._jobs.list() if self._jobs is not None else []
+        self._respond(command, data={"jobs": [job_record(job) for job in jobs]})
+
+    def _cmd_stop_job(self, command: dict[str, Any]) -> None:
+        job_id = str(command.get("jobId") or "").strip()
+        if not job_id or self._jobs is None:
+            self._respond(command, error="jobId is required")
+            return
+        job = self._jobs.stop(job_id, by="user")
+        if job is None:
+            self._respond(command, error=f"No running job {job_id}")
+            return
+        self._respond(command, data={"job": job_record(job)})
 
     def _cmd_clear_queue(self, command: dict[str, Any]) -> None:
         steering = [full for full, _shown in self._inbox.take()]
@@ -345,12 +415,32 @@ class RpcServer:
     # ── the process ─────────────────────────────────────────────────────────
 
     def serve(self, stdin: TextIO) -> int:
-        """Until standard input closes: the current turn is finished, then Circle exits."""
+        """Until standard input closes: the current turn is finished, background jobs the
+        model started get up to ``CIRCLE_JOB_WAIT`` seconds (their notices become turns),
+        then the rest are stopped and Circle exits."""
         for line in stdin:
             self.handle_line(line)
         self.wait_idle()
+        # After abort nothing more is wanted from finished jobs: stop them at once
+        self._settle_jobs(0.0 if self._jobs_hold else job_wait_seconds())
         self.close()
         return 0
+
+    def _settle_jobs(self, limit: float) -> None:
+        jobs = self._jobs
+        if jobs is None:
+            return
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            self.wait_idle()
+            waiting = [j for j in jobs.list(self.run.thread_id)
+                       if j.running and j.started_by == "model" and j.kind != "adopted"]
+            if not waiting and not any(n.wake for n in jobs.pending_notices(self.run.thread_id)):
+                break
+            jobs.wait_for_change(0.25)
+        self.wait_idle()
+        count = jobs.stop_all()
+        self.emit({"type": "jobs_stopped", "count": count})
 
 
 def _thinking() -> str:

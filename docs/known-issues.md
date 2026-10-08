@@ -8,7 +8,7 @@ This page lists what does not work as you might expect in the current version, w
 - **`circle update` and `install.ps1` do not start a new version before switching to it**, unlike `install.sh`. The first `circle` after them takes a few seconds longer, and a build that cannot start on your machine replaces the working one. To go back, run the installer again with `CIRCLE_VERSION` set to the old version.
 - **Upgrading from `v0.1.0` needs the installer once.** That version only shipped for macOS on Apple silicon and has no `circle update`. Close Circle and run the current installer to migrate to the versioned layout; use `circle update` afterwards.
 - **Windows console interaction still needs real-machine testing.** Automated tests exercise console modes, Unicode I/O and clipboard calls against stand-ins, command approvals, file locking, and the installer. Interactive drawing, keys, window resizing, `/copy` and user PATH changes still need checking in Windows Terminal, PowerShell and cmd. Windows ARM64 has no native build; running the x86_64 program under emulation is unverified.
-- **On Windows `esc` does not stop a command that is running**, the model's or a `!command` of yours. It keeps going until it finishes or times out (120 seconds by default), and messages you send meanwhile wait for it.
+- **Stopping commands on Windows has not been tried on a real machine.** `esc`, `ctrl+b`, a timeout, `/jobs` and leaving end a command with `taskkill /T`, and command output is read in the system's code page; automated tests run only on macOS and Linux. Processes a command leaves running are not turned into a [background job](background-jobs.md) on Windows: Circle cannot see them.
 - **On Windows the model's commands run in `cmd.exe`**, not in bash, and the system prompt says so. The approval rules recognise the common Windows delete, format and elevation commands, but they were written for a POSIX shell and are less tested against `cmd.exe` and PowerShell syntax. Read each command on the card.
 - **On Windows `auto` theme cannot ask the console for its colours.** It falls back to `COLORFGBG`, then to dark. Set `/themes light` on a light terminal.
 - **A terminal that is not a Windows console cannot show the full-screen interface.** MobaXterm, and the mintty window of Git Bash, are not consoles. Circle reports that the terminal is unsupported; use `circle --line` for line mode. Use Windows Terminal, PowerShell or cmd.
@@ -25,7 +25,7 @@ This page lists what does not work as you might expect in the current version, w
 - **`/fork` and `/clone` copy only the messages**, not the plan or an earlier compaction. See [Sessions](sessions.md#what-does-not-carry-over).
 - **`/undo` does not make the model forget, and does not revert files.**
 - **`/yolo` turns itself off** on `/new`, `/fork`, `/clone`, `/import` and restart.
-- **`projects/` in the data folder is never cleaned up.** It keeps the messages that summaries replaced and very long tool results, for every project. Delete old folders by hand.
+- **`projects/` in the data folder is mostly not cleaned up.** It keeps the messages that summaries replaced and very long tool results, for every project; only background jobs' output is removed, a day after its run ended. Delete old folders by hand.
 
 ## Safety
 
@@ -48,6 +48,15 @@ These are gaps to know about before you trust Circle with a repository or a mach
 ## Tools
 
 - **`grep` searches for literal text, not regular expressions.** Its description says so and points the model to `rg` in the shell for a regular expression, which asks for approval like any command.
+
+## Background jobs
+
+- **A process that leaves its process group is not tracked.** `setsid`, a daemon that detaches, or a program that starts a service elsewhere is not part of the job: stopping the job, or leaving Circle, does not stop it.
+- **If Circle is killed with `SIGKILL`, or crashes, its jobs keep running.** Find them with `ps` and stop them yourself.
+- **Jobs do not outlive Circle.** A reopened session has none running; the note Circle leaves names the ones that were stopped (not after `SIGTERM`, `SIGHUP` or a closed terminal window).
+- **A background subagent keeps the agent it started with.** After `/reload`, `/models` or a change of extensions it still uses the old tools and model until it ends; `/plan` reaches it.
+- **A background subagent's page shows its steps as text**, not the full record a subagent of the running turn has.
+- **The output a dev server prints may not show on its row**: many programs keep their output in a buffer when it does not go to a terminal (`python3 -u` and `PYTHONUNBUFFERED=1` help for Python).
 
 ## MCP and extensions
 

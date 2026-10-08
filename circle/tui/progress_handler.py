@@ -562,6 +562,9 @@ class ProgressHandler(BaseCallbackHandler):
             payload["status"] = status
         if is_recoverable_message(output):
             payload[RECOVERABLE_KEY] = True
+        job = (getattr(output, "additional_kwargs", None) or {}).get("circle_job")
+        if isinstance(job, Mapping):
+            payload["job"] = dict(job)  # the call went on as a background job
         verified_preview = False
         if before and not tool_result_is_error(text, status):
             path, original, created, expected = before

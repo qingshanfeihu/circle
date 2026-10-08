@@ -35,6 +35,7 @@ BLOCK_AGENT_CARD = "agent_card"
 
 # A message the user sent while the turn ran, read by the model mid-turn
 BLOCK_STEER = "steer"
+BLOCK_JOB_NOTICE = "job_notice"
 
 
 @dataclass(frozen=True)

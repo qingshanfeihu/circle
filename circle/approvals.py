@@ -619,6 +619,15 @@ def _thread_of(request: Any) -> str:
     return str((config.get("configurable") or {}).get("thread_id") or "")
 
 
+def _rules_thread_of(request: Any) -> str:
+    """The conversation whose rules and /yolo apply: a background agent runs in a thread of
+    its own but under its conversation's rules."""
+    runtime = getattr(request, "runtime", None)
+    config = getattr(runtime, "config", None) or {}
+    configurable = config.get("configurable") or {}
+    return str(configurable.get("circle_rules_thread") or configurable.get("thread_id") or "")
+
+
 def _patch_paths(patch: str) -> tuple[list[str], bool]:
     paths: list[str] = []
     deletes = False
@@ -742,8 +751,9 @@ class ApprovalPolicy:
                 config = getattr(runtime, "config", None) or {}
                 visible = (config.get("configurable") or {}).get("circle_visible_turn") is True
                 thread_id = _thread_of(request)
+                rules = _rules_thread_of(request)
                 if not visible:
-                    return self.needs_approval(_tool, args, thread_id, allow_yolo=False)
+                    return self.needs_approval(_tool, args, rules, allow_yolo=False)
                 call_id = str(call.get("id") or "")
                 args_key = json.dumps(args, sort_keys=True, ensure_ascii=False,
                                       separators=(",", ":"), default=str)
@@ -751,9 +761,9 @@ class ApprovalPolicy:
                 with self._yolo_lock:
                     decisions = self._visible_turns.get(thread_id)
                     if decisions is None:
-                        return self.needs_approval(_tool, args, thread_id)
+                        return self.needs_approval(_tool, args, rules)
                     if key not in decisions:
-                        decisions[key] = self.needs_approval(_tool, args, thread_id)
+                        decisions[key] = self.needs_approval(_tool, args, rules)
                     return decisions[key]
 
             out[tool] = {"allowed_decisions": ["approve", "reject"], "when": when}

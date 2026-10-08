@@ -46,6 +46,25 @@ class ExtensionError(Exception):
 
 
 @dataclass
+class Watch:
+    """What a tool returns to have Circle wait for something slow (a run on another machine,
+    a sign-in in a browser) instead of the model calling the tool again or sleeping.
+
+    Circle calls ``poll()`` every ``interval_s`` seconds as a background job, off the model's
+    turns: None means not yet, any other value is the result (text or JSON) and the model
+    gets a notice with it; an exception or ``deadline_s`` fails the job. ``result`` is what
+    the tool call returns now. ``on_stop`` runs once if the job is stopped (``stop_job``,
+    /jobs, Circle leaving)."""
+
+    title: str
+    poll: Callable[[], Any]
+    interval_s: float = 10.0
+    deadline_s: float = 3600.0
+    result: Any = None
+    on_stop: Callable[[], None] | None = None
+
+
+@dataclass
 class CommandContext:
     """What an extension command handler may do in the session."""
 
@@ -63,6 +82,7 @@ class ExtensionTool:
     execute: Callable[[dict[str, Any]], Any]
     read_only: bool
     approval: bool
+    source: str = ""
 
 
 @dataclass
@@ -96,6 +116,7 @@ class ExtensionAPI:
     """The object passed to ``register(api)``; one per extension."""
 
     ToolError = ToolError
+    Watch = Watch
 
     def __init__(self, ext: Extension, reserved_tools: set[str], reserved_commands: set[str]):
         self._ext = ext
@@ -131,7 +152,8 @@ class ExtensionAPI:
         self._ext.tools.append(ExtensionTool(
             name=name, description=str(description or name), parameters=parameters,
             execute=execute, read_only=bool(read_only),
-            approval=(not read_only) if approval is None else bool(approval)))
+            approval=(not read_only) if approval is None else bool(approval),
+            source=self._ext.name))
 
     def register_command(self, name: str, description: str,
                          handler: Callable[[str, CommandContext], None]) -> None:
@@ -166,18 +188,48 @@ class ExtensionAPI:
         self._ext.handlers.setdefault(event, []).append(handler)
 
 
+def _watched(tool: ExtensionTool, watch: Watch, jobs: Any) -> str:
+    """Hand a Watch to the session's jobs; without them, wait for it in this call."""
+    now = _as_text(watch.result) if watch.result is not None else ""
+    if jobs is None:
+        import time
+
+        began = time.monotonic()
+        while time.monotonic() - began < watch.deadline_s:
+            time.sleep(watch.interval_s)
+            value = watch.poll()
+            if value is not None:
+                return "\n\n".join(part for part in (now, _as_text(value)) if part)
+        raise ToolException(f"{tool.name}: no result after {watch.deadline_s:g}s")
+    from circle.jobs import job_owner
+
+    try:
+        job = jobs.start_watch(watch.title, watch.poll, interval=watch.interval_s,
+                               deadline=watch.deadline_s, on_stop=watch.on_stop,
+                               owner=job_owner(), source=tool.source)
+    except RuntimeError as exc:
+        raise ToolException(f"{exc}; stop one with stop_job first") from None
+    note = (f"[Circle watches this as background job {job.id} and adds a notice with the "
+            f"result when it completes. Do not call {tool.name} again or sleep to wait for "
+            "it; end your turn if you have nothing else to do.]")
+    return f"{now}\n\n{note}" if now else note
+
+
 def _as_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, indent=1, default=str)
 
 
-def _make_langchain_tool(tool: ExtensionTool) -> StructuredTool:
+def _make_langchain_tool(tool: ExtensionTool, host: ExtensionHost | None = None) -> StructuredTool:
     def _run(**kwargs: Any) -> str:
         try:
-            return _as_text(tool.execute(dict(kwargs)))
+            value = tool.execute(dict(kwargs))
         except ToolError as exc:
             raise ToolException(str(exc)) from None
+        if isinstance(value, Watch):
+            return _watched(tool, value, getattr(host, "jobs", None))
+        return _as_text(value)
 
     return StructuredTool.from_function(
         func=_run, name=tool.name, description=tool.description,
@@ -198,6 +250,8 @@ class ExtensionHost:
         self.reserved_tools = set(reserved_tools or ())
         self.reserved_commands = set(reserved_commands or ())
         self.extensions: list[Extension] = []
+        # The session's background jobs, for tools that return a Watch
+        self.jobs: Any = None
 
     # ── discovery / loading ───────────────────────────────────────
     def discover(self) -> list[tuple[str, str, Path]]:
@@ -262,8 +316,11 @@ class ExtensionHost:
     def tool_specs(self) -> list[ExtensionTool]:
         return [t for e in self._loaded() for t in e.tools]
 
+    def bind_jobs(self, jobs: Any) -> None:
+        self.jobs = jobs
+
     def tools(self) -> list[StructuredTool]:
-        return [_make_langchain_tool(t) for t in self.tool_specs()]
+        return [_make_langchain_tool(t, self) for t in self.tool_specs()]
 
     def interrupt_on(self) -> dict[str, bool]:
         return {t.name: True for t in self.tool_specs() if t.approval}

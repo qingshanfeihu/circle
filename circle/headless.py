@@ -9,6 +9,8 @@ session. The answer goes to stdout; tool activity goes to stderr when asked for.
 
 from __future__ import annotations
 
+import os
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,6 +20,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from circle.display_lexicon import tool_arg_summary, tool_short_name
+from circle.jobs import Job, Notice, format_elapsed, is_job_notice, notice_message
+from circle.middleware.job_notice import DELIVER_KEY
 from circle.middleware.loop_guard import is_loop_reminder
 from circle.middleware.plan_tail import is_plan_reminder
 from circle.middleware.steering import is_steering
@@ -33,6 +37,23 @@ ALWAYS_ASKED = (
     "Not run: Circle always asks a person before this kind of call, and nobody can "
     "answer here. Do not try it again in another form; say what you would have done."
 )
+
+
+def job_wait_seconds() -> float:
+    """How long print mode waits, after its answer, for background jobs the model started
+    (``CIRCLE_JOB_WAIT``, 1800 by default; 0 does not wait)."""
+    try:
+        return max(0.0, float(os.environ.get("CIRCLE_JOB_WAIT", "1800")))
+    except ValueError:
+        return 1800.0
+
+
+def job_record(job: Job) -> dict[str, Any]:
+    """A job as a JSON event or an RPC answer shows it."""
+    return {"id": job.id, "kind": job.kind, "title": job.title, "status": job.status,
+            "reason": job.reason, "exitCode": job.exit_code, "startedBy": job.started_by,
+            "elapsed": round(job.elapsed(), 1), "output": job.virtual_path or job.output_path,
+            "sessionId": job.thread_id}
 
 
 class HeadlessStop(RuntimeError):
@@ -61,6 +82,7 @@ class HeadlessRun:
     # The checkpoint /tree took the conversation back to: the next turn branches from it
     start_from: str | None = None
     not_run: int = 0
+    stopped_at_deadline: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
     _calls: dict[str, str] = field(default_factory=dict)
@@ -70,8 +92,14 @@ class HeadlessRun:
     def config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
 
+    @property
+    def jobs(self) -> Any:
+        return getattr(self.agent, "_circle_jobs", None)
+
     def _run_config(self) -> dict[str, Any]:
-        config: dict[str, Any] = {"configurable": {"thread_id": self.thread_id}}
+        # Finished background jobs reach the model before its next call in this run
+        config: dict[str, Any] = {"configurable": {"thread_id": self.thread_id,
+                                                   DELIVER_KEY: True}}
         start, self.start_from = self.start_from, None
         if start:
             config["configurable"]["checkpoint_id"] = start
@@ -87,7 +115,56 @@ class HeadlessRun:
     def turn(self, text: str) -> str:
         """Run one user message to the end and return the final answer text."""
         self._emit({"type": "turn_start", "message": text})
-        payload: Any = {"messages": [{"role": "user", "content": text}]}
+        return self._turn({"messages": [{"role": "user", "content": text}]})
+
+    def notice_turn(self, notices: list[Notice]) -> str:
+        """A turn for Circle's notice that background jobs ended."""
+        ids = [n.job.id for n in notices]
+        self._emit({"type": "turn_start", "jobNotice": ids})
+        for notice in notices:
+            job = notice.job
+            self._say(f"◆ {job.id} {job.status} · {job.title} · {format_elapsed(job.elapsed())}")
+        return self._turn({"messages": [notice_message(notices)]})
+
+    def _model_jobs(self) -> list[Job]:
+        """Jobs the model started in this conversation that are expected to end."""
+        jobs = self.jobs
+        if jobs is None:
+            return []
+        return [j for j in jobs.list(self.thread_id)
+                if j.running and j.started_by == "model" and j.kind != "adopted"]
+
+    def settle_jobs(self, limit: float) -> str | None:
+        """Print mode, after the answer: while background jobs the model started run (up
+        to ``limit`` seconds), turn their notices into turns. Processes left running by a
+        command (``cmd &``, usually a server) are stopped at once. Returns the last answer
+        of such a turn, or None when none ran."""
+        jobs = self.jobs
+        if jobs is None:
+            return None
+        for job in jobs.list(self.thread_id):
+            if job.running and job.kind == "adopted":
+                jobs.stop(job.id, by="circle")
+        deadline = time.monotonic() + limit
+        answer = None
+        while True:
+            waiting = self._model_jobs()
+            if jobs.notice_ready(self.thread_id) or (jobs.has_notices(self.thread_id)
+                                                    and not waiting):
+                notices = jobs.take_notices(self.thread_id)
+                if any(n.wake for n in notices):
+                    answer = self.notice_turn(notices)
+                    continue
+            if not waiting:
+                return answer
+            if time.monotonic() >= deadline:
+                count = jobs.stop_all()
+                self._emit({"type": "jobs_stopped", "count": count, "reason": "CIRCLE_JOB_WAIT"})
+                self.stopped_at_deadline = count
+                return answer
+            jobs.wait_for_change(0.25)
+
+    def _turn(self, payload: Any) -> str:
         while True:
             for update in self.agent.stream(payload, config=self._run_config(),
                                             stream_mode="updates"):
@@ -106,7 +183,11 @@ class HeadlessRun:
         if self.events is not None:
             self.events(event)
 
-    def _decide(self, value: Any) -> dict[str, Any]:
+    def decide_for_job(self, job: Any, value: Any) -> dict[str, Any]:
+        """A background agent's approvals, by the same rule as the turn's."""
+        return self._decide(value, who=f"{job.id} · ")
+
+    def _decide(self, value: Any, who: str = "") -> dict[str, Any]:
         requests = value.get("action_requests") if isinstance(value, dict) else None
         if not isinstance(requests, list) or not requests:
             raise HeadlessStop("the task asked for input that only the full-screen "
@@ -122,19 +203,32 @@ class HeadlessRun:
                 continue
             self.not_run += 1
             call = f"{tool_short_name(name)}({tool_arg_summary(name, args)})"
-            self._say(f"  ⎿ {call} not run · {'always asks' if forced else 'needs --yolo'}")
-            self._emit({"type": "not_run", "name": name, "args": args,
-                        "reason": "always asks" if forced else "needs --yolo"})
+            self._say(f"  ⎿ {who}{call} not run · {'always asks' if forced else 'needs --yolo'}")
+            event = {"type": "not_run", "name": name, "args": args,
+                     "reason": "always asks" if forced else "needs --yolo"}
+            if who:
+                event["job"] = who.split(" ", 1)[0]
+            self._emit(event)
             decisions.append({"type": "reject", "message": ALWAYS_ASKED if forced else NOT_ASKED})
         return {"decisions": decisions}
 
     def _report(self, update: Any) -> None:
         if not isinstance(update, dict):
             return
-        for node_update in update.values():
+        for node, node_update in update.items():
             messages = node_update.get("messages") if isinstance(node_update, dict) else None
             for msg in messages or ():
                 if is_plan_reminder(msg) or is_loop_reminder(msg):
+                    continue
+                if is_job_notice(msg):
+                    if node != "__start__":
+                        jobs = (msg.additional_kwargs or {}).get("circle_job_notice") or []
+                        self._emit({"type": "job_notice", "jobs": jobs})
+                        for job in jobs:
+                            self._say(f"◆ {job.get('id')} {job.get('status')} · {job.get('title')}")
+                    continue
+                if isinstance(msg, HumanMessage) and (msg.additional_kwargs or {}).get(
+                        "circle_internal"):
                     continue
                 if isinstance(msg, AIMessage):
                     if msg.id and msg.id in self._seen:

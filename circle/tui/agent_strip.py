@@ -183,6 +183,7 @@ def render_agent_strip(
     hover: str | None = None,
     total: int | None = None,
     hidden: int = 0,
+    header: str | None = None,
 ) -> list[str]:
     """``rows`` is the visible window; ``total`` counts every running subagent.
 
@@ -216,7 +217,8 @@ def render_agent_strip(
     doing_w = max(0, _doing(name_w, meta_w))
 
     count = len(rows) if total is None else int(total)
-    out = [f"{sgr_join(pal.panel_bg, pal.faint)}{_pad(f' Agents · {count}', w)}{pal.reset}"]
+    out = [header if header is not None else
+           f"{sgr_join(pal.panel_bg, pal.faint)}{_pad(f' Agents · {count}', w)}{pal.reset}"]
     for (uuid, card), name, action, meta in zip(rows, names, actions, metas):
         on_sel = uuid == selected or uuid == hover
         bg = pal.sel_bg if on_sel else pal.agent_bg

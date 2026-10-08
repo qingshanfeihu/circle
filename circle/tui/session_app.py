@@ -44,6 +44,16 @@ from circle.context_middleware import (
 )
 from circle.extensions import CommandContext, ExtensionHost
 from circle.harness import BUILTIN_TOOL_NAMES, create_harness
+from circle.job_agents import ApprovalHost, is_true
+from circle.jobs import (
+    NOTICE_MARKER,
+    JobRegistry,
+    Owner,
+    format_elapsed,
+    install_exit_guard,
+    notice_message,
+    read_head,
+)
 from circle.ink.app import InkApp
 from circle.ink.components.ask_user_panel import AskUserPanel
 from circle.ink.components.ask_user_view import AskUserSession
@@ -116,6 +126,16 @@ from circle.tui.conversation_tree import row_text
 from circle.tui.controllers import InitController, InitStep, TrustController
 from circle.tui.harness_bridge import NO_OUTPUT, HarnessBridge, StreamUpdate
 from circle.tui.input_history import InputHistory
+from circle.tui.job_rows import (
+    JOB_ROWS,
+    job_activity,
+    job_log_rows,
+    notice_rows,
+    outcome_words,
+    render_job_band,
+    render_job_rows,
+    strip_header,
+)
 from circle.tui.message_model import (
     MessageSnapshot,
     make_assistant_message,
@@ -470,6 +490,22 @@ class CircleSessionApp:
         self._session_tree = SessionTree()
         self._msg_queue: list[tuple[str, str]] = []  # (steering|followup, text)
         self._shell_stop: CancellationToken | None = None  # a running !command
+        # Background jobs of this session; they outlive turns and agent rebuilds
+        self._jobs = JobRegistry()
+        self._jobs_hold = False  # after esc a finished job starts no turn until you send one
+        self._notice_streak = 0  # turns started by job notices in a row
+        # !command jobs: job id → (command, quiet, thread); their output is shared at the end
+        self._user_jobs: dict[str, tuple[str, bool, str]] = {}
+        self._shell_shares: list[tuple[str, str, Any]] = []  # (thread, command, result)
+        self._job_ticker: threading.Thread | None = None
+        self._jobs_picker: tuple[Picker, Callable[[], list[PickerItem]]] | None = None
+        # Background agents waiting for an answer, one card at a time after the turn's own
+        self._job_rounds: list[_JobRound] = []
+        self._job_card: _JobRound | None = None
+        # Backends of earlier builds: background agents started then still use theirs
+        self._earlier_backends: list[Any] = []
+        self._job_draft_parked = False
+        self._jobs.subscribe(self._on_job_event)
         # a sent message → (how it is shown, the pastes it names), when that differs
         self._shown_as: dict[str, tuple[str, dict[int, str]]] = {}
         self._custom_commands: dict[str, CustomCommand] = {}
@@ -542,8 +578,10 @@ class CircleSessionApp:
             approvals=self._approvals,
             ask_user=True,
             run_options=self._run_options,
+            jobs=self._jobs,
         )
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
+        self._host_background_agents()
         self._bridge = self._make_bridge()
         self._footer.update(model=settings.auth.model, status="ready")
         self._connected = True
@@ -567,6 +605,9 @@ class CircleSessionApp:
         """Rebuild harness with current settings / plan mode."""
         if self._bridge.is_running or self._is_loading:
             raise RuntimeError("A turn is still running; the agent cannot be rebuilt")
+        earlier = getattr(self._agent, "_circle_backend", None)
+        if earlier is not None and self._jobs.live("agent"):
+            self._earlier_backends.append(earlier)
         chat = model or build_chat_model(
             self.settings, home=self.home, model_override=self.model_override
         )
@@ -590,13 +631,21 @@ class CircleSessionApp:
             approvals=self._approvals,
             ask_user=True,
             run_options=self._run_options,
+            jobs=self._jobs,
         )
         self._sync_model_meter()
         self._mcp_tools = list(getattr(self._agent, "_circle_mcp_tools", []) or [])
+        self._host_background_agents()
         self._bridge = self._make_bridge()
         backend = getattr(self._agent, "_circle_backend", None)
         if backend is not None and hasattr(backend, "set_plan_mode"):
             backend.set_plan_mode(self._plan_mode)
+        # A background agent keeps its build; read-only reaches it all the same
+        if not self._jobs.live("agent"):
+            self._earlier_backends = []
+        for old in self._earlier_backends:
+            if hasattr(old, "set_plan_mode"):
+                old.set_plan_mode(self._plan_mode)
 
     def _load_extensions(self) -> ExtensionHost:
         """用户级扩展总是考虑；项目级只在当前工作区受信任时加载。"""
@@ -638,9 +687,12 @@ class CircleSessionApp:
 
     def run(self) -> int:
         self._app.start()
+        # Closing the terminal or a kill stops background jobs too
+        remove_exit_guard = install_exit_guard(self._jobs)
         self._theme_watch.start(self.settings.theme)
         remove_listener = add_retry_listener(self._on_model_retry)
         code = 0
+        stopped = 0
         try:
             self._welcome_on = True
             if not self._connected:
@@ -668,6 +720,7 @@ class CircleSessionApp:
             self._send_initial_messages()
             while self._app._running:
                 self._maybe_update_secret_hint()
+                self._maybe_wake_for_jobs()
                 time.sleep(0.05)
         except KeyboardInterrupt:
             pass
@@ -679,7 +732,11 @@ class CircleSessionApp:
             remove_listener()
             self._theme_watch.stop()
             self._bridge.cancel()
+            stopped = self._stop_jobs_at_exit()
             self._app.stop()
+            remove_exit_guard()
+        if stopped:
+            print(f"{stopped} background job{'s' if stopped != 1 else ''} stopped", flush=True)
         hint = self._resume_hint() if self._connected else ""
         if hint:
             print(hint, flush=True)
@@ -1195,14 +1252,26 @@ class CircleSessionApp:
         self._strip_start = strip_window(ids, selected, self._strip_start, MAX_ROWS)
         visible = cards[self._strip_start:self._strip_start + MAX_ROWS]
         self._strip_visible_ids = [uuid_ for uuid_, _card in visible]
-        if not visible:
+        jobs_obj = getattr(self, "_jobs", None)
+        jobs = jobs_obj.live() if jobs_obj is not None else []
+        if not visible and not jobs:
             strip.style.height = 0
             text.set_value("")
             return
-        hover = self._strip_hover if self._strip_hover in self._strip_visible_ids else None
-        lines = render_agent_strip(visible, width=max(20, self._app.width or 80),
-                                   selected=selected, hover=hover, total=len(cards),
-                                   hidden=len(cards) - len(visible))
+        width = max(20, self._app.width or 80)
+        header = strip_header(len(cards), len(jobs), width)
+        if visible:
+            hover = self._strip_hover if self._strip_hover in self._strip_visible_ids else None
+            lines = render_agent_strip(visible, width=width, selected=selected, hover=hover,
+                                       total=len(cards), hidden=len(cards) - len(visible),
+                                       header=header)
+        else:
+            lines = [header]
+        # Background jobs under the subagents: they stay while they run, turn or no turn
+        shown = jobs[:JOB_ROWS]
+        lines += render_job_rows(shown, width=width,
+                                 activity={job.id: job_activity(job) for job in shown},
+                                 hidden=len(jobs) - len(shown))
         strip.style.height = len(lines)
         text.set_value("\n".join(lines))
 
@@ -1291,6 +1360,9 @@ class CircleSessionApp:
         """Redraw the page when its card changed (or on a tick / toggle with ``force``);
         a reader scrolled up stays where they are."""
         if not self._detail_active:
+            return
+        if str(self._detail_uuid or "").startswith("job:"):
+            self._render_job_page()
             return
         card = self._find_card(self._detail_uuid)
         width = max(20, self._app.width or 80)
@@ -1477,6 +1549,7 @@ class CircleSessionApp:
                 with self._app.lock:
                     self._stop_shell_command()
                     self._bridge.cancel()
+                    self._jobs_hold = True
                     self._settle_inbox()
                     self._dismiss_user_panels()
                     self._notice([_stop_line()])
@@ -1489,7 +1562,10 @@ class CircleSessionApp:
                 self._app._running = False
                 return
             self._last_ctrl_c = now
-            self._footer.set_toast("Press ctrl+c again to exit", 1.5)
+            jobs = getattr(self, "_jobs", None)
+            live = len(jobs.live()) if jobs is not None else 0
+            stops = f" · stops {live} job{'s' if live != 1 else ''}" if live else ""
+            self._footer.set_toast(f"Press ctrl+c again to exit{stops}", 1.5)
             self._app.render()
             return
 
@@ -1507,6 +1583,10 @@ class CircleSessionApp:
             self._suspend()
             return
 
+        if kp.key == "ctrl+b":
+            self._move_to_background()
+            return
+
         if getattr(self, "_completion", None) is not None and self._completion_key(kp.key):
             return
 
@@ -1515,6 +1595,8 @@ class CircleSessionApp:
                 with self._app.lock:
                     self._stop_shell_command()
                     self._bridge.cancel()
+                    # You stopped it: a finished job must not start the next turn by itself
+                    self._jobs_hold = True
                     self._settle_inbox()
                     self._dismiss_user_panels()
                     self._notice([_stop_line()])
@@ -2446,10 +2528,18 @@ class CircleSessionApp:
         self._start_user_turn(text)
 
     def _start_user_turn(self, text: str) -> None:
+        # Under the lock: a finished background job must not start its turn in between
+        with self._app.lock:
+            self._start_user_turn_locked(text)
+
+    def _start_user_turn_locked(self, text: str) -> None:
         if self._bridge.is_running or self._is_loading:
             self._msg_queue.append(("steering", text))
             self._footer.set_toast(f"Queued steering · {len(self._msg_queue)}")
             return
+        # You are back: finished jobs may start turns again
+        self._jobs_hold = False
+        self._notice_streak = 0
         self._push_undo_checkpoint()
         shown, pastes = self._shown_as.pop(text, (text, {}))
         self._session_tree.add("user", shown)
@@ -2567,6 +2657,7 @@ class CircleSessionApp:
             "details",
             "name",
             "tree",
+            "jobs",  # list and stop jobs while a turn runs
         }
         if name not in _busy_ok and (self._bridge.is_running or self._is_loading):
             self._footer.set_toast("Busy · wait for the current turn to finish")
@@ -2613,6 +2704,7 @@ class CircleSessionApp:
             "effort": self._cmd_effort,
             "extensions": self._cmd_extensions,
             "approvals": self._cmd_approvals,
+            "jobs": self._cmd_jobs,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -3113,8 +3205,9 @@ class CircleSessionApp:
         last = None
         for text, snap in saved_turns(messages):
             self._transcript.ensure_block_gap()
-            self._transcript.append_messages(_user_rows(text, self._view_options().width))
-            self._transcript.ensure_block_gap()
+            if text:  # a turn Circle started for finished jobs opens with their rows instead
+                self._transcript.append_messages(_user_rows(text, self._view_options().width))
+                self._transcript.ensure_block_gap()
             base = self._transcript.message_count()
             rows = render_turn_rows(snap, options)
             for row, bg in rows:
@@ -3161,7 +3254,8 @@ class CircleSessionApp:
 
         def work() -> None:
             try:
-                result = backend.execute(command, stop=stop)
+                result = backend.execute(command, stop=stop,
+                                         owner=Owner(thread_id=thread_id, started_by="user"))
             except Exception as exc:  # noqa: BLE001 - shown as the command's output
                 logger.warning("!command failed", exc_info=True)
                 result = ExecuteResponse(output=f"Error: {type(exc).__name__}: {exc}", exit_code=1)
@@ -3175,7 +3269,14 @@ class CircleSessionApp:
                 at = next((i for i, turn in enumerate(self._turns) if turn["base"] > base),
                           len(self._turns))
                 self._turns.insert(at, {"base": base, "entries": done, "snap": snap})
-                if not quiet and not stop.cancelled and thread_id == self._thread_id:
+                job = getattr(result, "job", None)
+                if job is not None:
+                    # Moved to the background, its output is shared when it ends; processes
+                    # it left running only get a line when they end
+                    moved = result.exit_code is None
+                    self._user_jobs[job.id] = (command, quiet or not moved, thread_id)
+                if (not quiet and not stop.cancelled and thread_id == self._thread_id
+                        and result.exit_code is not None):
                     self._share_shell_output(command, result)
                 if self._shell_stop is stop:
                     self._shell_stop = None
@@ -3683,6 +3784,421 @@ class CircleSessionApp:
     def _cmd_clone(self, _args: str) -> None:
         self._branch_into(self._session_tree.clone_active(), None, "clone")
         self._toast(f"Cloned this branch → {self._thread_id}")
+
+    # ── background agents' approvals and questions ────────────────────────────
+
+    def _host_background_agents(self) -> None:
+        """This session answers background agents that stop for approval or a question."""
+        tasks = getattr(self._agent, "_circle_background_tasks", None)
+        if tasks is not None:
+            tasks.host = self
+            tasks.on_usage = self._add_job_usage
+
+    def _add_job_usage(self, usage: dict[str, Any], cost: dict[str, Any]) -> None:
+        """A background agent's model use counts in the session's meters (and its cost)."""
+        self._footer.add_job_usage(usage, cost)
+        if self._connected:
+            self._app.render()
+
+    def ask(self, job: Any, interrupts: list[Any], answer: Callable[[Any], None]) -> None:
+        """A background agent stopped for approval or a question (from its own thread)."""
+        approvals: list[tuple[str, dict[str, Any]]] = []
+        asks: list[tuple[str, dict[str, Any]]] = []
+        order: list[str] = []
+        for item in interrupts:
+            iid = str(getattr(item, "id", "") or "")
+            value = getattr(item, "value", item)
+            order.append(iid)
+            if isinstance(value, dict) and isinstance(value.get("action_requests"), list):
+                approvals.extend((iid, dict(r)) for r in value["action_requests"]
+                                 if isinstance(r, dict))
+            elif isinstance(value, dict) and value.get("kind") == "ask_user":
+                asks.append((iid, value))
+            else:
+                asks.append((iid, {"questions": []}))
+        label = f"{job.id} {job.title.split(' · ', 1)[0]}"
+        with self._app.lock:
+            self._job_rounds.append(_JobRound(
+                job=job, label=label, answer=answer, order=order, approvals=approvals,
+                asks=asks, decisions={iid: [] for iid in order}, replies={}))
+            self._pump_job_rounds()
+            self._app.render()
+
+    def withdraw(self, job: Any) -> None:
+        """A background agent waiting for an answer was stopped: its card goes."""
+        with self._app.lock:
+            self._job_rounds = [r for r in self._job_rounds if r.job.id != job.id]
+            current = self._job_card
+            if current is not None and current.job.id == job.id:
+                self._exec_approval = None
+                self._ask_session = None
+                self._prompt.clear()
+                self._after_job_card()
+            self._app.render()
+
+    def _pump_job_rounds(self) -> None:
+        """Show a background agent's next question once no card is up and the turn's own
+        cards are answered; answer the agent when its round is complete."""
+        with self._app.lock:
+            if (self._job_card is not None or self._exec_approval is not None
+                    or self._ask_session is not None or self._approval_queue
+                    or self._ask_queue or self._gate is not None):
+                return
+            while self._job_rounds:
+                rnd = self._job_rounds[0]
+                if rnd.approvals:
+                    iid, req = rnd.approvals[0]
+                    name = str(req.get("name") or "tool")
+                    args = req.get("args") or {}
+                    if self._approvals.yolo_enabled(rnd.job.thread_id):
+                        rnd.approvals.pop(0)
+                        rnd.decisions[iid].append({"type": "approve"})
+                        continue
+                    if self._plan_mode and name in _PLAN_BLOCKED_TOOLS:
+                        path = str(args.get("file_path") or args.get("path") or "")
+                        if name != "write_file" or Path(path).name.lower() not in {"plan.md", "plan"}:
+                            rnd.approvals.pop(0)
+                            rnd.decisions[iid].append({"type": "reject", "message": (
+                                "Plan mode is active: the user's session is read-only.")})
+                            continue
+                    if self._defer_card_while_typing(self._pump_job_rounds):
+                        return
+                    review = self._approvals.review(name, args)
+                    backend = getattr(self._agent, "_circle_backend", None)
+                    resolve = getattr(backend, "_resolve_path", None)
+                    self._job_card = rnd
+                    self._park_draft()
+                    self._exec_approval = ExecApprovalSession({
+                        "tool": name,
+                        "title": name,
+                        "origin": rnd.label,
+                        "body": _approval_body(name, args),
+                        "preview": approval_preview(name, args,
+                                                    resolve if callable(resolve) else None),
+                        "policy": review.reason,
+                        "allow_always": review.allow_always,
+                        "warn_delete": review.warn_delete,
+                        "scope": review.scope,
+                        "prefix_scope": review.prefix_scope,
+                        "more": len(rnd.approvals) - 1,
+                        "tint": tool_type_bg_sgr(name),
+                    }, render=self._render_exec_approval, on_finish=self._finish_exec_approval)
+                    self._render_exec_approval()
+                    return
+                if rnd.asks:
+                    iid, value = rnd.asks[0]
+                    questions = [q for q in value.get("questions") or () if isinstance(q, dict)]
+                    if not questions:
+                        rnd.asks.pop(0)
+                        rnd.replies[iid] = {"answers": []}
+                        continue
+                    if self._defer_card_while_typing(self._pump_job_rounds):
+                        return
+                    self._job_card = rnd
+                    self._park_draft()
+                    self._ask_session = AskUserSession(questions, render=self._render_ask_user,
+                                                       on_answer=self._finish_job_question,
+                                                       origin=rnd.label)
+                    self._render_ask_user()
+                    return
+                self._job_rounds.pop(0)
+                self._answer_round(rnd)
+
+    def _answer_round(self, rnd: _JobRound) -> None:
+        replies = {iid: rnd.replies.get(iid, {"decisions": rnd.decisions.get(iid, [])})
+                   for iid in rnd.order}
+        value = replies[rnd.order[0]] if len(rnd.order) == 1 else replies
+        try:
+            rnd.answer(value)
+        except Exception:  # noqa: BLE001 - the agent has ended meanwhile
+            logger.debug("could not answer %s", rnd.job.id, exc_info=True)
+
+    def _finish_job_approval(self, decision: dict) -> None:
+        """A background agent's approval card was answered: the rule goes to its
+        conversation, a rejection (and why) back to the agent."""
+        rnd = self._job_card
+        if rnd is not None and rnd.approvals:
+            iid, req = rnd.approvals.pop(0)
+            key = str(decision.get("decision") or "reject")
+            message = str(decision.get("message") or "")
+            name = str(req.get("name") or "tool")
+            approved = self._approvals.remember(rnd.job.thread_id, name, req.get("args") or {},
+                                                key)
+            reason = REJECTED_BY_USER + (f" The user said: {message}" if message else "")
+            rnd.decisions[iid].append({"type": "approve"} if approved
+                                      else {"type": "reject", "message": reason})
+        self._after_job_card()
+
+    def _finish_job_question(self, answers: list[list[str]] | None) -> None:
+        with self._app.lock:
+            session, self._ask_session = self._ask_session, None
+            self._prompt.clear()
+            rnd = self._job_card
+            if session is not None:
+                self._toast(_strip_ansi(session.result_summary()).strip())
+            if rnd is not None and rnd.asks:
+                iid, _value = rnd.asks.pop(0)
+                rnd.replies[iid] = {"answers": answers} if answers is not None else {"cancelled": True}
+            self._after_job_card()
+
+    def _after_job_card(self) -> None:
+        """The turn's own cards go first, then the next background question; with no card
+        left the draft comes back."""
+        with self._app.lock:
+            self._job_card = None
+            if self._approval_queue:
+                self._next_approval()
+            elif self._ask_queue and self._ask_session is None:
+                self._begin_ask_user(self._ask_queue)
+            else:
+                self._pump_job_rounds()
+            if (self._job_card is None and self._exec_approval is None
+                    and self._ask_session is None):
+                self._restore_draft()
+            self._app.render()
+
+    # ── background jobs ─────────────────────────────────────────────────────
+
+    def _can_wake_for_jobs(self) -> bool:
+        """Nothing runs and nothing waits for you: a finished job may start a turn."""
+        return (self._connected and self._agent is not None and self._gate is None
+                and not self._is_loading and not self._bridge.is_running
+                and not self._msg_queue and not self._jobs_hold
+                and self._exec_approval is None and not self._approval_queue
+                and self._ask_session is None and not self._ask_queue
+                and self._secret_entry is None and self._login is None
+                and not self._leaf_checkpoint and self._notice_streak < _NOTICE_STREAK_MAX)
+
+    def _maybe_wake_for_jobs(self) -> None:
+        """Called by the run loop: a job the model started has ended while nothing runs,
+        so a turn starts with its notice; output of a !command that ended in the background
+        joins the conversation."""
+        if self._shell_shares:
+            self._flush_shell_shares()
+        if not self._jobs.has_notices(self._thread_id):
+            return
+        with self._app.lock:
+            if not self._can_wake_for_jobs() or not self._jobs.notice_ready(self._thread_id):
+                return
+            notices = self._jobs.take_notices(self._thread_id)
+            if notices:
+                self._start_notice_turn(notices)
+
+    def _start_notice_turn(self, notices: list[Any]) -> None:
+        """A turn that starts with Circle's notice of finished jobs, shown as one row per
+        job instead of a message of yours."""
+        message = notice_message(notices)
+        self._notice_streak += 1
+        self._push_undo_checkpoint()
+        self._transcript.ensure_block_gap()
+        self._transcript.append_messages(notice_rows(message.additional_kwargs[NOTICE_MARKER]))
+        self._transcript.ensure_block_gap()
+        self._open_turn_region()
+        self._turn_elapsed = 0.0
+        self._turn_started_at = time.time()
+        self._enter_busy()
+        self._call_started_at = time.time()
+        self._app.render()
+        self._extensions.emit("turn_start", {"text": "",
+                                             "job_notice": [n.job.id for n in notices]})
+        self._bridge.start_notice(message)
+
+    def _on_job_event(self, event: str, job: Any) -> None:
+        """A background job started, changed or ended (on the registry's thread)."""
+        if event == "started":
+            self._ensure_job_ticker()
+        self._refresh_jobs_picker()
+        if event != "ended" or job.reason == "circle exited":
+            if self._connected:
+                self._app.render()
+            return
+        with self._app.lock:
+            outcome = (f"{job.id} {outcome_words(job.status, job.exit_code, job.reason)}"
+                       f" · {format_elapsed(job.elapsed())}")
+            if job.started_by == "user":
+                command, quiet, thread = self._user_jobs.pop(job.id, (job.title, True, ""))
+                self._toast(outcome)
+                if not quiet and job.output_path and job.status != "stopped":
+                    output, _cut = read_head(job.output_path, 100_000)
+                    result = ExecuteResponse(output=output or "<no output>",
+                                             exit_code=job.exit_code)
+                    self._shell_shares.append((thread, command, result))
+            elif job.reason == "stopped by user":
+                self._toast(f"{job.id} stopped")
+            elif job.thread_id != self._thread_id and job.reason != "stopped by model":
+                self._toast(f"{outcome} · {job.title} · in another conversation")
+            self._app.render()
+
+    def _ensure_job_ticker(self) -> None:
+        """While jobs run, repaint twice a second: their lamps blink and their clocks go on
+        when nothing else is drawing."""
+        if self._job_ticker is not None and self._job_ticker.is_alive():
+            return
+
+        def tick() -> None:
+            while self._app._running and self._jobs.live():
+                if self._detail_active and str(self._detail_uuid or "").startswith("job:"):
+                    with self._app.lock:
+                        self._render_agent_detail(force=True)
+                self._app.render()
+                time.sleep(0.5)
+            if self._app._running:
+                self._app.render()
+
+        self._job_ticker = threading.Thread(target=tick, name="circle-job-ticker", daemon=True)
+        self._job_ticker.start()
+
+    def _move_to_background(self) -> None:
+        """ctrl+b: every command being waited on goes on as a background job."""
+        moved = self._jobs.detach_foreground()
+        if moved:
+            self._flash("Moved to the background" if moved == 1
+                        else f"{moved} commands moved to the background")
+        elif self._is_loading and running_cards(self._last_snap):
+            self._flash("Subagents can't move to the background")
+        else:
+            self._flash("Nothing to move")
+
+    def _cmd_jobs(self, args: str) -> None:
+        """/jobs — this session's background jobs: enter opens one, ctrl+d stops a running
+        one (after a question) or forgets one that has ended."""
+        def rows() -> list[PickerItem]:
+            items = []
+            jobs = self._jobs.list()
+            for job in [j for j in jobs if j.running] + [j for j in reversed(jobs)
+                                                           if not j.running]:
+                if job.running:
+                    state = ("waiting for you" if job.status == "waiting"
+                             else f"running · {format_elapsed(job.elapsed())}")
+                else:
+                    state = (f"{outcome_words(job.status, job.exit_code, job.reason)}"
+                             f" · {format_elapsed(job.elapsed())}")
+                if job.thread_id and job.thread_id != self._thread_id:
+                    state += " · other session"
+                items.append(PickerItem(key=job.id, label=f"{job.id} {job.title}", meta=state,
+                                        search=f"{job.kind} {job.source}"))
+            return items
+
+        def pick(item: PickerItem) -> None:
+            self._close_picker()
+            self._enter_job_page(item.key)
+
+        def stop(item: PickerItem | None) -> None:
+            job = self._jobs.get(item.key) if item is not None else None
+            if job is None:
+                return
+            if not job.running:
+                self._jobs.forget(job.id)
+                picker.set_items(rows())
+                return
+
+            def done() -> None:
+                self._jobs.stop(job.id, by="user")
+                picker.set_items(rows())
+
+            picker.confirm(f"Stop {job.id} {job.title[:40]}?", done)
+
+        def close() -> None:
+            self._jobs_picker = None
+            self._close_picker()
+
+        picker = Picker(title="Background jobs", items=rows(), on_pick=pick, on_close=close,
+                        render=self._render_picker, keys={"ctrl+d": stop},
+                        hint="enter opens · ctrl+d stops", empty="No jobs")
+        self._jobs_picker = (picker, rows)
+        self._open_picker(picker)
+
+    def _refresh_jobs_picker(self) -> None:
+        open_list = self._jobs_picker
+        if open_list is None or self._picker is not open_list[0]:
+            return
+        picker, rows = open_list
+        with self._app.lock:
+            if not picker.asking:
+                picker.set_items(rows())
+        self._render_picker()
+
+    def _enter_job_page(self, job_id: str) -> None:
+        """A job's page in place of the transcript: its band and the end of its output,
+        refreshed while it runs; esc goes back."""
+        if self._jobs.get(job_id) is None:
+            return
+        target = f"job:{job_id}"
+        self._detail_active = True
+        self._detail_ids = [target]
+        self._detail_uuid = target
+        self._strip_selecting = False
+        self._strip_selected = None
+        self._set_view_visible(self._transcript.node, False)
+        self._set_view_visible(self._agent_detail.node, True)
+        self._set_view_visible(self._agent_detail_band, True)
+        self._agent_detail.clear()
+        self._detail_drawn = None
+        self._render_agent_detail(force=True)
+        self._sync_agent_strip()
+        self._app.render()
+
+    def _render_job_page(self) -> None:
+        job = self._jobs.get(str(self._detail_uuid)[4:])
+        view = self._agent_detail
+        self._detail_buttons = []
+        if job is None:
+            self._agent_detail_band.style.height = 0
+            self._agent_detail_band_text.set_value("")
+            view.clear()
+            view.append_message(" " + _faint("This job is no longer listed."))
+            return
+        band = render_job_band(job, width=max(20, self._app.width or 80))
+        self._agent_detail_band.style.height = len(band)
+        self._agent_detail_band_text.set_value("\n".join(band))
+        rows = job_log_rows(job)
+        sticky, top = view.node.sticky_scroll, view.node.scroll_top
+        view.restore(rows, [None] * len(rows))
+        if not sticky:
+            view.node.sticky_scroll = False
+            view.node.scroll_top = min(top, view.max_top())
+
+    def _flush_shell_shares(self) -> None:
+        """Output of !commands that ended in the background goes into their conversation
+        once no turn runs there."""
+        with self._app.lock:
+            if self._is_loading or self._bridge.is_running:
+                return
+            shares, self._shell_shares = self._shell_shares, []
+            for thread, command, result in shares:
+                if thread == self._thread_id:
+                    self._share_shell_output(command, result)
+                else:
+                    self._shell_shares.append((thread, command, result))
+
+    def _stop_jobs_at_exit(self) -> int:
+        """Circle is leaving: stop every job, and tell each conversation that had some, so
+        the model knows when the conversation is opened again."""
+        live = [job for job in self._jobs.list() if job.running]
+        if not live and not self._jobs.notice_threads():
+            return 0
+        stopped = self._jobs.stop_all()
+        threads = {job.thread_id for job in live if job.started_by == "model"}
+        threads |= set(self._jobs.notice_threads())
+        for thread in sorted(t for t in threads if t):
+            ended = [job for job in live if job.thread_id == thread and job.started_by == "model"]
+            pending = self._jobs.take_notices(thread)
+            if thread == self._thread_id and self._leaf_checkpoint:
+                continue
+            lines = []
+            if ended:
+                lines.append("Circle exited and stopped these background jobs:")
+                lines.extend(f"{job.id} · {job.kind} · {job.title}" for job in ended)
+            lines.extend(n.text for n in pending)
+            text = ('<system-reminder data-source="circle-jobs">\n' + "\n".join(lines)
+                    + "\nThis notice comes from Circle, not from the user.\n</system-reminder>")
+            try:
+                append_messages(self._agent, {"configurable": {"thread_id": thread}},
+                                [HumanMessage(content=text,
+                                              additional_kwargs={"circle_internal": "job_exit"})])
+            except Exception:  # noqa: BLE001 - leaving must not fail on this
+                logger.debug("could not note stopped jobs in %s", thread, exc_info=True)
+        return stopped
 
     # ── the conversation tree ───────────────────────────────────────────────
 
@@ -4852,6 +5368,8 @@ class CircleSessionApp:
 
     def _next_approval(self) -> None:
         with self._app.lock:
+            if self._job_card is not None:
+                return  # a background agent's card is up: this one follows it
             while self._approval_queue:
                 _iid, req = self._approval_queue[0]
                 name = str(req.get("name") or "tool")
@@ -4911,7 +5429,10 @@ class CircleSessionApp:
 
     def _resume_with(self, value: Any) -> None:
         with self._app.lock:
-            self._restore_draft()
+            if self._job_rounds and self._job_card is None:
+                self._pump_job_rounds()
+            if self._job_card is None:
+                self._restore_draft()
             self._turn_started_at = time.time()
             self._enter_busy()
             self._pending_calls = []
@@ -4923,6 +5444,9 @@ class CircleSessionApp:
 
     def _begin_ask_user(self, asks: list[tuple[str | None, dict[str, Any]]]) -> None:
         with self._app.lock:
+            if self._job_card is not None:
+                self._ask_queue = list(asks)
+                return  # a background agent's card is up: these follow it
             if self._defer_card_while_typing(lambda: self._begin_ask_user(asks)):
                 return
             self._ask_queue = list(asks)
@@ -4998,7 +5522,13 @@ class CircleSessionApp:
         self._interrupt_replies = {}
         self._pending_calls = []
         self._close_popup()
-        self._restore_draft()
+        if self._job_card is not None or self._job_rounds:
+            # the turn's cards are gone (and a held-back card with them): a background
+            # agent's question still waits
+            self._job_card = None
+            self._pump_job_rounds()
+        if self._job_card is None:
+            self._restore_draft()
 
     # ── /approvals page ──────────────────────────────────────────────────
 
@@ -5114,6 +5644,9 @@ class CircleSessionApp:
     def _finish_exec_approval(self, decision: dict) -> None:
         self._exec_approval = None
         self._prompt.clear()
+        if self._job_card is not None:
+            self._finish_job_approval(decision)
+            return
         if self._approval_queue:
             self._record_approval(str(decision.get("decision") or "reject"),
                                   str(decision.get("message") or ""))
@@ -5192,7 +5725,8 @@ def _tree_from(messages: list[Any]) -> SessionTree:
     """The message tree of a saved conversation: each user message and its answer."""
     tree = SessionTree()
     for text, snap in saved_turns(messages):
-        tree.add("user", text)
+        if text:
+            tree.add("user", text)
         answer = final_text(snap)
         if answer:
             tree.add("assistant", answer)
@@ -5205,8 +5739,12 @@ def _shell_snapshot(call_id: str, command: str, result: Any) -> MessageSnapshot:
                                   input={"command": command},
                                   status="running" if result is None else "done")]
     if result is not None:
+        job = getattr(result, "job", None)
+        payload = ({"job": {"id": job.id, "how": getattr(result, "how", ""),
+                            "path": job.virtual_path}} if job is not None else None)
         blocks.append(make_tool_result_block(tool_use_id=call_id, output=result.output,
-                                             is_error=result.exit_code != 0, name="execute"))
+                                             is_error=result.exit_code not in (0, None),
+                                             name="execute", payload=payload))
     return MessageSnapshot(messages=(make_assistant_message(uuid=call_id, content=blocks),),
                            status="idle")
 
@@ -5283,6 +5821,25 @@ def _cut_start(text: str, room: int) -> str:
     return "…" + "".join(reversed(out))
 
 
+# Turns started by job notices in a row before Circle waits for you
+_NOTICE_STREAK_MAX = 10
+
+
+@dataclass
+class _JobRound:
+    """A background agent waiting on its approvals and questions; it is answered once every
+    one of them is (by interrupt id when there are several)."""
+
+    job: Any
+    label: str
+    answer: Callable[[Any], None]
+    order: list[str]
+    approvals: list[tuple[str, dict[str, Any]]]
+    asks: list[tuple[str, dict[str, Any]]]
+    decisions: dict[str, list[dict[str, Any]]]
+    replies: dict[str, Any]
+
+
 def _stop_line() -> str:
     """A stopped turn: a dim ✖ (the same glyph as a failure, told apart by colour)."""
     pal = palette()
@@ -5296,7 +5853,10 @@ def _approval_body(name: str, args: dict[str, Any]) -> str:
     """The card's first lines: the command, the file, or the files a patch changes (its
     diff follows from ``approval_preview``); other tools list their arguments."""
     if name == "execute":
-        return "$ " + str(args.get("command") or "")
+        body = "$ " + str(args.get("command") or "")
+        # it does not end with the call: say so before it is allowed
+        background = is_true(args.get("background"))
+        return body + "\nruns in the background as a job" if background else body
     if name == "apply_patch":
         files = [line.split(":", 1)[1].strip()
                  for line in str(args.get("patchText") or "").splitlines()

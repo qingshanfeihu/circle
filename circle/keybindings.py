@@ -42,6 +42,7 @@ ACTIONS: dict[str, str] = {
     "history.search": "ctrl+r",
     "secret.enter": "ctrl+s",
     "newline": "ctrl+j",
+    "job.background": "ctrl+b",
 }
 
 

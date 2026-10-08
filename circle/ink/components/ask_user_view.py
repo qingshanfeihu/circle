@@ -33,8 +33,10 @@ class AskUserSession:
         *,
         render: Callable[[], None],
         on_answer: Callable[[list[list[str]] | None], None],
+        origin: str = "",
     ) -> None:
         self._questions = questions
+        self._origin = origin
         self._render = render
         self._on_answer = on_answer
         self._q_idx = 0
@@ -74,6 +76,8 @@ class AskUserSession:
         sel = self._selected[self._q_idx]
         total = len(self._questions)
         title = "The model has a question" + (f" · {self._q_idx + 1}/{total}" if total > 1 else "")
+        if self._origin:  # a background agent asks: its job comes first
+            title = f"{self._origin} · {title}"
         header = str(q.get("header", "") or "")
         q_lines = str(q.get("question", "")).split("\n")
         body: list[CardLine] = []

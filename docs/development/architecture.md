@@ -12,7 +12,8 @@ Circle is a Python package, `circle/`. It assembles an agent from [deepagents](h
 | Updates | `update.py`, `net.py` | The daily release check and `circle update`. Shares its install layout with `install.sh` and `install.ps1`. `net.py` gives Circle's own HTTPS requests (model discovery, web fetch and search, updates) the system's certificates, or the bundled `certifi` ones where the system's cannot be found, as in the prebuilt program. |
 | Setup | `init_flow.py`, `probe.py`, `oauth.py`, `trust.py`, `trust_flow.py`, `settings.py`, `paths.py`, `keybindings.py` | First run, endpoint probe, settings (yours and a project's) and credentials, workspace trust, your own keys. |
 | Agent assembly | `harness.py`, `model.py`, `system_prompt.py`, `prompt_features.py`, `prompts/` | Build the model, the system prompt and the deepagents graph. |
-| Tools | `sandbox.py`, `apply_patch.py`, `lsp_tool.py`, `websearch.py`, `secret_prompt.py`, `mcp_loader.py`, `skills.py`, `commands.py` | What the model can call, and what else Circle loads. |
+| Tools | `sandbox.py`, `apply_patch.py`, `lsp_tool.py`, `websearch.py`, `secret_prompt.py`, `mcp_loader.py`, `skills.py`, `commands.py` | What the model can call, and what else Circle loads. `sandbox.py` runs commands with their output in a file, so a command can return while something it started still runs. |
+| Background jobs | `jobs.py`, `job_tools.py`, `job_agents.py`, `middleware/job_notice.py` | `jobs.py` is the session's job registry: process groups, output files, the monitor thread, notices per conversation, watches, and stopping everything when Circle ends. `job_tools.py` replaces deepagents' filesystem middleware by name so `execute` gains `background`, and builds `list_jobs`, `stop_job` and `wait_jobs`. `job_agents.py` gives `task` a `background` flag, reads the compiled subagents out of deepagents' `task` tool, and runs one on its own thread with its own checkpointer, asking the session (or the print-mode rule) when it stops for approval. `job_notice.py` puts finished jobs' notices into a running turn. The registry belongs to the session (`create_harness(jobs=…)`), so it outlives agent rebuilds. See [Background jobs](../background-jobs.md). |
 | Safety | `approvals.py`, `plan_backend.py`, `trust.py` | Sort tool calls into allow, ask and refuse. Enforce read-only mode. |
 | Middleware | `middleware/`, `model_guard.py`, `context_middleware.py`, `text_repetition.py`, `tool_recoverable.py` | Retries, stalls, loops, cancellation, repair of tool calls, redaction, pruning, summaries. |
 | Sessions | `checkpoint_store.py`, `session_index.py`, `session_tree.py`, `events.py`, `session_export.py`, `git_info.py` | Persistent history in SQLite, the list of each folder's sessions (with titles, labels and the point `/tree` went back to), the message tree, the event bus, HTML and JSONL export. Messages written without a turn go through `context_middleware.append_messages`, so `/tree` can branch from them. |
@@ -38,8 +39,9 @@ Circle is a Python package, `circle/`. It assembles an agent from [deepagents](h
 | `transcript_view.py`, `tool_display.py`, `content_blocks.py` | Draw the snapshot. |
 | `replay.py` | Turn saved messages back into snapshots, for reopened, forked and cloned sessions; copy history into a new thread turn by turn. |
 | `conversation_tree.py` | Read the conversation tree (every branch) from the checkpoints, for `/tree` and `/fork`. |
-| `ink/components/picker.py` | The searchable list behind `/models`, `/effort`, `/resume`, `/tree`, `/fork` and `/settings`. |
+| `ink/components/picker.py` | The searchable list behind `/models`, `/effort`, `/resume`, `/tree`, `/fork`, `/settings` and `/jobs`. |
 | `agent_strip.py`, `agent_detail.py` | The subagent strip and record. |
+| `job_rows.py` | Background jobs on screen: their rows in the strip, the `◆` row of a finished job, the line under a call that went to the background, a job's page. |
 | `slash_commands.py`, `input_history.py` | The command table and the history file. |
 
 The rules for what is shown where are in [The TUI contract](tui-contract.md). Read them before you change anything on screen.
@@ -51,6 +53,7 @@ The rules for what is shown where are in [The TUI contract](tui-contract.md). Re
 3. Events flow through the reducer into a snapshot, and `transcript_view.py` draws it.
 4. A gated tool call raises an interrupt. The bridge shows a card, waits for your answer, and resumes the graph with it.
 5. When the turn ends, the checkpoint in `checkpoints.sqlite` holds the new state.
+6. When a background job ends, the registry queues a notice for its conversation. `JobNoticeMiddleware` hands it to a running turn before the next model call; otherwise the session's run loop (`_maybe_wake_for_jobs`) starts a turn with it, under the app lock. A background subagent that stops for approval calls the session's `ask`, which queues its card behind the turn's own.
 
 ## Other files
 

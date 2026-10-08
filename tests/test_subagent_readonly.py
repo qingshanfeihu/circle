@@ -30,8 +30,9 @@ def test_explore_spec_carries_only_read_only_tools(tmp_path: Path, monkeypatch):
                    home=tmp_path)
     explore = next(s for s in seen["subagents"] if s["name"] == "explore")
     names = {t.name for t in explore["tools"]}
-    assert names <= {"webfetch", "websearch", "lsp", "skill"}
-    assert not names & {"apply_patch", "question", "execute", "write_file", "edit_file"}
+    assert names <= {"webfetch", "websearch", "lsp", "skill", "list_jobs"}
+    assert not names & {"apply_patch", "question", "execute", "write_file", "edit_file",
+                        "stop_job", "wait_jobs"}
     fs = next(mw for mw in explore["middleware"]
               if type(mw).__name__ == "FilesystemMiddleware")
     assert type(fs).__name__ == "FilesystemMiddleware"

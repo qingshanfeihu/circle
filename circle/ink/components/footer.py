@@ -15,6 +15,7 @@ from ...display_lexicon import (
     footer_worker_slot,
 )
 from ...pricing import (
+    UsageCostTotals,
     compute_cost,
     context_window_for,
     cost_currency,
@@ -104,6 +105,12 @@ class FooterPane:
         self.fork_cache_write: int = 0
         self.fork_cache_write_1h: int = 0
         self.fork_live_output: int = 0
+        # background agents: their calls, kept apart from the turn's subagents
+        self.job_input: int = 0
+        self.job_output: int = 0
+        self.job_cache_hit: int = 0
+        self.job_cache_write: int = 0
+        self._job_costs = UsageCostTotals()
         self._latest_evidence: str = ""
         self._obs_warning: str = ""
         self._cache_hit_tokens: int = 0
@@ -155,12 +162,22 @@ class FooterPane:
         self._refresh()
 
     def usage_totals(self) -> dict[str, int]:
-        """This run's tokens, the main agent's and the subagents' together."""
+        """This run's tokens: the main agent's, the subagents' and background agents'."""
         return {
-            "input": self.input_tokens + self.fork_input,
-            "output": self.output_tokens + self.fork_output,
-            "cached": self._cache_hit_tokens + self.fork_cache_hit,
+            "input": self.input_tokens + self.fork_input + self.job_input,
+            "output": self.output_tokens + self.fork_output + self.job_output,
+            "cached": self._cache_hit_tokens + self.fork_cache_hit + self.job_cache_hit,
         }
+
+    def add_job_usage(self, usage: dict, cost: dict) -> None:
+        """One model call of a background agent: its tokens and what it cost."""
+        self.job_input += int(usage.get("input_tokens") or 0)
+        self.job_output += int(usage.get("output_tokens") or 0)
+        self.job_cache_hit += int(usage.get("prompt_cache_hit_tokens") or 0)
+        self.job_cache_write += int(usage.get("prompt_cache_write_tokens") or 0)
+        self._job_costs.add(cost)
+        self._costs_supplied = True
+        self._refresh()
 
     def update(
         self,
@@ -415,12 +432,12 @@ class FooterPane:
     def _session_summary(self, *, colored: bool = False) -> str:
         """The meters. ``colored``: the context figure turns yellow past 70% and red past
         90%, as in pi, so a full context is seen before it is compacted."""
-        total_in = self.input_tokens + self.fork_input
-        settled_out = self.output_tokens + self.fork_output
+        total_in = self.input_tokens + self.fork_input + self.job_input
+        settled_out = self.output_tokens + self.fork_output + self.job_output
         display_out = settled_out + self.fork_live_output
-        hit = min(self._cache_hit_tokens + self.fork_cache_hit, total_in)
+        hit = min(self._cache_hit_tokens + self.fork_cache_hit + self.job_cache_hit, total_in)
         write = min(
-            self._cache_write_tokens + self.fork_cache_write,
+            self._cache_write_tokens + self.fork_cache_write + self.job_cache_write,
             max(total_in - hit, 0),
         )
         write_1h = min(self._cache_write_1h_tokens + self.fork_cache_write_1h, write)
@@ -428,8 +445,8 @@ class FooterPane:
         parts = [f"↑ {_format_token_count(total_in)} · ↓ {_format_token_count(display_out)}"]
         if self._costs_supplied:
             parts.append(format_usage_costs(
-                self._main_costs, self._fork_costs, empty_model=self.model,
-                has_settled_tokens=bool(total_in or settled_out),
+                self._main_costs, self._fork_costs, self._job_costs.snapshot(),
+                empty_model=self.model, has_settled_tokens=bool(total_in or settled_out),
             ))
         # 旧快照没有逐调用费用时保留旧口径；新事件不再按页脚当前模型重算累计量。
         elif any((self.fork_input, self.fork_output, self.fork_cache_hit,

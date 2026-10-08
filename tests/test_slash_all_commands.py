@@ -81,6 +81,7 @@ def test_every_canonical_command_dispatches(tmp_path: Path, monkeypatch):
         "fork": "/fork",
         "clone": "/clone",
         "yolo": "/yolo",
+        "jobs": "/jobs",
     }
 
     # Re-login after logout in the map order — reorder carefully

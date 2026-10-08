@@ -67,10 +67,12 @@ def test_the_timeout_ends_the_whole_process_group(tmp_path):
     assert not (tmp_path / "orphan").exists(), "the background child was ended too"
 
 
-def test_output_matches_the_upstream_format(tmp_path):
+def test_output_keeps_stdout_and_stderr_in_the_order_written(tmp_path):
+    # Output goes to one file (so a command can return while something it started with &
+    # still writes); stdout and stderr keep their order instead of stderr coming last.
     backend = CircleSandboxBackend(root_dir=tmp_path, virtual_mode=True, inherit_env=True)
-    ok = backend.execute("echo out; echo err >&2")
-    assert (ok.output, ok.exit_code) == ("out\n\n[stderr] err", 0)
+    ok = backend.execute("echo out; echo err >&2; echo again")
+    assert (ok.output, ok.exit_code) == ("out\nerr\nagain\n", 0)
     failed = backend.execute("echo nope; exit 3")
     assert failed.exit_code == 3 and failed.output == "nope\n\nExit code: 3"
     assert backend.execute("true").output == "<no output>"

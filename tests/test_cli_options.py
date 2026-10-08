@@ -323,3 +323,14 @@ def test_compaction_stays_available_with_no_tools():
 
     none = ToolSelectionMiddleware(allowed=[], excluded=["compact_conversation"])
     assert none.permits("compact_conversation") and not none.permits("ls")
+
+
+def test_job_tools_come_with_the_tools_that_start_jobs():
+    from circle.middleware.tool_selection import ToolSelectionMiddleware
+
+    shell = ToolSelectionMiddleware(allowed=["read_file", "execute"])
+    assert shell.permits("list_jobs") and shell.permits("stop_job")
+    reading = ToolSelectionMiddleware(allowed=["read_file"])
+    assert not reading.permits("list_jobs") and not reading.permits("stop_job")
+    assert not ToolSelectionMiddleware(allowed=[]).permits("stop_job")
+    assert not ToolSelectionMiddleware(allowed=None, excluded=["stop_job"]).permits("stop_job")

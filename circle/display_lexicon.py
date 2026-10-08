@@ -176,6 +176,9 @@ TOOL_SHORT_NAMES: dict[str, str] = {
     "skill": "Skill",
     "lsp": "Lsp",
     "compact_conversation": "Compact",
+    "list_jobs": "Jobs",
+    "stop_job": "StopJob",
+    "wait_jobs": "WaitJobs",
 }
 
 # 工具名 → ((入参键, 压行方式), …)；按顺序取第一个有值的键
@@ -195,6 +198,7 @@ TOOL_ARG_SUMMARY: dict[str, tuple[tuple[str, str], ...]] = {
     "question": (("questions", "first_line"),),
     "skill": (("name", "text"), ("skill", "text")),
     "lsp": (("operation", "text"), ("file_path", "path_tail")),
+    "stop_job": (("job_id", "text"),),
 }
 
 _SUMMARY_MAX = 60

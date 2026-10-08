@@ -55,6 +55,7 @@ To turn one off, set it in `settings.json`:
 |---|---|
 | `api.name` | The extension's folder name. |
 | `api.ToolError` | Raise it from a tool to report a failed call to the model. |
+| `api.Watch(title, poll, *, interval_s=10, deadline_s=3600, result=None, on_stop=None)` | Return it from a tool to have Circle wait for something slow. See [Waiting for something slow](#waiting-for-something-slow). |
 | `register_tool(name, description, parameters, execute, *, read_only=False, approval=None)` | Add a tool. |
 | `register_command(name, description, handler)` | Add a slash command. |
 | `register_middleware(middleware, slot="tool_boundary")` | Add LangChain agent middleware. |
@@ -72,6 +73,28 @@ Any error while an extension loads (a bad name, a duplicate, an exception in `re
 - The first sentence of `description` goes into the system prompt. The whole text is the tool's description.
 - `approval` decides whether the tool asks first. By default a tool that is not `read_only` asks, and one that is `read_only` does not. Pass `approval=True` or `False` to say it yourself. `read_only` has no other effect: it does not stop the tool in `read-only` mode.
 - An extension tool with the same name as an MCP tool is dropped without a message.
+
+### Waiting for something slow
+
+A tool that starts something slow (a run on another machine, a sign-in the user finishes in a browser) can return an `api.Watch` instead of making the model call it again or `sleep`:
+
+```python
+def submit(args):
+    task = start_run(args["case"])
+
+    def poll():
+        status = check_run(task)
+        return status if status["state"] == "finished" else None
+
+    return api.Watch(f"run {args['case']}", poll, interval_s=10, deadline_s=2400,
+                     result={"task": task, "state": "pending"})
+```
+
+- The tool call returns at once with `result` (text, or a dict sent as JSON) and a note that Circle is watching it as a [background job](background-jobs.md).
+- Circle calls `poll()` every `interval_s` seconds on a thread of its own, off the model's turns. `None` means not yet. Any other value ends the job with that value as its result, and the model gets a notice with it (up to 4 KB; a longer result is kept in a file the notice names). An exception, or `deadline_s` passing, fails the job.
+- `on_stop()` runs once if the job is stopped: by the model's `stop_job`, by `/jobs`, or because Circle is leaving (which waits up to two seconds for it).
+- `poll` runs without asking again: the tool call that returned the watch was approved, or was read-only.
+- Watches count toward the 16 jobs that may run at once. Without a job list (an embedding that builds the agent itself), the tool call waits for the result instead.
 
 ### Commands
 
@@ -98,7 +121,7 @@ The slot only sets the order among extension middleware: `model_call`, then `too
 | Event | Payload |
 |---|---|
 | `session_start` | `{"workspace": str}`. Fires when Circle starts and after `/new`, `/fork` and `/clone`. |
-| `turn_start` | `{"text": str}`. |
+| `turn_start` | `{"text": str}`. A turn Circle started for finished [background jobs](background-jobs.md) has `"text": ""` and `"job_notice"`, the list of their ids. |
 | `turn_end` | `{"text": str}`, or `{"error": str}` when the turn failed. |
 | `tool_result` | `{"tool": str, "output": str, "tool_call_id": str}`. |
 

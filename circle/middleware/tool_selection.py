@@ -13,6 +13,8 @@ from langchain_core.messages import ToolMessage
 
 # Circle's own: /compact works by asking the model to call it
 ALWAYS_ALLOWED = frozenset({"compact_conversation"})
+# Tools that come with another: the job tools serve whatever can start a background job
+COMPANIONS = {"list_jobs": ("execute", "task"), "stop_job": ("execute", "task")}
 
 
 def _name(tool: Any) -> str:
@@ -32,7 +34,9 @@ class ToolSelectionMiddleware(AgentMiddleware):
             return True
         if name in self.excluded:
             return False
-        return self.allowed is None or name in self.allowed
+        if self.allowed is None or name in self.allowed:
+            return True
+        return any(self.permits(owner) for owner in COMPANIONS.get(name, ()))
 
     def _narrowed(self, request: ModelRequest) -> ModelRequest:
         tools = [tool for tool in (request.tools or []) if self.permits(_name(tool))]

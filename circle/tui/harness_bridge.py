@@ -20,7 +20,9 @@ from langchain_core.messages.ai import add_usage
 from langgraph.types import Command
 
 from circle.events import EventBus, bind_bus, unbind_bus
+from circle.jobs import is_job_notice
 from circle.middleware.cancellation import CancellationToken
+from circle.middleware.job_notice import DELIVER_KEY
 from circle.middleware.loop_guard import is_loop_reminder
 from circle.middleware.plan_tail import is_plan_reminder
 from circle.middleware.steering import SteeringInbox
@@ -168,16 +170,8 @@ class HarnessBridge:
         """Send a user message. ``shown`` is the short form the user saw (pastes folded,
         ``@files`` not attached) and ``pastes`` what the placeholders stand for; both are
         kept on the message so a reopened or forked session can show and edit it again."""
-        if self.is_running:
+        if not self._begin():
             return
-        self._cancelled = False
-        self._cancel_token = CancellationToken()
-        policy = getattr(self._agent, "_circle_approvals", None)
-        if policy is not None:
-            policy.begin_visible_turn(self._thread_id)
-        self._clear_pending_interrupts()
-        self._sink.reset()
-        self._start_from, self.branch_from = getattr(self, "branch_from", None), None
         extra: dict[str, Any] = {}
         if shown and shown != user_text:
             extra["circle_shown"] = shown
@@ -186,6 +180,25 @@ class HarnessBridge:
         message: Any = (HumanMessage(content=user_text, additional_kwargs=extra) if extra
                         else {"role": "user", "content": user_text})
         self._spawn({"messages": [message]})
+
+    def start_notice(self, message: Any) -> None:
+        """Start a turn whose input is a notice from Circle (background jobs ended)."""
+        if self._begin():
+            self._spawn({"messages": [message]})
+
+    def _begin(self) -> bool:
+        """Get ready for a new turn; False while one is running."""
+        if self.is_running:
+            return False
+        self._cancelled = False
+        self._cancel_token = CancellationToken()
+        policy = getattr(self._agent, "_circle_approvals", None)
+        if policy is not None:
+            policy.begin_visible_turn(self._thread_id)
+        self._clear_pending_interrupts()
+        self._sink.reset()
+        self._start_from, self.branch_from = getattr(self, "branch_from", None), None
+        return True
 
     def resume(self, decision: Any) -> None:
         """``{"decision": …}`` 扇出到本次中断的全部挂起调用；其他值原样作为 resume 值。"""
@@ -440,7 +453,9 @@ class HarnessBridge:
         configurable = {**self._config.get("configurable", {}),
                         "circle_cancel_token": self._cancel_token,
                         "circle_visible_turn": True,
-                        "circle_inbox": getattr(self, "inbox", None)}
+                        "circle_inbox": getattr(self, "inbox", None),
+                        # finished background jobs reach the model in this run
+                        DELIVER_KEY: True}
         start_from, self._start_from = getattr(self, "_start_from", None), None
         if start_from and not isinstance(payload, Command):
             configurable["checkpoint_id"] = start_from  # a new branch from there
@@ -493,7 +508,11 @@ class HarnessBridge:
                     msg = item[0] if isinstance(item, tuple) else item
                     if isinstance(item, tuple) and len(item) > 1 and _internal_call(item[1]):
                         continue
-                    if is_plan_reminder(msg) or is_loop_reminder(msg):
+                    if is_plan_reminder(msg) or is_loop_reminder(msg) or is_job_notice(msg):
+                        continue
+                    if (type(msg).__name__ == "HumanMessage"
+                            and (getattr(msg, "additional_kwargs", None) or {}).get(
+                                "circle_internal")):
                         continue
                     name = getattr(msg, "__class__", type("x", (), {})).__name__
                     content = getattr(msg, "content", None)

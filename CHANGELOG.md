@@ -4,6 +4,21 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Added
+
+- **Background jobs.** A command or a subagent can keep running while you and the model go on. The model starts one with `background: true` on `execute` or `task`; a command still running at the default timeout goes on as a job instead of being ended; `ctrl+b` moves the command being waited on (yours too) to the background; and processes a command leaves running (`server &`) become a job. Each job's output is kept in a file the model reads, rows below the input box show what runs, and `/jobs` opens or stops them. When a job ends the model gets a notice, and Circle starts a turn for it when nothing else runs, so the model no longer polls or sleeps. Leaving Circle, closing the terminal or a `SIGTERM` stops every job. See [Background jobs](docs/background-jobs.md).
+- **Background subagents ask in their own cards.** Their approvals and questions appear whether a turn runs or not, named after their job, after the running turn's own cards.
+- **The model has `list_jobs` and `stop_job`**, and the `general-purpose` subagent `wait_jobs`.
+- **Extensions can wait for something slow** by returning `api.Watch` from a tool: Circle polls it off the model's turns and hands the result over as a notice. See [Build extensions](docs/extensions.md#waiting-for-something-slow).
+- **Print mode waits for the model's background jobs** after its answer, up to `CIRCLE_JOB_WAIT` seconds; JSON and RPC modes report jobs as events, and RPC mode has `list_jobs` and `stop_job`.
+
+### Changed
+
+- **A command's standard output and standard error come back together**, in the order they were written, instead of standard error after standard output with a `[stderr]` prefix.
+- **A command that runs past the default timeout is no longer ended**: it goes on as a background job. One the model gave its own `timeout` is still ended then.
+- **The Gemini prompt no longer tells the model to start servers with `&`.**
+- **On Windows, `esc` ends a running command** with everything it started (`taskkill /T`), and `ctrl+b` and the default timeout move it to the background, as elsewhere. This has not been tried on a real Windows machine yet.
+
 ## 0.4.0 - 2026-10-08
 
 ### Added

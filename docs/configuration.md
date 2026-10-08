@@ -14,7 +14,7 @@ The data folder is `~/.circle`. Set `CIRCLE_HOME` to use another location, and r
 | `checkpoints.sqlite` | The model's history for each session. |
 | `sessions.sqlite` | Each folder's sessions, with their titles, for `/resume` and `circle -c`. |
 | `approvals/` | "Allow for this session" rules, one file per session. |
-| `projects/<folder>-<id>/` | Per project: the messages a summary replaced (`conversation_history/`) and tool output too long for the conversation (`large_tool_results/`). |
+| `projects/<folder>-<id>/` | Per project: the messages a summary replaced (`conversation_history/`), tool output too long for the conversation (`large_tool_results/`), and the output of [background jobs](background-jobs.md) (`background_jobs/`, one folder per run of Circle, removed a day after that run ended). |
 | `logs/circle.log` | Log file, 5 MB and three older copies. Full-screen mode only. |
 | `exports/`, `shares/` | Output of `/export`, `/copy` (fallback) and `/share`. |
 | `skills/` | Your [skills](skills.md). |

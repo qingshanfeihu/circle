@@ -68,8 +68,9 @@ class PlanGuardedBackend(CircleSandboxBackend):
             )
         return super().delete(file_path)
 
-    def execute(self, command: str, *, timeout: int | None = None,
-                stop: object = None) -> ExecuteResponse:
+    def guard(self, command: str) -> ExecuteResponse | None:
+        """Plan mode blocks commands, foreground and background; refused commands stop here
+        for the main agent and every subagent, which share this backend."""
         if self.plan_mode:
             return ExecuteResponse(
                 output=(
@@ -81,4 +82,4 @@ class PlanGuardedBackend(CircleSandboxBackend):
         refusal = self.command_guard(command) if self.command_guard else ""
         if refusal:
             return ExecuteResponse(output=refusal, exit_code=126)
-        return super().execute(command, timeout=timeout, stop=stop)
+        return None

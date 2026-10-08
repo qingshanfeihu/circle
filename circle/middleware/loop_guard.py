@@ -7,7 +7,10 @@ Before each model call the tool calls since the last real user message are check
 - the same read target six times within sixteen calls where only paging arguments
   (``offset``/``limit``/…) change and the pages are not read in order;
 - more than 25 calls in the turn with none of the above: a note that this is fine
-  while each call brings something new.
+  while each call brings something new;
+- while background jobs the model started are running, two calls that only wait for them
+  (a bare ``sleep``, reading their output again, ``list_jobs``): a note that Circle tells it
+  when they end, so it should end its turn instead.
 
 The reminder is appended to the stored conversation after a tool result. A
 later reminder needs at least ``CIRCLE_LOOP_WINDOW`` main model replies since
@@ -21,14 +24,18 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import Mapping
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from circle.middleware.plan_tail import is_plan_reminder
+
+if TYPE_CHECKING:
+    from circle.jobs import JobRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +48,20 @@ _LOOSE_THRESHOLD = 6
 _PAGING_KEYS = frozenset({"offset", "limit", "head_limit", "page", "page_size",
                           "start_line", "end_line"})
 _LABEL_KEYS = ("pattern", "query", "file_path", "path", "glob", "url", "command")
+# A command that only waits: ``sleep 30``, or a sleep before a check (``sleep 30 && cat log``)
+_SLEEP = re.compile(r"^\s*sleep\s+[\d.]+[smhd]?\s*(?:$|&&|;|\|\|)")
+_POLL_THRESHOLD = 2
+
+
+def _is_poll(name: str, args: Any) -> bool:
+    """A call that only waits for background jobs."""
+    if not isinstance(args, dict):
+        return name == "list_jobs"
+    if name == "execute":
+        return bool(_SLEEP.match(str(args.get("command") or ""))) and not args.get("background")
+    if name == "read_file":
+        return "background_jobs/" in str(args.get("file_path") or args.get("path") or "")
+    return name == "list_jobs"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -108,6 +129,7 @@ def analyze(messages: list, *, window: int) -> dict[str, Any]:
     fingerprints: list[str] = []
     labels: dict[str, str] = {}
     loose: list[tuple[str | None, int]] = []
+    polls = 0
     # One entry per reply that called tools: did every result come back empty? Calls
     # made together are one move, so three parallel lookups that find nothing count once.
     rounds: list[list[bool]] = []
@@ -119,6 +141,7 @@ def analyze(messages: list, *, window: int) -> dict[str, Any]:
             args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
             fp = _fingerprint(name, args)
             fingerprints.append(fp)
+            polls += _is_poll(name, args)
             labels[fp] = _label(name, args)
             if "read" in name.lower() and isinstance(args, dict):
                 stripped = {k: v for k, v in args.items() if k not in _PAGING_KEYS}
@@ -165,7 +188,16 @@ def analyze(messages: list, *, window: int) -> dict[str, Any]:
 
     return {"tool_calls": len(fingerprints), "dup_count": dup_count, "dup_label": dup_label,
             "empty_count": empty_rounds,
-            "loose_count": loose_count, "loose_label": loose_label}
+            "loose_count": loose_count, "loose_label": loose_label, "poll_count": polls}
+
+
+def polling_reminder(jobs: list[Any]) -> str:
+    named = ", ".join(f"{job.id} ({job.title[:60]})" for job in jobs)
+    return (f'<system-reminder data-source="{REMINDER_TAG}">\n'
+            f"You are waiting for background jobs by polling (sleep, reading their output "
+            f"again, list_jobs). Circle will notify you when {named} ends, and starts a turn "
+            "for it when nothing else runs. End your turn instead of polling, or work on "
+            "something that does not need the result.\n</system-reminder>")
 
 
 def build_reminder(stats: dict[str, Any], *, dup_threshold: int, empty_threshold: int,
@@ -205,7 +237,8 @@ def build_reminder(stats: dict[str, Any], *, dup_threshold: int, empty_threshold
 
 class LoopGuardMiddleware(AgentMiddleware):
     def __init__(self, *, dup_threshold: int | None = None, empty_threshold: int | None = None,
-                 soft_budget: int | None = None, window: int | None = None) -> None:
+                 soft_budget: int | None = None, window: int | None = None,
+                 jobs: JobRegistry | None = None) -> None:
         self.dup_threshold = (dup_threshold if dup_threshold is not None
                               else _env_int("CIRCLE_LOOP_DUP_THRESHOLD", 3))
         self.empty_threshold = (empty_threshold if empty_threshold is not None
@@ -213,6 +246,23 @@ class LoopGuardMiddleware(AgentMiddleware):
         self.soft_budget = (soft_budget if soft_budget is not None
                             else _env_int("CIRCLE_LOOP_SOFT_BUDGET", 25))
         self.window = window if window is not None else _env_int("CIRCLE_LOOP_WINDOW", 8)
+        self.jobs = jobs
+
+    def _waited_on(self) -> list[Any]:
+        """Background jobs the model started in this conversation that still run."""
+        if self.jobs is None:
+            return []
+        try:
+            from langgraph.config import get_config
+
+            configurable = get_config().get("configurable") or {}
+        except RuntimeError:
+            return []
+        if configurable.get("ls_agent_type") == "subagent":
+            return []
+        thread = str(configurable.get("thread_id") or "")
+        return [job for job in self.jobs.list(thread)
+                if job.running and job.started_by == "model"]
 
     def before_model(self, state: Mapping[str, Any], runtime: Any) -> dict[str, Any] | None:
         if not _enabled():
@@ -229,9 +279,13 @@ class LoopGuardMiddleware(AgentMiddleware):
                     < self.window):
                 return None
             stats = analyze(messages, window=self.window)
-            text = build_reminder(stats, dup_threshold=self.dup_threshold,
-                                  empty_threshold=self.empty_threshold,
-                                  soft_budget=self.soft_budget)
+            waited = self._waited_on() if stats["poll_count"] >= _POLL_THRESHOLD else []
+            if waited:
+                text: str | None = polling_reminder(waited)
+            else:
+                text = build_reminder(stats, dup_threshold=self.dup_threshold,
+                                      empty_threshold=self.empty_threshold,
+                                      soft_budget=self.soft_budget)
         except Exception:
             logger.debug("loop_guard analysis failed; no reminder appended", exc_info=True)
             return None

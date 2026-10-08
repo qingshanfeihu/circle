@@ -10,15 +10,16 @@ Circle runs each tool call and adds the results to the conversation. If the mode
 
 Some tool calls stop the loop and wait for you. A command, a file change or a question from the model pauses the turn until you answer the card on screen. Circle then resumes exactly where it stopped. When several subagents ask at once, you answer them one after another and Circle resumes them all together.
 
-`esc` cancels the current turn. Circle checks for the cancel at every model and tool boundary. A shell command that is already running is not killed: it runs until it exits or times out.
+`esc` cancels the current turn. Circle checks for the cancel at every model and tool boundary, and a shell command that is running is ended with everything it started. [Background jobs](background-jobs.md) are not touched: they go on, and Circle tells the model when one ends, starting a turn for it when nothing else runs.
 
 ## Tools
 
-The main agent has seventeen built-in tools. See [Built-in tools](tools.md).
+The main agent has nineteen built-in tools. See [Built-in tools](tools.md).
 
 - Reading and searching: `ls`, `read_file`, `glob`, `grep`, `lsp`, `webfetch`, `websearch`
 - Changing things: `write_file`, `edit_file`, `apply_patch`, `delete`, `execute`
 - Working with you: `write_todos`, `question`
+- Background jobs: `list_jobs`, `stop_job`
 - Extending itself: `skill`, `task`, `compact_conversation`
 
 MCP servers and [extensions](extensions.md) add more.
@@ -47,6 +48,8 @@ When the conversation passes about 85% of the model's context window (170,000 to
 | `explore` | Read-only: search and read files and the web. It never asks for approval. |
 
 Several `task` calls in one message run at the same time. A strip below the input box shows each running subagent; `↓` selects one and `enter` opens its full record.
+
+With `background: true` a subagent runs as a [background job](background-jobs.md#background-subagents): the turn goes on, and its report reaches the model when it ends. Its approvals show as cards of their own.
 
 ## Safety
 

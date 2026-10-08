@@ -8,7 +8,7 @@ A message that looks like a command but is not one, such as `/modles`, is **not 
 
 Most commands wait until the turn ends and answer `Busy · wait for the current turn to finish`. These work at any time:
 
-`/help`, `/hotkeys`, `/exit`, `/yolo`, `/settings`, `/approvals`, `/session`, `/name`, `/tree`, `/themes`, `/thinking`, `/details`, `/copy`, `/export`, `/share`, `/unshare`, `/mcp` (listing only)
+`/help`, `/hotkeys`, `/exit`, `/yolo`, `/settings`, `/approvals`, `/jobs`, `/session`, `/name`, `/tree`, `/themes`, `/thinking`, `/details`, `/copy`, `/export`, `/share`, `/unshare`, `/mcp` (listing only)
 
 A [custom command](custom-commands.md) also works: it is queued like any message.
 
@@ -27,6 +27,7 @@ A [custom command](custom-commands.md) also works: it is queued like any message
 | `/undo` | | Undo the last turn on screen. |
 | `/redo` | | Bring it back. |
 | `/compact [hint]` | `/summarize` | Summarize older messages now. |
+| `/jobs` | `/tasks` | List the session's [background jobs](background-jobs.md), running ones first. `enter` opens a job's page with the end of its output; `ctrl+d` stops a running job (after asking) or removes one that has ended. |
 
 What these do and do not do is on [Sessions](sessions.md). Several have limits in this version.
 

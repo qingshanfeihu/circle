@@ -1,6 +1,6 @@
 # Built-in tools
 
-The main agent has these seventeen tools. MCP servers and [extensions](extensions.md) add more.
+The main agent has these nineteen tools. MCP servers and [extensions](extensions.md) add more.
 
 "Asks" means Circle shows an approval card before the call runs. See [Security](security.md).
 
@@ -24,7 +24,7 @@ The main agent has these seventeen tools. MCP servers and [extensions](extension
 | `edit_file` | Replace exact text in a file. Arguments: `file_path`, `old_string`, `new_string`, `replace_all`. | yes | |
 | `apply_patch` | Apply a multi-file patch in the `*** Begin Patch` format: add, update, move and delete files. | yes, and always when it deletes | Not atomic: if a later section fails, earlier ones stay applied. |
 | `delete` | Delete a file or a folder and everything in it. | always | |
-| `execute` | Run a shell command in the workspace. | yes | 120 seconds by default, up to an hour if the model asks. Output over 100,000 characters is cut. |
+| `execute` | Run a shell command in the workspace. With `background: true` it runs as a [background job](background-jobs.md) and returns at once. Standard output and standard error come back together, in the order they were written. | yes | A command still running at the default 120 seconds goes on as a background job; one the model gave a `timeout` (up to an hour) is ended at that time. Processes a command leaves running become a job. Output over 100,000 characters is cut. With `background`, `timeout` is the longest the job may run (up to a day). |
 
 ## Working with you
 
@@ -33,14 +33,26 @@ The main agent has these seventeen tools. MCP servers and [extensions](extension
 | `write_todos` | Keep the plan shown in the plan box. | no |
 | `question` | Ask you one or more questions with options, or ask for a secret. Your answers become the tool result. | no |
 
+## Background jobs
+
+See [Background jobs](background-jobs.md).
+
+| Tool | What it does | Asks |
+|---|---|---|
+| `list_jobs` | List this conversation's jobs: id, kind, state, time, what, and the file their output goes to. | no |
+| `stop_job` | Stop a running job with everything it started. | no |
+| `wait_jobs` | Wait until one of the given jobs ends (up to 600 seconds), and return how it ended. Only the `general-purpose` subagent has it: it cannot be woken by a notice. | no |
+
+`list_jobs` and `stop_job` come with `execute` or `task`: `--tools bash` keeps them, `--tools read` does not.
+
 ## Extending itself
 
 | Tool | What it does |
 |---|---|
 | `skill` | Load the full instructions of a [skill](skills.md) by name. |
-| `task` | Run a subagent (`general-purpose` or `explore`) and return its answer. See [How Circle works](how-circle-works.md#subagents). |
+| `task` | Run a subagent (`general-purpose` or `explore`) and return its answer. With `background: true` the subagent runs as a [background job](background-jobs.md#background-subagents) and its report comes as a notice. See [How Circle works](how-circle-works.md#subagents). |
 | `compact_conversation` | Summarize older messages now. Used by `/compact`. |
 
 ## Display
 
-Tool output in the conversation is shortened to a few lines; `ctrl+o` shows all of it. Very large results (over 80,000 characters) are saved in the data folder (`projects/<folder>-<id>/large_tool_results/`), and the model gets the start and end and a path, `/large_tool_results/…`, to read the rest.
+Tool output in the conversation is shortened to a few lines; `ctrl+o` shows all of it. Very large results (over 80,000 characters) are saved in the data folder (`projects/<folder>-<id>/large_tool_results/`), and the model gets the start and end and a path, `/large_tool_results/…`, to read the rest. A background job's output is kept the same way, under `background_jobs/`, and the model reads it at `/background_jobs/…`.

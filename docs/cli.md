@@ -78,6 +78,8 @@ Nobody can answer an approval card in print mode, so each call that would ask is
 - With `--yolo` it runs, except the calls Circle always asks about: deleting, `rm -rf`, force-push and the other cases listed in [Security](security.md). Those are still not run.
 - Commands the policy refuses (`sudo`, credential files) are refused as in a session.
 
+[Background jobs](background-jobs.md) the model started (commands, subagents, watches) are waited for after its answer: when one ends, the model gets its notice and answers again, and that answer is the one printed. The wait lasts up to `CIRCLE_JOB_WAIT` seconds (1800 by default, `0` does not wait); what still runs then is stopped, and standard error says so. Processes a command left running, usually servers, are stopped at once. Background subagents follow the same approval rule; standard error names their job.
+
 Print mode does not load MCP servers, extensions or custom commands. It does apply `credential_files`. The conversation is saved, so `circle -c` (with or without `-p`) can go on with it.
 
 | Exit code | When |
@@ -94,10 +96,13 @@ Print mode does not load MCP servers, extensions or custom commands. It does app
 | `type` | Fields | When |
 |---|---|---|
 | `session` | `id`, `workspace`, `model` | First. |
-| `turn_start` | `message` | Before each prompt is sent. |
+| `turn_start` | `message`, or `jobNotice` (the job ids) for a turn started for finished jobs | Before each prompt is sent. |
 | `assistant` | `id`, `text`, `tool_calls` (each `id`, `name`, `args`), `usage` (`input_tokens`, `output_tokens`) | Each time the model answers, with or without tool calls. |
 | `tool_result` | `id` (the call's), `name`, `status` (`success` or `error`), `output` | Each tool result. |
-| `not_run` | `name`, `args`, `reason` (`needs --yolo` or `always asks`) | A call that was not run because nobody can approve it. |
+| `not_run` | `name`, `args`, `reason` (`needs --yolo` or `always asks`), `job` for a background subagent's call | A call that was not run because nobody can approve it. |
+| `job` | `event` (`started`, `updated`, `ended`), `job` (`id`, `kind`, `title`, `status`, `reason`, `exitCode`, `startedBy`, `elapsed`, `output`, `sessionId`) | A [background job](background-jobs.md) started, changed or ended. |
+| `job_notice` | `jobs` (each `id`, `kind`, `title`, `status`, `reason`, `exit_code`, `elapsed_s`, `started_by`, `output_path`) | The model read the notice of jobs that ended, during a turn. |
+| `jobs_stopped` | `count`, `reason` | Jobs still running at the end were stopped. |
 | `turn_end` | `answer`, `usage` (this run so far) | When a prompt's turn ends. |
 | `error` | `message` | The run stopped. |
 
@@ -116,7 +121,7 @@ The exit codes are those of [print mode](#print-mode).
 {"type": "response", "command": "prompt", "success": true, "id": "1", "data": {"disposition": "started"}}
 ```
 
-The work a prompt starts is written as the [JSON events](#json-events) (without `session`), with a `steer` event when the model reads a steering message, and ends with `{"type": "agent_settled"}` once nothing more will run on its own. A command that fails has `"success": false` and an `error`; a line that is not JSON gets a `response` with `"command": "parse"`. Closing standard input lets the current turn finish, then Circle exits. The commands follow pi's RPC mode where Circle has the same thing:
+The work a prompt starts is written as the [JSON events](#json-events) (without `session`), with a `steer` event when the model reads a steering message, and ends with `{"type": "agent_settled"}` once nothing more will run on its own. When a [background job](background-jobs.md) the model started ends while nothing runs, Circle starts a turn for it (its `turn_start` has `jobNotice`), which also ends with `agent_settled`; after `abort` it waits for the next prompt instead. A command that fails has `"success": false` and an `error`; a line that is not JSON gets a `response` with `"command": "parse"`. Closing standard input lets the current turn finish, waits for jobs the model started as print mode does (up to `CIRCLE_JOB_WAIT`, not at all after an `abort`), stops the rest with a `jobs_stopped` event, then Circle exits. The commands follow pi's RPC mode where Circle has the same thing:
 
 | `type` | Fields | What it does |
 |---|---|---|
@@ -135,6 +140,8 @@ The work a prompt starts is written as the [JSON events](#json-events) (without 
 | `set_model` | `modelId` | Use another model for the rest of the process. Not while a turn runs. |
 | `set_thinking_level` | `level` | `minimal` … `max`, for the rest of the process. Not while a turn runs. |
 | `export_html` | `outputPath` | Write the conversation as HTML; `data.path`. |
+| `list_jobs` | | Every background job of the process: `data.jobs`, each as in the `job` event. |
+| `stop_job` | `jobId` | Stop a running job with everything it started; `data.job`. |
 
 Approvals are decided as in [print mode](#print-mode): without `--yolo`, calls that would ask are not run. `--model`, `--thinking`, `--tools`, `--system-prompt`, `--name`, `--session-id`, `--fork`, `-c` and `--no-session` apply as usual. Messages and `@files` on the command line are refused; send them as commands.
 
@@ -178,7 +185,7 @@ Line mode reads one prompt per line and prints each answer, all in one conversat
 printf 'Summarize README.md in one sentence\nNow list its sections\n' | circle ~/code/my-project
 ```
 
-Approvals follow the same rules as print mode, and `--yolo` and `--verbose` work the same way. Line mode needs a folder that is already trusted and settings that are already initialized, because it cannot show the setup screens without a terminal. It does not load MCP servers, extensions, or custom commands. `/exit` leaves and `/help` explains this. A line shaped like any other command, such as `/compact` or a misspelt one, is not sent: standard error says it works in the full-screen interface only, or is not a command. A path such as `/usr/bin/env is missing`, or a line that starts with a space, is sent as a message.
+Approvals follow the same rules as print mode, and `--yolo` and `--verbose` work the same way. When a [background job](background-jobs.md) ends, standard error says so (`circle: job j3 done · npm test`); the model reads its notice with your next line. Leaving stops the jobs still running and says how many. Line mode needs a folder that is already trusted and settings that are already initialized, because it cannot show the setup screens without a terminal. It does not load MCP servers, extensions, or custom commands. `/exit` leaves and `/help` explains this. A line shaped like any other command, such as `/compact` or a misspelt one, is not sent: standard error says it works in the full-screen interface only, or is not a command. A path such as `/usr/bin/env is missing`, or a line that starts with a space, is sent as a message.
 
 ## Exit codes
 

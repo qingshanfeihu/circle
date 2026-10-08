@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1] / "circle"
 RENDER_FILES: tuple[Path, ...] = tuple(sorted((ROOT / "ink" / "components").glob("*.py"))) + tuple(
     ROOT / "tui" / name for name in (
         "session_app.py", "agent_strip.py", "agent_detail.py", "transcript_view.py", "content_blocks.py",
-        "slash_commands.py", "harness_bridge.py"))
+        "slash_commands.py", "harness_bridge.py", "job_rows.py"))
 # theme.py 是取色唯一真源；dialog_frame.py 的彩虹渐变是唯一登记的例外
 WHITELIST = frozenset({ROOT / "ink" / "theme.py", ROOT / "ink" / "components" / "dialog_frame.py"})
 COLOR_FILES = tuple(p for p in RENDER_FILES if p not in WHITELIST)

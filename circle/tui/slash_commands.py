@@ -29,6 +29,7 @@ BUILTIN_SLASH: tuple[SlashCommand, ...] = (
     SlashCommand("mcp", "List / reload MCP servers and tools"),
     SlashCommand("extensions", "List extensions: /extensions [reload]", aliases=("ext",)),
     SlashCommand("approvals", "Session approvals: /approvals [revoke N]"),
+    SlashCommand("jobs", "Background jobs: open one, or stop it", aliases=("tasks",)),
     SlashCommand("new", "Start a new session", aliases=("clear",)),
     SlashCommand(
         "resume",
@@ -157,6 +158,7 @@ def hotkeys_text() -> str:
             "  ctrl+c          abort turn; clear the prompt; on an empty prompt twice to exit",
             "  ctrl+d          exit (with an empty prompt; otherwise delete forward)",
             "  ctrl+z          suspend to the shell; fg comes back",
+            "  ctrl+b          move a running command to the background (/jobs lists them)",
             "  \\ enter         line break (also shift+enter, ctrl+j)",
             "  ctrl+t          expand/collapse thinking",
             "  ctrl+o          expand/collapse tool output",

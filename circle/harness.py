@@ -31,6 +31,9 @@ except ImportError:  # pragma: no cover - the key has had this value since langg
 from circle.approvals import ApprovalPolicy, default_policy
 from circle.context_middleware import build_context_middleware
 from circle.host_paths import install_tilde_expansion
+from circle.job_agents import BackgroundTaskMiddleware
+from circle.job_tools import CircleFilesystemMiddleware, build_job_tools
+from circle.jobs import JobRegistry
 from circle.mcp_loader import load_mcp_tools_sync
 from circle.memory_sources import memory_source_paths
 from circle.middleware import (
@@ -41,6 +44,7 @@ from circle.middleware import (
     ToolResultPruneMiddleware,
 )
 from circle.middleware.cancellation import CancellationMiddleware
+from circle.middleware.job_notice import JobNoticeMiddleware
 from circle.middleware.steering import SteeringMiddleware
 from circle.middleware.tool_selection import ToolSelectionMiddleware
 from circle.paths import project_data_dir
@@ -75,13 +79,13 @@ GATED_TOOLS = ("execute", "write_file", "edit_file", "apply_patch", "delete")
 
 # explore 子代理只拿只读工具：文件系统只留读类，额外工具只留不改状态的
 EXPLORE_FS_TOOLS = ["ls", "read_file", "glob", "grep"]
-EXPLORE_EXTRA_TOOLS = frozenset({"webfetch", "websearch", "lsp", "skill"})
+EXPLORE_EXTRA_TOOLS = frozenset({"webfetch", "websearch", "lsp", "skill", "list_jobs"})
 
 # 内置工具名：扩展不得占用（deepagents 自带 + circle extras + /compact 工具）
 BUILTIN_TOOL_NAMES = frozenset({
     "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "write_todos",
     "task", "compact_conversation", "webfetch", "question", "skill", "websearch", "lsp",
-    "apply_patch",
+    "apply_patch", "list_jobs", "stop_job", "wait_jobs",
 })
 
 _PROFILE_KEYS = (
@@ -154,6 +158,7 @@ def create_harness(
     approvals: ApprovalPolicy | None = None,
     ask_user: bool = False,
     run_options: RunOptions | None = None,
+    jobs: JobRegistry | None = None,
 ):
     """Build harness with file/shell tools, explore subagent, and prompt-backed extras.
 
@@ -169,6 +174,9 @@ def create_harness(
 
     ``run_options``: what the command line chose for this run: a replaced or extended
     system prompt, no AGENTS.md / CLAUDE.md, and which tools the model gets.
+
+    ``jobs``: the session's background jobs, kept across agent rebuilds; a private registry
+    is made when none is given.
     """
     _ensure_tool_description_profiles()
 
@@ -214,6 +222,12 @@ def create_harness(
     else:
         mcp_tools = []
     backend = sandbox_backend(root_dir, plan_mode=plan_mode, home=home)
+    jobs = jobs if jobs is not None else JobRegistry()
+    backend.bind_jobs(jobs)
+    descriptions = collect_tool_description_overrides()
+    job_tools = build_job_tools(jobs, {name: load_tool_prompt(name) or ""
+                                       for name in ("list_jobs", "stop_job", "wait_jobs")})
+    tools.extend(job_tools[name] for name in ("list_jobs", "stop_job"))
     policy = approvals or default_policy(home)
     # 禁止类命令在后端拒绝执行：主代理与子代理共用这个后端，一处拦住全部
     backend.command_guard = policy.deny_message
@@ -233,13 +247,17 @@ def create_harness(
     # slots into its automatically created general-purpose agent.
     general_purpose: dict[str, Any] = {
         **GENERAL_PURPOSE_SUBAGENT,
-        "middleware": [CancellationMiddleware()],
+        # Its execute can run in the background too (deepagents swaps this in by name)
+        "middleware": [CircleFilesystemMiddleware(backend=backend,
+                                                  custom_tool_descriptions=descriptions),
+                       CancellationMiddleware()],
     }
     if skills:
         general_purpose["skills"] = skills
     subagents: list[dict[str, Any]] = [general_purpose, explore]
     extension_middleware: list[Any] = []
     if extensions is not None:
+        extensions.bind_jobs(jobs)
         taken = {getattr(t, "name", None) for t in tools} | set(BUILTIN_TOOL_NAMES)
         for tool in extensions.tools():
             if tool.name in taken:
@@ -283,13 +301,25 @@ def create_harness(
     extra_mw.extend(extension_middleware)
     # Messages typed during the turn go in before the next model call.
     extra_mw.append(SteeringMiddleware())
+    # Finished background jobs are told to the model before its next call.
+    extra_mw.append(JobNoticeMiddleware(jobs))
     # Persist an occasional plan reminder after tool results. Its before_model
     # hook leaves a durable message instead of changing only the model request.
     extra_mw.append(PlanTailMiddleware())
-    extra_mw.append(LoopGuardMiddleware())
+    extra_mw.append(LoopGuardMiddleware(jobs=jobs))
+    # task gains background (main agent only: a subagent cannot start a background one)
+    background_tasks = BackgroundTaskMiddleware(jobs)
+    extra_mw.append(background_tasks)
     if options.limits_tools():
         extra_mw.append(ToolSelectionMiddleware(allowed=options.tools,
                                                 excluded=options.exclude_tools))
+    # Replaces deepagents' own filesystem middleware in its place (by name): execute gains
+    # background
+    extra_mw.append(CircleFilesystemMiddleware(backend=backend,
+                                               custom_tool_descriptions=descriptions))
+
+    # Subagents cannot be woken by a notice, so the general-purpose one may wait for jobs
+    general_purpose["tools"] = [*tools, job_tools["wait_jobs"]]
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -319,10 +349,14 @@ def create_harness(
         compat.bind(agent.nodes["tools"].bound.tools_by_name.values())
     except Exception:
         logger.debug("tool table unavailable for tool-call repair", exc_info=True)
+    # The compatibility layer checks task calls against the schema with background
+    compat.bind(background_tasks.bind(agent, policy=policy))
     try:
         agent._circle_backend = backend  # type: ignore[attr-defined]
         agent._circle_approvals = policy  # type: ignore[attr-defined]
         agent._circle_mcp_tools = mcp_tools  # type: ignore[attr-defined]
+        agent._circle_jobs = jobs  # type: ignore[attr-defined]
+        agent._circle_background_tasks = background_tasks  # type: ignore[attr-defined]
     except Exception:
         logger.debug("Circle harness metadata unavailable", exc_info=True)
     return agent

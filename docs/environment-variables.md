@@ -13,6 +13,13 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 | `CIRCLE_NO_UPDATE_CHECK` | `1`, `true` or `yes` turns off the daily [update reminder](cli.md#the-reminder). | unset |
 | `VISUAL`, `EDITOR` | Used by `/editor`. Falls back to `nvim`, `vim`, `nano`, then `notepad` on Windows. | unset |
 
+## Background jobs
+
+| Variable | Effect | Default |
+|---|---|---|
+| `CIRCLE_JOB_WAIT` | How many seconds print mode (and RPC mode, when its input ends) waits after its answer for [background jobs](background-jobs.md) the model started. What still runs then is stopped. `0` does not wait. | `1800` |
+| `CIRCLE_JOB_OUTPUT_LIMIT_MB` | A background job that writes more output than this is stopped. Also applies to a command in the foreground. | `1024` |
+
 ## Model requests
 
 | Variable | Effect | Default |
@@ -36,6 +43,8 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 | `CIRCLE_LOOP_WINDOW` | Minimum model replies between reminders. | `8` |
 | `CIRCLE_PRUNE_TOOL_OUTPUTS` | `0`, `false`, `no` or `off` turns off pruning of old tool output. | on |
 | `CIRCLE_PRUNE_PROTECT_TOKENS` | How much recent output stays untouched by pruning. | `40000` |
+
+While background jobs the model started are running, two calls that only wait for them (a bare `sleep`, reading a job's output again, `list_jobs`) are enough for a reminder that names the jobs; the thresholds above do not change that.
 
 ## Terminal
 

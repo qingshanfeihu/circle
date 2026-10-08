@@ -14,7 +14,7 @@ To point at a file, write `@` and part of its path. The files it can mean are li
 
 ## Run a command yourself
 
-Start a message with `!` to run a shell command yourself, without a card: `!git diff`, `!pytest -q`. It is drawn like Circle's own Bash calls, `esc` stops it, and its output becomes part of the conversation, so the model sees it with your next message. No turn starts. `!!command` runs it and shows the output to you only.
+Start a message with `!` to run a shell command yourself, without a card: `!git diff`, `!pytest -q`. It is drawn like Circle's own Bash calls, `esc` stops it, and its output becomes part of the conversation, so the model sees it with your next message. No turn starts. `!!command` runs it and shows the output to you only. `ctrl+b` moves it to the background (`/jobs` lists it); its output joins the conversation when it ends.
 
 These commands follow the same refusals as the model's: `sudo` and credential files are refused, and nothing runs in `read-only` mode. Messages you send while one runs are queued.
 
@@ -33,7 +33,7 @@ What each approval option does is explained in [Security](security.md#approvals)
 
 ## Interrupt
 
-Press `esc` to stop a turn. Circle marks it `✖ Interrupted` and puts back any message you were typing. A shell command that is running is ended, with everything it started, within a fraction of a second (not on Windows yet: there it keeps going until it finishes or times out). `ctrl+c` also stops a turn. When Circle is idle, `ctrl+c` clears what you typed, and on an empty box twice exits. `ctrl+z` suspends Circle; `fg` in the shell brings it back.
+Press `esc` to stop a turn. Circle marks it `✖ Interrupted` and puts back any message you were typing. A shell command that is running is ended, with everything it started, within a fraction of a second (on Windows with `taskkill`, not yet tried on a real machine). [Background jobs](background-jobs.md) keep running; a job that ends after you stopped the turn waits for your next message instead of starting a turn. `ctrl+c` also stops a turn. `ctrl+b` moves the command being waited on to the background instead of stopping it. When Circle is idle, `ctrl+c` clears what you typed, and on an empty box twice exits. `ctrl+z` suspends Circle; `fg` in the shell brings it back.
 
 ## Steer a running turn
 
