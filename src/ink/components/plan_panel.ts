@@ -32,21 +32,27 @@ export class PlanPanel {
     this.start = planStart(this.todos);
   }
 }
+// `activity`: whether a turn is working on the plan now. The item in progress blinks yellow
+// only while a turn runs, is cyan while the turn waits for you, and is unlit when nothing
+// runs (the contract's "unlit: not running"), so a finished conversation shows no work.
 export function planRows(
   todos: Todo[],
   width: number,
   start = planStart(todos),
+  activity: 'running' | 'wait' | 'idle' = 'running',
 ): string[] {
   if (!todos.length) return [];
   const p = palette();
   start = Math.max(0, Math.min(start, todos.length - PLAN_ROWS));
   const shown = todos.slice(start, start + PLAN_ROWS);
   const done = todos.filter((todo) => todo.status === 'completed').length;
-  const lamp = todos.some((todo) => todo.status === 'in_progress')
-    ? 'running'
-    : done === todos.length
+  const working = activity === 'idle' ? 'none' : activity;
+  const lamp =
+    done === todos.length
       ? 'ok'
-      : 'none';
+      : todos.some((todo) => todo.status === 'in_progress')
+        ? working
+        : 'none';
   const title = `${lamp === 'none' ? ' ' : ` ${statusLight(lamp)} `}Plan ${done}/${todos.length} `;
   const rows = [
     p.line +
@@ -61,7 +67,7 @@ export function planRows(
       todo.status === 'completed'
         ? 'ok'
         : todo.status === 'in_progress'
-          ? 'running'
+          ? working
           : 'none';
     const color =
       todo.status === 'completed'

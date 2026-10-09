@@ -214,6 +214,10 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
   for (const shell of localShells.filter((shell) => !shell.anchor))
     shellRows(shell);
   const agents = taskAgents(messages, state.subagents ?? []);
+  // The reply a running turn is working on: the newest one with tool calls.
+  const newestReply = messages.findLast(
+    (message) => message.role === 'assistant' && message.tool_calls?.length,
+  );
   for (const message of messages) {
     if (message.shell) {
       if (!localIds.has(message.id))
@@ -247,16 +251,17 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
           (message) =>
             message.role === 'tool' && message.tool_call_id === call.id,
         );
+        // A call left without a result by a turn that has ended (interrupted, or a
+        // session from an older version) is not running: its lamp stays unlit.
+        const live = state.agentDetail
+          ? ['running', 'waiting'].includes(state.agentDetail.state)
+          : (state.busy || state.waiting) && message === newestReply;
         const pending =
-          result ||
-          (state.agentDetail &&
-            !['running', 'waiting'].includes(state.agentDetail.state))
+          result || !live || !first
             ? 'none'
-            : !first
-              ? 'none'
-              : state.waiting
-                ? 'wait'
-                : 'running';
+            : state.waiting
+              ? 'wait'
+              : 'running';
         if (!result) first = false;
         if (HIDDEN_TOOLS.has(call.name)) continue;
         gap('tool');
@@ -382,7 +387,14 @@ export function renderScreen(
     );
   const strip = stripRows(state, width, height);
   if (!state.dialog && state.todos.length) {
-    bottom.push(...planRows(state.todos, width, state.planStart));
+    bottom.push(
+      ...planRows(
+        state.todos,
+        width,
+        state.planStart,
+        state.waiting ? 'wait' : state.busy ? 'running' : 'idle',
+      ),
+    );
   }
   // Above the input box: the compaction under way, then the messages waiting to be read.
   if (state.compaction) bottom.push(compactionRow(state.compaction, width));
