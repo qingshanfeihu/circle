@@ -439,23 +439,31 @@ test('the welcome block draws the ring in its own colours, lamps that follow the
     return logoRows();
   });
   assert.deepEqual(logos[0], logos[1]);
-  assert.deepEqual(logos[0]!.map(stripAnsi), [
-    '  ▄▟████▙▄  ',
-    '▗██▀    ▀██▖',
-    '██▘      ▝██',
-    '██▖      ▗██',
-    '▝██▄    ▄██▘',
-    '  ▀▜████▛▀  ',
-  ]);
-  // Blue at the top, as logo.svg draws it.
-  assert.ok(logos[0]![0]!.includes('\x1b[38;2;'));
+  // logo.svg's ring in three rows of sextants (two by three sub-cells a cell).
+  assert.deepEqual(logos[0]!.map(stripAnsi), ['🬞🬚🬆🬂🬊🬩🬏', '█     █', '🬁🬌🬱🬭🬵🬍🬀']);
+  assert.ok(logos[0]!.every((row) => stringWidth(stripAnsi(row)) === 7));
+  // Blue at the top, red at the bottom, purple on the right and orange on the left, as
+  // logo.svg draws them; each cell in one colour.
+  const colour = (row: number, cell: number): number[] => {
+    const codes = [...logos[0]![row]!.matchAll(/38;2;(\d+);(\d+);(\d+)m/g)];
+    return codes[cell]!.slice(1, 4).map(Number);
+  };
+  const [topR, , topB] = colour(0, 3);
+  assert.ok(topB! > topR!, 'blue at the top');
+  const [bottomR, , bottomB] = colour(2, 3);
+  assert.ok(bottomR! > bottomB!, 'red at the bottom');
+  const [leftR, , leftB] = colour(1, 0);
+  assert.ok(leftR! > leftB!, 'orange on the left');
+  const [, rightG, rightB] = colour(1, 1);
+  assert.ok(rightB! > rightG!, 'purple on the right');
   for (const [, p] of PALETTES) {
     setPalette(p);
     const rows = welcomeRows(90, welcomeInfo());
     const plain = rows.map(stripAnsi);
-    assert.match(plain[1]!, /circle 1\.0\.0$/);
-    assert.match(plain[2]!, /glm-5\.3 • high · open\.bigmodel\.cn$/);
-    assert.match(plain[3]!, /~\/code\/project \(main\)$/);
+    // the version, the model and the folder beside the three rows of the ring
+    assert.match(plain[0]!, /circle 1\.0\.0$/);
+    assert.match(plain[1]!, /glm-5\.3 • high · open\.bigmodel\.cn$/);
+    assert.match(plain[2]!, /~\/code\/project \(main\)$/);
     const at = (kind: string) =>
       rows.findIndex((row) => stripAnsi(row).includes(kind));
     assert.ok(rows[at('instructions')]!.includes(p.green + '●'));
@@ -489,7 +497,7 @@ test('the welcome block draws the ring in its own colours, lamps that follow the
     coloursFrom(p, rows.slice(LOGO_ROWS_SKIP).join('\n'));
   }
 });
-const LOGO_ROWS_SKIP = 7;
+const LOGO_ROWS_SKIP = 4;
 
 test('the welcome lists what the folder brings, unlit until trusted, blinking while it loads and green once loaded', (t) => {
   const root = scratch(t);

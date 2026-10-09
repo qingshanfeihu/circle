@@ -17,9 +17,12 @@ import {
 } from '../theme.js';
 import { stringWidth, truncate } from '../string_width.js';
 
-export const LOGO_ROWS = 6; // the ring is this tall and twice as many columns wide
+export const LOGO_ROWS = 3; // the ring is this tall
+export const LOGO_COLUMNS = 7; // and this wide: a cell is about twice as tall as it is wide
 export const LOGO_MIN_WIDTH = 50; // narrower than this, the welcome is text only
-const RING_INNER = 0.66; // inner radius / outer radius, thickened for the coarse grid
+// logo.svg's ring: radius 44 with a 14 wide stroke.
+const RING_OUTER = 51;
+const RING_INNER = 37;
 // The logo's own stops: the frame's colours at the quarters, as logo.svg draws them.
 const LOGO_STOPS: [number, RGB][] = [
   ...[0, 1, 2, 3].map((index): [number, RGB] => [
@@ -28,25 +31,17 @@ const LOGO_STOPS: [number, RGB][] = [
   ]),
   [1, GRADIENT_STOPS[0]![1]],
 ];
-// Quadrant blocks by which sub-cells are on: top-left 8, top-right 4, bottom-left 2,
-// bottom-right 1.
-const QUADRANTS: Record<number, string> = {
-  8: '▘',
-  4: '▝',
-  2: '▖',
-  1: '▗',
-  12: '▀',
-  3: '▄',
-  10: '▌',
-  5: '▐',
-  9: '▚',
-  6: '▞',
-  14: '▛',
-  13: '▜',
-  11: '▙',
-  7: '▟',
-  15: '█',
-};
+// A sextant: two columns and three rows of sub-cells, bit 1 top left, 2 top right, 4 and 8
+// in the middle, 16 and 32 at the bottom (Symbols for Legacy Computing, in Unicode's order;
+// the two half blocks and the full block were already encoded).
+function sextant(bits: number): string {
+  if (bits === 63) return '█';
+  if (bits === 21) return '▌';
+  if (bits === 42) return '▐';
+  return String.fromCodePoint(
+    0x1fb00 + bits - 1 - (bits > 21 ? 1 : 0) - (bits > 42 ? 1 : 0),
+  );
+}
 
 function gradient(u: number): RGB {
   const at = ((u % 1) + 1) % 1;
@@ -62,43 +57,40 @@ function gradient(u: number): RGB {
 }
 
 let ring: { bits: number; colour?: RGB }[][] | undefined;
-// The ring as quadrant cells. A cell is about twice as tall as it is wide, so a grid twice
-// as wide as it is tall draws a round ring.
+// The ring as sextant cells: a sub-cell is lit when the ring covers at least half of it, and
+// a cell takes the mean colour of its lit sub-cells. The colours are the logo's own, so the
+// cells can be kept; nothing here depends on the palette.
 function ringCells(): { bits: number; colour?: RGB }[][] {
   if (ring) return ring;
-  const rows = LOGO_ROWS;
-  const cols = LOGO_ROWS * 2;
-  const samples = 8;
+  const across = LOGO_COLUMNS * 2;
+  const down = LOGO_ROWS * 3;
+  const samples = 12;
   ring = [];
-  for (let r = 0; r < rows; r++) {
+  for (let r = 0; r < LOGO_ROWS; r++) {
     const line: { bits: number; colour?: RGB }[] = [];
-    for (let c = 0; c < cols; c++) {
+    for (let c = 0; c < LOGO_COLUMNS; c++) {
       let bits = 0;
       const colours: RGB[] = [];
-      [
-        [0, 0],
-        [1, 0],
-        [0, 1],
-        [1, 1],
-      ].forEach(([qx, qy], quadrant) => {
-        let hit = 0;
-        const sum = [0, 0, 0];
-        for (let sy = 0; sy < samples; sy++)
-          for (let sx = 0; sx < samples; sx++) {
-            const x = -1 + (2 * c + qx! + (sx + 0.5) / samples) / cols;
-            const y = -1 + (2 * r + qy! + (sy + 0.5) / samples) / rows;
-            const radius = Math.hypot(x, y);
-            if (radius >= RING_INNER && radius <= 1) {
-              hit++;
-              const rgb = gradient(Math.atan2(x, -y) / (2 * Math.PI));
-              for (let k = 0; k < 3; k++) sum[k]! += rgb[k]!;
+      for (let j = 0; j < 3; j++)
+        for (let i = 0; i < 2; i++) {
+          let hit = 0;
+          const sum = [0, 0, 0];
+          for (let sy = 0; sy < samples; sy++)
+            for (let sx = 0; sx < samples; sx++) {
+              const x = -1 + (2 * (2 * c + i + (sx + 0.5) / samples)) / across;
+              const y = -1 + (2 * (3 * r + j + (sy + 0.5) / samples)) / down;
+              const radius = Math.hypot(x, y) * RING_OUTER;
+              if (radius >= RING_INNER && radius <= RING_OUTER) {
+                hit++;
+                const rgb = gradient(Math.atan2(x, -y) / (2 * Math.PI));
+                for (let k = 0; k < 3; k++) sum[k]! += rgb[k]!;
+              }
             }
+          if (hit * 2 >= samples * samples) {
+            bits |= 1 << (j * 2 + i);
+            colours.push(sum.map((value) => value / hit) as RGB);
           }
-        if (hit * 2 >= samples * samples) {
-          bits |= 8 >> quadrant;
-          colours.push(sum.map((value) => value / hit) as RGB);
         }
-      });
       line.push({
         bits,
         colour: colours.length
@@ -116,14 +108,14 @@ function ringCells(): { bits: number; colour?: RGB }[][] {
   return ring;
 }
 
-// The ring, `LOGO_ROWS` rows of `2 * LOGO_ROWS` columns.
+// The ring, `LOGO_ROWS` rows of `LOGO_COLUMNS` columns.
 export function logoRows(): string[] {
   const reset = palette().reset;
   return ringCells().map(
     (line) =>
       line
         .map(({ bits, colour }) =>
-          bits && colour ? rgbSgr(colour) + QUADRANTS[bits] : reset + ' ',
+          bits && colour ? rgbSgr(colour) + sextant(bits) : reset + ' ',
         )
         .join('') + reset,
   );
@@ -185,7 +177,7 @@ export function welcomeRows(width: number, info: WelcomeInfo): string[] {
   ];
   const rows: string[] = [];
   if (withLogo) {
-    const beside = ['', ...identity];
+    const beside = identity;
     logoRows().forEach((logo, index) => {
       const text = beside[index] ?? '';
       rows.push(text ? `  ${logo}   ${text}` : `  ${logo}`);

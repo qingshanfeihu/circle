@@ -72,7 +72,7 @@ Every session starts with a welcome block at the top of the conversation. It is 
    … +6 more · /resume
 ```
 
-- **The logo** is Circle's rainbow ring, drawn in the terminal's own cells. Beside it: the version, the model and the endpoint it runs on (`not connected yet` while setup is asking), the folder and its git branch.
+- **The logo** is Circle's rainbow ring, three rows tall, drawn with the sextant block characters of Unicode 13 (a font without them shows boxes instead). Beside it: the version, the model and the endpoint it runs on (`not connected yet` while setup is asking), the folder and its git branch.
 - **What the folder brings**: its instruction files (`AGENTS.md`, `CLAUDE.md` and the like), skills (including `.agents/skills` up to the git root), custom commands, extensions and project settings. Each row has a lamp: unlit before you trust the folder, yellow and blinking while Circle loads it, green once loaded. The extensions row turns red when one failed to load, with the reason under it. Only what the folder itself holds is listed, not your own skills, commands or extensions. A folder that holds none of these shows no rows.
 - **recent**: the folder's three most recently used other sessions and how long ago. More are folded into `… +N more · /resume`.
 
