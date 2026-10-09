@@ -43,7 +43,12 @@ import {
   type PickerOptions,
 } from '../ink/components/picker.js';
 import { welcomeRows } from '../ink/components/welcome.js';
-import { renderScreen, transcriptRows, type ScreenState } from './render.js';
+import {
+  renderScreen,
+  transcriptRows,
+  type ScreenCursor,
+  type ScreenState,
+} from './render.js';
 import { InputHistory } from './input_history.js';
 import { Composer } from './composer.js';
 import { TranscriptFind } from './transcript_find.js';
@@ -417,13 +422,15 @@ export class SessionApp {
       };
     }
     this.syncStatus();
+    const cursor: { value?: ScreenCursor } = {};
     const rows = renderScreen(
       this.state,
       process.stdout.columns || 80,
       process.stdout.rows || 24,
+      cursor,
     );
     this.frameRows = rows;
-    this.screen.render(this.selection.frame(rows, this.state));
+    this.screen.render(this.selection.frame(rows, this.state), cursor.value);
   }
   // The header, the welcome and the window title follow the session.
   private syncStatus(): void {

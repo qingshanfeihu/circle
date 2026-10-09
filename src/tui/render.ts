@@ -14,7 +14,12 @@ import {
   markdownRows,
   terminalText,
 } from '../ink/components/markdown_renderer.js';
-import { completionRows, draftLines, type Completion } from './composer.js';
+import {
+  completionRows,
+  draftCursor,
+  draftLines,
+  type Completion,
+} from './composer.js';
 import { loopFrame } from '../ink/components/loop_frame.js';
 import {
   busyLabel,
@@ -389,15 +394,22 @@ function stripRows(
   );
   return { rows, ids: visible.map((agent) => agent.id) };
 }
+export interface ScreenCursor {
+  /** 1-based screen row and column. */
+  row: number;
+  col: number;
+}
 export function renderScreen(
   state: ScreenState,
   width: number,
   height: number,
+  cursor?: { value?: ScreenCursor },
 ): string[] {
   width = Math.max(12, width);
   height = Math.max(8, height);
   const p = palette();
   const bottom: string[] = [];
+  let cursorInBottom: { index: number; col: number } | undefined;
   if (state.picker)
     bottom.push(
       ...state.picker.rows(width, Math.max(3, Math.floor(height / 3))),
@@ -463,11 +475,20 @@ export function renderScreen(
       modeSgr,
     });
     bottom.push(frame.top);
+    const draftStart = bottom.length;
     for (const line of draftLines(state, width, height))
       bottom.push(
         frame.left + p.text + pad(line, width - 2) + p.reset + frame.right,
       );
     bottom.push(frame.bottom);
+    // The real cursor parks on the composer's own: the IME anchors its candidates there.
+    if (cursor) {
+      const at = draftCursor(state, width, height);
+      cursorInBottom = {
+        index: draftStart + at.row,
+        col: at.col + 2, // the frame's left border, then the cell within the line; 1-based
+      };
+    }
   }
   const searchStatus =
     state.find?.status ??
@@ -597,6 +618,15 @@ export function renderScreen(
     ? { row: Math.min(rows.length, height) - strip.length + 1, ids: stripIds }
     : undefined;
   // A row never runs past the edge: on a very narrow screen even a status row is cut.
+  if (cursor && cursorInBottom) {
+    const index =
+      rows.length -
+      bottom.length +
+      cursorInBottom.index -
+      Math.max(0, rows.length - height);
+    if (index >= 0 && index < Math.min(rows.length, height))
+      cursor.value = { row: index + 1, col: cursorInBottom.col };
+  }
   return rows
     .slice(-height)
     .map((row) => pad(truncateStyled(row, width), width));
