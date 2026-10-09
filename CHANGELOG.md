@@ -4,6 +4,11 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Changed
+
+- **`circle update` shows how far the download has got**, on one line that redraws itself: `downloading circle-1.1.0-darwin-arm64.tar.gz  45%  23.6/52.4 MB  9.6 MB/s`. It downloads the release itself and hands the file to the installer, so this works the same on Windows. `ctrl+c` stops it and leaves nothing behind, and a download that gets no data for a minute stops by itself. The update from 1.0.3 or older to this version still downloads without it, because the version you have does the download.
+- **The installer says each step**: verifying the download, unpacking, checking the release, copying it, and which old versions it removed. On a terminal, `install.sh` shows curl's progress bar for its own download.
+
 ## 1.0.3 - 2026-10-09
 
 ### Changed

@@ -6,6 +6,7 @@ temporary=""
 cleanup() { [[ -z "$temporary" ]] || rm -rf -- "$temporary"; }
 trap cleanup EXIT
 fail() { printf '[circle-install] %s\n' "$*" >&2; exit 1; }
+say() { printf '[circle-install] %s\n' "$*"; }
 for command in curl tar; do command -v "$command" >/dev/null || fail "Missing command: $command"; done
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'Invalid repository'
 
@@ -34,9 +35,13 @@ if [[ -n "${CIRCLE_ASSET_DIR:-}" ]]; then
   cp -- "$CIRCLE_ASSET_DIR/$asset.sha256" "$archive.sha256"
 else
   base="https://github.com/$repo/releases/download/v$version"
-  curl --proto '=https' --tlsv1.2 -fsSL "$base/$asset" -o "$archive"
+  say "downloading $asset"
+  # A bar of how far it has got, on a terminal.
+  if [[ -t 2 ]]; then progress=(--progress-bar); else progress=(-s); fi
+  curl --proto '=https' --tlsv1.2 -fSL "${progress[@]}" "$base/$asset" -o "$archive"
   curl --proto '=https' --tlsv1.2 -fsSL "$base/$asset.sha256" -o "$archive.sha256"
 fi
+say 'verifying the download'
 expected="$(awk -v name="$asset" '$2 == name && length($1) == 64 { print $1 }' "$archive.sha256")"
 [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || fail 'Invalid checksum receipt'
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$archive" | awk '{print $1}')"
@@ -50,6 +55,7 @@ while IFS= read -r entry; do
 done < "$temporary/entries"
 tar -tvzf "$archive" > "$temporary/types"
 while IFS= read -r entry; do [[ "${entry:0:1}" == '-' || "${entry:0:1}" == 'd' ]] || fail 'Archive links and special files are not allowed'; done < "$temporary/types"
+say 'unpacking'
 tar -xzf "$archive" -C "$temporary"
 root="$temporary/circle"
 [[ -x "$root/runtime/node" && -f "$root/app/dist/install_manager.js" ]] || fail 'Incomplete release'

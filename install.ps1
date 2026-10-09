@@ -26,9 +26,11 @@
             Copy-Item -LiteralPath (Join-Path $env:CIRCLE_ASSET_DIR "$asset.sha256") -Destination "$archive.sha256"
         } else {
             $base = "https://github.com/$repo/releases/download/v$version"
+            Write-Host "[circle-install] downloading $asset"
             Invoke-WebRequest -Uri "$base/$asset" -OutFile $archive @web
             Invoke-WebRequest -Uri "$base/$asset.sha256" -OutFile "$archive.sha256" @web
         }
+        Write-Host '[circle-install] verifying the download'
         $receipt = (Get-Content -LiteralPath "$archive.sha256" -Raw).Trim()
         if ($receipt -notmatch ('^([0-9a-fA-F]{64})\s+' + [regex]::Escape($asset) + '$')) { throw 'Invalid checksum receipt' }
         $expected = $Matches[1]
@@ -47,6 +49,7 @@
                 if ($kind -ne 0 -and $kind -ne 0x8000 -and $kind -ne 0x4000) { throw 'Archive links and special files are not allowed' }
             }
         } finally { $zip.Dispose() }
+        Write-Host '[circle-install] unpacking'
         [IO.Compression.ZipFile]::ExtractToDirectory($archive, $temporary)
         $root = Join-Path $temporary 'circle'
         $node = Join-Path $root 'runtime\node.exe'

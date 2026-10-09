@@ -169,10 +169,15 @@ export function activateRelease(
   return manifest;
 }
 // Checks the release, runs it once and copies it under versions/. Nothing that selects the
-// running version changes.
-export function stageRelease(root: string, prefix: string): ReleaseManifest {
+// running version changes. `say` hears each step.
+export function stageRelease(
+  root: string,
+  prefix: string,
+  say: (step: string) => void = () => {},
+): ReleaseManifest {
   root = realpathSync(root);
   prefix = resolve(prefix);
+  say('checking the release');
   const manifest = validateRelease(root);
   const nodePath = join(
     root,
@@ -208,6 +213,7 @@ export function stageRelease(root: string, prefix: string): ReleaseManifest {
       throw new Error('installed version conflicts with this release');
   } else {
     const stage = join(versions, '.staging-' + randomUUID());
+    say(`copying circle ${manifest.version} to ${destination}`);
     try {
       cpSync(root, stage, { recursive: true, errorOnExist: true });
       validateRelease(stage);

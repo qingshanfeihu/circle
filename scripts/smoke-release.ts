@@ -244,7 +244,7 @@ try {
     CIRCLE_BIN_DIR: bin,
     CIRCLE_NO_PATH: '1',
   };
-  sync(
+  const steps = sync(
     windows ? 'powershell.exe' : 'bash',
     windows
       ? [
@@ -256,6 +256,14 @@ try {
         ]
       : [resolve('install.sh')],
     installEnv,
+  );
+  // The installer says each step as it takes it.
+  assert.deepEqual(
+    steps.match(/^\[circle-install\] \S+/gm)?.slice(0, 5),
+    ['verifying', 'unpacking', 'checking', 'copying', 'installed'].map(
+      (step) => `[circle-install] ${step}`,
+    ),
+    steps,
   );
   const launcher = join(bin, windows ? 'circle.cmd' : 'circle');
   assert.equal(sync(launcher, ['--version'], env).trim(), VERSION);

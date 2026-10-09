@@ -20,7 +20,7 @@ irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | ie
 
 If `install.sh` runs in a Windows shell (Git Bash, MSYS2, Cygwin), it hands over to PowerShell and installs the Windows program.
 
-The installer downloads the release for your system, checks its sha256, refuses an archive with links, special files or paths that leave it, checks every file against the release's own list, and runs the new program once. Only then does it switch to the new version, so a failed step leaves the installed one as it was.
+The installer downloads the release for your system, checks its sha256, refuses an archive with links, special files or paths that leave it, checks every file against the release's own list, and runs the new program once. Only then does it switch to the new version, so a failed step leaves the installed one as it was. It says each step on a line of its own, starting with `[circle-install]`. On a terminal, `install.sh` also shows curl's bar of how far the download has got; `install.ps1` only says that it is downloading.
 
 | Variable | Effect |
 |---|---|
@@ -48,7 +48,7 @@ circle update              # install it
 circle update 1.0.0        # install this one, also an older one
 ```
 
-`circle update` runs the installer again for the release it found, with the same folders. See [Updating](cli.md#updating) for its options and exit codes, and [The reminder](cli.md#the-reminder) for the daily check.
+`circle update` downloads the release it found itself, on one line that shows how far it has got (percent, megabytes and speed), then runs the installer on that file with the same folders, and the installer says each step. `ctrl+c` during the download stops it and changes nothing. See [Updating](cli.md#updating) for its options and exit codes, and [The reminder](cli.md#the-reminder) for the daily check.
 
 ## Replacing the Python circle
 

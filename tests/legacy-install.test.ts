@@ -162,6 +162,30 @@ test('the installer removes a Python installation found through its bin link and
   assert.deepEqual(findPythonCopies(around(base, path)), []);
 });
 
+test('the installer says each step while it takes it, and which old versions it removed', (t) => {
+  const base = scratch(t);
+  const prefix = join(base, 'install');
+  // Three releases from before, of which the oldest is one too many.
+  for (const version of ['0.1.0', '0.2.0', '0.3.0']) {
+    mkdirSync(join(prefix, 'versions', version), { recursive: true });
+    writeFileSync(join(prefix, 'versions', version, 'release.json'), '{}');
+  }
+  const run = runManager(base, fixture(base, '1.0.0'), [], {
+    CIRCLE_PREFIX: prefix,
+    CIRCLE_BIN_DIR: join(base, 'bin'),
+    CIRCLE_NO_PATH: '1',
+  });
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.deepEqual(run.stdout.split('\n').slice(0, 4), [
+    '[circle-install] checking the release',
+    `[circle-install] copying circle 1.0.0 to ${join(prefix, 'versions', '1.0.0')}`,
+    '[circle-install] removed circle 0.1.0',
+    `[circle-install] installed circle 1.0.0 in ${prefix}`,
+  ]);
+  assert.equal(existsSync(join(prefix, 'versions', '0.1.0')), false);
+  assert.ok(existsSync(join(prefix, 'versions', '0.2.0')));
+});
+
 test(
   'the 0.1.0 layout, where current is a real folder, is removed with its link',
   {

@@ -133,16 +133,16 @@ circle update [version] [--check]
 | `--check` | Say whether a newer release exists. Install nothing. |
 | `version`, `--version X.Y.Z` | Install that release instead, including an older one, to go back. |
 
-`circle update` works on a copy that `install.sh` or `install.ps1` put in place. It asks GitHub for the newest release of the repository recorded at install time, then runs the copy of the installer that came with the running version, for that release and with the same folders: the installer downloads the file for your operating system and processor, checks its sha256, runs the new program once, and only then switches to it. See [Installation and updates](installation.md).
+`circle update` works on a copy that `install.sh` or `install.ps1` put in place. It asks GitHub for the newest release of the repository recorded at install time and downloads the file for your operating system and processor. On a terminal one line shows how far the download has got, `downloading circle-1.1.0-darwin-arm64.tar.gz  45%  23.6/52.4 MB  9.6 MB/s`; elsewhere one line says what it downloads. `ctrl+c` stops the download and changes nothing; a download that gets no data for a minute stops by itself. Then it runs the copy of the installer that came with the running version on that file, with the same folders: the installer checks its sha256, runs the new program once, and only then switches to it, saying each step in a line that starts with `[circle-install]`. See [Installation and updates](installation.md).
 
 A copy that runs from a git checkout is not changed: `circle update` stops with `circle update requires an installer-managed installation`. Update a checkout with `git pull`, `npm ci` and `npm run build`. To open a folder that is called `update`, write `./update`.
 
 | Code | When |
 |---|---|
 | `0` | Updated, already up to date, or `--check` finished. |
-| `1` | It could not: GitHub was not reachable, no release matches, the version is not a version like `1.0.0`, the installer failed, or this copy was not installed by the installer. |
+| `1` | It could not: GitHub was not reachable, no release matches, the download stopped or was cancelled, the version is not a version like `1.0.0`, the installer failed, or this copy was not installed by the installer. |
 
-If GitHub is reached through a proxy that inspects HTTPS, give Circle its certificate with `SSL_CERT_FILE=/path/to/ca.pem`, and the installer with `CURL_CA_BUNDLE` (macOS, Linux); on Windows the Windows certificate store is used. See [Known issues](known-issues.md#install-and-release).
+If GitHub is reached through a proxy that inspects HTTPS, give Circle its certificate with `SSL_CERT_FILE=/path/to/ca.pem`. `circle update` downloads with it too, so the installer's own setting (`CURL_CA_BUNDLE` on macOS and Linux, the Windows certificate store on Windows) matters only for the one-command install. See [Known issues](known-issues.md#install-and-release).
 
 The Python versions' `circle update` (0.5.0 and older) cannot install this version. See [Installation](installation.md#replacing-the-python-circle).
 

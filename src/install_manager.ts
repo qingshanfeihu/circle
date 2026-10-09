@@ -51,7 +51,7 @@ if (running.length) {
   process.exit(1);
 }
 const { prefix, binDir } = chooseLocation(copies, where);
-const manifest = stageRelease(root, prefix);
+const manifest = stageRelease(root, prefix, say);
 for (const copy of copies)
   say(
     copy.kind === 'installer'
@@ -61,7 +61,11 @@ for (const copy of copies)
 removePythonCopies(copies);
 const previous = activeVersion(prefix);
 pointToRelease(manifest, prefix, binDir, repo);
-pruneVersions(prefix, [manifest.version, ...(previous ? [previous] : [])]);
+for (const name of pruneVersions(prefix, [
+  manifest.version,
+  ...(previous ? [previous] : []),
+]))
+  say(`removed circle ${name}`);
 if (process.env.CIRCLE_INSTALL_RESULT)
   writeFileSync(
     process.env.CIRCLE_INSTALL_RESULT,
