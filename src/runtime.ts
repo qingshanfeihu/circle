@@ -17,7 +17,7 @@ import { fromJsonl, toSessionBundle } from './session_export.js';
 import { projectDataDir, circleHome, normalizeWorkspace } from './paths.js';
 import { McpManager } from './mcp_loader.js';
 import { ExtensionHost } from './extensions.js';
-import { isFolderTrusted, loadSettings } from './settings.js';
+import { isFolderTrusted, settingsForRun } from './settings.js';
 import { BUILTIN_SLASH } from './tui/slash_commands.js';
 import { discoverCustomCommands } from './commands.js';
 import { LspManager } from './lsp_tool.js';
@@ -90,6 +90,8 @@ export interface RuntimeOptions {
   sessionId?: string;
   continue?: boolean;
   fork?: string;
+  // `--model`: used for this run, kept over a reload, never saved.
+  modelOverride?: string;
   model?: ChatModel;
   catalog?: ModelCatalog;
   extraTools?: Tool[];
@@ -731,7 +733,11 @@ export class AgentRuntime {
   }
   async reloadIntegrations(): Promise<void> {
     if (this.busy) throw new Error('reload after the current turn');
-    this.options.settings = loadSettings(this.options.home);
+    this.options.settings = settingsForRun(
+      this.options.home,
+      this.options.workspace,
+      this.options.modelOverride,
+    ).settings;
     this.integrationsReady = undefined;
     await this.initialize();
   }

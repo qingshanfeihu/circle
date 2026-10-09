@@ -19,8 +19,12 @@ export const ACTIONS: Record<string, string> = {
   find: 'ctrl+f',
   'history.search': 'ctrl+r',
   'secret.enter': 'ctrl+s',
-  'command.background': 'ctrl+b',
+  'job.background': 'ctrl+b',
   newline: 'ctrl+j',
+};
+// Names development builds used before they matched the Python releases.
+const ALIASES: Record<string, string> = {
+  'command.background': 'job.background',
 };
 export function loadRemap(home = circleHome()): {
   remap: Record<string, string>;
@@ -45,7 +49,7 @@ export function loadRemap(home = circleHome()): {
       problems: ['keybindings.json should be an object of action: key'],
     };
   for (const [action, value] of Object.entries(raw)) {
-    const key = ACTIONS[action];
+    const key = ACTIONS[ALIASES[action] ?? action];
     if (!key) {
       problems.push(`unknown action '${action}' in keybindings.json`);
       continue;

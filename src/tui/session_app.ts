@@ -21,10 +21,11 @@ import { tmpdir } from 'node:os';
 import { AgentRuntime, type RuntimeOptions } from '../runtime.js';
 import type { CircleSettings } from '../settings.js';
 import {
+  applyProjectSettings,
   saveCredentials,
   saveSettings,
+  saveSettingsChange,
   loadCredentials,
-  loadSettings,
   trustFolder,
   isFolderTrusted,
   clearCredentials,
@@ -68,6 +69,11 @@ import {
 import { loadSkillBody } from '../skills.js';
 import { complete } from '../mentions.js';
 import { VERSION } from '../version.js';
+import {
+  availableUpdate,
+  updateCheckEnabled,
+  updateNotice,
+} from '../update.js';
 import { PlanPanel } from '../ink/components/plan_panel.js';
 import { stripAnsi } from '../ink/string_width.js';
 import { modelScope } from '../model_scope.js';
@@ -94,6 +100,7 @@ export class SessionApp {
   private externalEditor = false;
   private animation?: NodeJS.Timeout;
   private flashTimer?: NodeJS.Timeout;
+  private keyProblems: string[];
   private done!: (code: number) => void;
   private completion: Promise<number>;
   private previousSession = '';
@@ -142,7 +149,9 @@ export class SessionApp {
     readonly home: string,
     public settings: CircleSettings,
   ) {
-    this.remap = loadRemap(home).remap;
+    const keys = loadRemap(home);
+    this.remap = keys.remap;
+    this.keyProblems = keys.problems;
     this.state = {
       messages: [],
       notices: [],
@@ -412,10 +421,39 @@ export class SessionApp {
         ['trust this folder', 'quit'],
       );
       if (answer !== 'trust this folder') return false;
-      this.settings = trustFolder(this.settings, this.workspace);
-      saveSettings(this.settings, this.home);
+      this.trustWorkspace();
     }
     return !this.ended;
+  }
+  private trustWorkspace(): void {
+    this.settings = trustFolder(this.settings, this.workspace);
+    saveSettingsChange(this.home, (saved) => {
+      saved.trusted_folders = trustFolder(
+        saved,
+        this.workspace,
+      ).trusted_folders;
+    });
+  }
+  // Once a day, whether a newer release exists; if so, one line stays in the transcript.
+  async checkForUpdate(latest?: () => Promise<string>): Promise<void> {
+    if (!updateCheckEnabled(this.settings)) return;
+    const found = await availableUpdate(this.home, VERSION, latest);
+    if (found && !this.ended) this.notice(updateNotice(found));
+  }
+  // The project's .circle/settings.json and `--model` over the saved settings, in memory only.
+  // Runs once the folder is trusted, as the Python releases did.
+  applyRunSettings(modelOverride?: string): void {
+    const { problems } = applyProjectSettings(this.settings, this.workspace);
+    if (modelOverride) this.settings.auth.model = modelOverride;
+    for (const problem of [...this.keyProblems, ...problems])
+      this.fail(problem);
+    this.keyProblems = [];
+    this.state.model = this.settings.auth.model;
+    this.state.showThinking = !this.settings.hide_thinking;
+    if (this.theme.mode !== this.settings.theme) {
+      this.theme.mode = this.settings.theme;
+      this.theme.apply();
+    }
   }
   async attach(
     options: Omit<RuntimeOptions, 'approve' | 'question'>,
@@ -1344,8 +1382,11 @@ export class SessionApp {
       }
       if (!['auto', 'dark', 'light'].includes(args))
         throw new Error('use /themes auto|dark|light');
-      this.settings.theme = args as CircleSettings['theme'];
-      saveSettings(this.settings, this.home);
+      const theme = args as CircleSettings['theme'];
+      this.settings.theme = theme;
+      saveSettingsChange(this.home, (saved) => {
+        saved.theme = theme;
+      });
       this.theme.mode = this.settings.theme;
       this.theme.apply();
       this.repaint();
@@ -1393,8 +1434,7 @@ export class SessionApp {
       return;
     }
     if (name === 'trust') {
-      this.settings = trustFolder(this.settings, this.workspace);
-      saveSettings(this.settings, this.home);
+      this.trustWorkspace();
       this.notice('Folder trusted');
       return;
     }
@@ -1542,9 +1582,9 @@ export class SessionApp {
               if (!item) return;
               choose(item.key);
               this.settings.auth.model = item.key;
-              const saved = loadSettings(this.home);
-              saved.auth.model = item.key;
-              saveSettings(saved, this.home);
+              saveSettingsChange(this.home, (saved) => {
+                saved.auth.model = item.key;
+              });
               this.state.picker = undefined;
             },
             tab: (item) => {
@@ -1559,9 +1599,9 @@ export class SessionApp {
               if (this.runScopeOnly) runtime.runOptions.models = next;
               else {
                 this.settings.enabled_models = next;
-                const saved = loadSettings(this.home);
-                saved.enabled_models = next;
-                saveSettings(saved, this.home);
+                saveSettingsChange(this.home, (saved) => {
+                  saved.enabled_models = next;
+                });
               }
               this.state.picker?.setItems(rows());
               this.flash(
@@ -1595,9 +1635,9 @@ export class SessionApp {
                 if (!item) return;
                 choose(item.key);
                 this.settings.default_thinking = item.key;
-                const saved = loadSettings(this.home);
-                saved.default_thinking = item.key;
-                saveSettings(saved, this.home);
+                saveSettingsChange(this.home, (saved) => {
+                  saved.default_thinking = item.key;
+                });
                 this.state.picker = undefined;
               },
             },
@@ -1711,7 +1751,9 @@ export class SessionApp {
       if (runtime.harness.busy) await runtime.harness.cancel();
       clearCredentials(this.home);
       this.settings.initialized = false;
-      saveSettings(this.settings, this.home);
+      saveSettingsChange(this.home, (saved) => {
+        saved.initialized = false;
+      });
       this.exit(0);
       return;
     }
@@ -1720,6 +1762,7 @@ export class SessionApp {
         throw new Error('OAuth sign-in is not available yet');
       if (runtime.harness.busy) throw new Error('a turn is running');
       if (await this.initialize(true)) {
+        this.applyRunSettings(runtime.options.modelOverride);
         runtime.options.settings = this.settings;
         runtime.setModel(this.settings.auth.model);
       }
@@ -1728,6 +1771,9 @@ export class SessionApp {
     if (name === 'reload') {
       if (runtime.harness.busy) throw new Error('a turn is running');
       await runtime.reloadIntegrations();
+      const keys = loadRemap(this.home);
+      this.remap = keys.remap;
+      for (const problem of keys.problems) this.fail(problem);
       this.settings = runtime.options.settings;
       runtime.setModel(this.settings.auth.model);
       this.notice('Settings and integrations reloaded');
@@ -1872,7 +1918,9 @@ export async function runTui(
   app.start();
   try {
     if (!(await app.initialize(options.init))) return 0;
+    app.applyRunSettings(options.modelOverride);
     await app.attach(options);
+    void app.checkForUpdate();
     if (options.pickSession) await app.command('resume', '');
     for (const prompt of options.prompts ?? []) void app.submit(prompt);
     return await app.wait();

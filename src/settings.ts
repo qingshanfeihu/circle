@@ -304,6 +304,31 @@ export function applyProjectSettings(
   }
   return { changed, problems };
 }
+// Changes one part of settings.json as it is on disk. Values that hold only for this run (a
+// project's .circle/settings.json, `--model`, `--thinking`) stay out of the file.
+export function saveSettingsChange(
+  home: string,
+  change: (saved: CircleSettings) => void,
+): CircleSettings {
+  const saved = loadSettings(home);
+  change(saved);
+  saveSettings(saved, home);
+  return saved;
+}
+// Settings as one run uses them: the saved ones, the project's own in a trusted folder, then
+// `--model`.
+export function settingsForRun(
+  home: string,
+  workspace: string,
+  modelOverride?: string,
+): { settings: CircleSettings; problems: string[] } {
+  const settings = loadSettings(home);
+  const { problems } = isFolderTrusted(settings, workspace)
+    ? applyProjectSettings(settings, workspace)
+    : { problems: [] };
+  if (modelOverride) settings.auth.model = modelOverride;
+  return { settings, problems };
+}
 export function withoutProjectSettings(
   settings: CircleSettings,
   changes: ProjectChanges,

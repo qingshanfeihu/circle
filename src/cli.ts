@@ -353,8 +353,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     } catch (error) {
       throw new UsageError(`settings could not be read: ${error}`);
     }
-    if (options.model) settings.auth.model = options.model;
-    if (options.thinking) settings.default_thinking = options.thinking;
+    // As in the Python releases: the flag beats the variable and is never saved.
+    if (options.thinking)
+      process.env.CIRCLE_REASONING_EFFORT = options.thinking;
     if (options.listModels !== null) {
       if (!isReady(settings))
         throw new UsageError('settings are not initialized');
@@ -391,6 +392,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       sessionId: options.sessionId || undefined,
       continue: options.continue,
       fork: options.fork || undefined,
+      modelOverride: options.model || undefined,
     };
     if (interactive) {
       const { runTui } = await import('./tui/session_app.js');
@@ -415,6 +417,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       throw new UsageError('folder is not trusted; run circle in a terminal');
     const { problems } = applyProjectSettings(settings, options.workspace);
     for (const problem of problems) process.stderr.write(problem + '\n');
+    if (options.model) settings.auth.model = options.model;
     const { AgentRuntime } = await import('./runtime.js');
     runtime = new AgentRuntime({ ...runtimeOptions, headless: true });
     offSignals = installExitGuard(runtime);
