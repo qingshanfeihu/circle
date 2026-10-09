@@ -183,7 +183,7 @@ test('CLI preserves print flag placement and rejects conflicting saved-session o
     ['--fork', 'id', '-c'],
     ['--no-session', '--session', 'id'],
     ['-r', '-p', 'hello'],
-    ['--line', 'hello'],
+    ['--line', 'hello there'],
     ['--thinking', 'invalid'],
   ])
     assert.throws(() => parseCli(args), UsageError);

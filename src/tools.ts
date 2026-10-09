@@ -7,7 +7,7 @@ import {
   writeFileSync,
   rmSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { glob } from 'glob';
 import type { Tool, ToolContext } from './types.js';
 import { Sandbox } from './sandbox.js';
@@ -17,6 +17,7 @@ import { QUESTION_SCHEMA } from './questions.js';
 import { JobRegistry, jobLine, jobNotice } from './jobs.js';
 import { readTextWindow } from './file_read.js';
 import { mediaType, readAttachment } from './media.js';
+import { GREP_SCHEMA, grepSearch } from './grep_tool.js';
 export interface Todo {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
@@ -205,48 +206,8 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
         .join('\n');
     },
   );
-  add(
-    'grep',
-    'read',
-    schema(
-      {
-        pattern: text('Regular expression'),
-        path: text('Search root'),
-        glob: text('Filename filter'),
-      },
-      ['pattern'],
-    ),
-    async (args, context) => {
-      const cwd = sandbox.resolvePath(String(args.path || '.'));
-      const regex = new RegExp(string(args, 'pattern'));
-      const matches = await glob(String(args.glob || '**/*'), {
-        cwd,
-        nodir: true,
-        dot: true,
-        ignore: ['**/.git/**', '**/node_modules/**'],
-      });
-      const found: string[] = [];
-      for (const item of matches.sort()) {
-        context.signal.throwIfAborted();
-        if (found.length >= 1000) break;
-        const path = join(cwd, item);
-        try {
-          sandbox.checkCredentialPath(path);
-          if (statSync(path).size > 2_000_000) continue;
-          const buffer = readFileSync(path);
-          if (buffer.includes(0)) continue;
-          const lines = buffer.toString('utf8').split('\n');
-          for (let i = 0; i < lines.length && found.length < 1000; i++)
-            if (regex.test(lines[i]!))
-              found.push(
-                `${relative(sandbox.workspace, path)}:${i + 1}: ${lines[i]!.slice(0, 2000)}`,
-              );
-        } catch {
-          /* Non-readable files are omitted from search. */
-        }
-      }
-      return found.join('\n') || 'No matches found.';
-    },
+  add('grep', 'read', GREP_SCHEMA, async (args, context) =>
+    grepSearch(sandbox, args, context.signal),
   );
   add(
     'execute',
@@ -418,17 +379,25 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
     add(
       'task',
       'read',
+      // As in the Python releases (deepagents' task schema): both fields are required.
       schema(
         {
-          description: text('Subagent task'),
-          subagent_type: text('general-purpose or explore'),
+          description: text(
+            'A detailed description of the task for the subagent to perform autonomously. ' +
+              'Include all necessary context and specify the expected output format.',
+          ),
+          subagent_type: text(
+            'The type of subagent to use. Must be one of the available agent types listed in the tool description.',
+          ),
           background: {
             type: 'boolean',
             description:
-              'Run the subagent as a background job and return immediately',
+              'Run the subagent in the background and return at once with a job id; ' +
+              'Circle adds its report when it ends. For independent work you do not ' +
+              'need before your next step.',
           },
         },
-        ['description'],
+        ['description', 'subagent_type'],
       ),
       hooks.task,
     );

@@ -280,7 +280,11 @@ test("a background agent's card is titled with the job, ctrl+c leaves it up, and
       : {
           id: 'task',
           name: 'task',
-          args: { description: 'tidy up', background: true },
+          args: {
+            description: 'tidy up',
+            subagent_type: 'general-purpose',
+            background: true,
+          },
         };
     const message: Message = replied
       ? {
@@ -657,7 +661,11 @@ test('a background agent asks while the turn that started it is still running, a
             {
               id: 'task',
               name: 'task',
-              args: { description: 'tidy up', background: true },
+              args: {
+                description: 'tidy up',
+                subagent_type: 'general-purpose',
+                background: true,
+              },
             },
           ],
         },

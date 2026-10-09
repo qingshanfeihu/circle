@@ -580,7 +580,11 @@ test('native subagent usage and price receipts remain part of the owning convers
         role: 'assistant',
         content: '',
         tool_calls: [
-          { id: 'task', name: 'task', args: { description: 'research' } },
+          {
+            id: 'task',
+            name: 'task',
+            args: { description: 'research', subagent_type: 'general-purpose' },
+          },
         ],
       },
       usage,

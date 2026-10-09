@@ -1761,6 +1761,8 @@ export async function runTui(
     init?: boolean;
     pickSession?: boolean;
     prompts?: string[];
+    // What the conversation shows for each prompt, when it differs (`@file`)
+    shown?: string[];
   },
 ): Promise<number> {
   const app = new SessionApp(options.workspace, options.home, options.settings);
@@ -1771,7 +1773,16 @@ export async function runTui(
     await app.attach(options);
     void app.checkForUpdate();
     if (options.pickSession) await app.command('resume', '');
-    for (const prompt of options.prompts ?? []) void app.submit(prompt);
+    // The first message starts a turn; the others follow it, one turn each.
+    const [first, ...rest] = options.prompts ?? [];
+    if (first !== undefined)
+      void app.submit(first, first, false, options.shown?.[0] || first);
+    for (const [index, prompt] of rest.entries()) {
+      const shown = options.shown?.[index + 1];
+      if (shown && shown !== prompt)
+        app.runtime?.harness.shown.set(prompt, { display: shown });
+      app.runtime?.harness.queue(prompt, 'followUp');
+    }
     return await app.wait();
   } finally {
     await app.close();

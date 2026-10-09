@@ -385,7 +385,14 @@ test('a foreground child watch belongs to the visible conversation and is cleane
       return tool
         ? reply('main-complete', 'completed')
         : reply('main-task', '', [
-            { id: 'task', name: 'task', args: { description: 'research' } },
+            {
+              id: 'task',
+              name: 'task',
+              args: {
+                description: 'research',
+                subagent_type: 'general-purpose',
+              },
+            },
           ]);
     },
   };

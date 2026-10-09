@@ -125,8 +125,15 @@ export class Harness {
     this.shown.delete(prompt);
     return shown ?? { display: prompt };
   }
-  async run(prompt?: string): Promise<{ answer: string; usage: Usage }> {
+  // `display` is what the conversation shows for the prompt when it differs from the text
+  // the model gets (`circle "question" @file`).
+  async run(
+    prompt?: string,
+    display?: string,
+  ): Promise<{ answer: string; usage: Usage }> {
     if (this.active) throw new Error('a turn is already running');
+    if (prompt !== undefined && display !== undefined && display !== prompt)
+      this.shown.set(prompt, { display });
     this.controller = new AbortController();
     this.active = this.runQueued(prompt, this.controller.signal);
     try {
