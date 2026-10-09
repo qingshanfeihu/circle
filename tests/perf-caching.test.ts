@@ -191,7 +191,7 @@ test('a streaming turn keeps the loop responsive: a key works right away and fra
     model: new ScriptedModel(),
   });
   const runtime = app.runtime!;
-  cleanup(t, () => void runtime.close());
+  cleanup(t, () => runtime.close());
   cleanup(t, () => {
     if (ui.renderTimer) clearTimeout(ui.renderTimer);
     if (ui.animation) clearInterval(ui.animation);
@@ -239,7 +239,7 @@ test('/logout and /skill run during a turn instead of waiting for it', async (t)
   ui.screen.render = (): void => {};
   await app.attach({ workspace: root, home: root, settings, model });
   const runtime = app.runtime!;
-  cleanup(t, () => void runtime.close());
+  cleanup(t, () => runtime.close());
   cleanup(t, () => {
     if (ui.renderTimer) clearTimeout(ui.renderTimer);
     if (ui.animation) clearInterval(ui.animation);
