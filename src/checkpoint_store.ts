@@ -217,11 +217,12 @@ export class CheckpointStore {
       if (expectedHead !== undefined && expectedHead !== session.head)
         throw new Error('session changed in another process');
       let head = session.head;
-      for (const message of messages) {
+      const stored = messages.map((message) => JSON.stringify(message));
+      for (const text of stored) {
         const id = randomUUID();
         this.db
           .prepare('INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?)')
-          .run(id, sessionId, head, JSON.stringify(message), Date.now());
+          .run(id, sessionId, head, text, Date.now());
         head = id;
       }
       this.db
@@ -229,11 +230,14 @@ export class CheckpointStore {
         .run(head, Date.now(), sessionId);
       this.db.exec('COMMIT');
       // When the cache holds the head this append started from, the new messages extend
-      // it; otherwise the chain is walked again on the next read.
+      // it; otherwise the chain is walked again on the next read. It extends with what was
+      // written, decoded, not the caller's objects: a read returns what the database holds.
       const cached = this.messageCache.get(sessionId);
       if (cached && cached.head === session.head) {
         cached.head = head;
-        cached.messages = cached.messages.concat(messages);
+        cached.messages = cached.messages.concat(
+          stored.map((text) => JSON.parse(text) as Message),
+        );
       } else this.messageCache.delete(sessionId);
       this.writeVersion++;
       return head;
@@ -469,6 +473,7 @@ export class CheckpointStore {
       this.db
         .prepare('UPDATE sessions SET head = ? WHERE id = ?')
         .run(maps.get(plan.selected)!, session.thread_id);
+      this.messageCache.delete(session.thread_id);
       for (const [id, label] of Object.entries(plan.labels))
         this.db
           .prepare('INSERT INTO labels VALUES (?, ?, ?)')

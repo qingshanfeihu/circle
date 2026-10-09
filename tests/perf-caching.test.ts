@@ -78,11 +78,16 @@ test('the store serves one shared messages array while the head stands still, an
   assert.equal(store.messages(session.id, firstHead), first);
   // An append extends the cache: the old messages keep their identity.
   const version = store.version;
-  store.append(session.id, [user('u2', 'two')]);
+  const appended = user('u2', 'two');
+  store.append(session.id, [appended]);
   assert.ok(store.version > version);
   const second = store.messages(session.id);
   assert.equal(second.length, 3);
   assert.ok(second.slice(0, 2).every((message, i) => message === first[i]));
+  // It serves what was written, as a fresh read would, not the caller's object.
+  assert.notEqual(second[2], appended);
+  appended.content = 'changed afterwards';
+  assert.equal(store.messages(session.id)[2]!.content, 'two');
   // Selecting the older head walks that branch, and the current head follows it.
   store.select(session.id, firstHead);
   assert.deepEqual(
