@@ -27,7 +27,8 @@
     "check": "npm run typecheck && npm test && npm run build",
     "port:status": "tsx scripts/port-status.ts",
     "release:build": "tsx scripts/build-release.ts",
-    "release:smoke": "tsx scripts/smoke-release.ts"
+    "release:smoke": "tsx scripts/smoke-release.ts",
+    "release": "tsx scripts/release.ts"
   },
   "repository": {
     "type": "git",
