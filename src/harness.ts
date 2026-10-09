@@ -15,7 +15,13 @@ import { attachPrompt } from './mentions.js';
 import { prepareToolCall, RecoverableToolError } from './tool_call_compat.js';
 import { redact } from './redact.js';
 import { validateAttachments } from './media.js';
-export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'prefix';
+export type ApprovalDecision =
+  | 'approve'
+  | 'reject'
+  | 'always'
+  | 'prefix'
+  // a rejection with the user's reason, which the model reads in the tool result
+  | { decision: 'reject'; message: string };
 export interface HarnessOptions {
   model: ChatModel;
   tools: Tool[];
@@ -284,15 +290,20 @@ export class Harness {
                 );
               const decision = await this.options.approve(call, signal);
               signal.throwIfAborted();
+              const reason =
+                typeof decision === 'string' ? '' : decision.message.trim();
               if (
                 !this.options.policy.remember(
                   this.options.approvalSessionId ?? this.sessionId,
                   call.name,
                   call.args,
-                  decision,
+                  typeof decision === 'string' ? decision : decision.decision,
                 )
               )
-                throw new Error('The user rejected this tool call.');
+                throw new Error(
+                  'The user rejected this tool call.' +
+                    (reason ? ` The user said: ${reason}` : ''),
+                );
             }
             signal.throwIfAborted();
             if (

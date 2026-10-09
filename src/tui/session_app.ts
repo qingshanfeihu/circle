@@ -1,4 +1,8 @@
 import { QuestionCard } from '../ink/components/question_card.js';
+import { ApprovalCard } from '../ink/components/approval_card.js';
+import { SecretCard } from '../ink/components/secret_card.js';
+import type { Card } from '../ink/components/dialog_card.js';
+import { approvalRequest } from './approval_preview.js';
 import type { Question } from '../questions.js';
 import {
   submitAnswer,
@@ -45,7 +49,7 @@ import { renderScreen, transcriptRows, type ScreenState } from './render.js';
 import { InputHistory } from './input_history.js';
 import { Composer } from './composer.js';
 import { TranscriptFind } from './transcript_find.js';
-import { InteractionQueue } from './interaction_queue.js';
+import { InteractionQueue, ParkedDraft } from './interaction_queue.js';
 import { installExitGuard } from '../exit_guard.js';
 import {
   CompactionProgress,
@@ -82,7 +86,7 @@ import { stripAnsi } from '../ink/string_width.js';
 import { modelScope } from '../model_scope.js';
 export { VERSION } from '../version.js';
 interface DialogPending {
-  complete: (answer: string) => void;
+  complete: (answer: unknown) => void;
   abort?: () => void;
 }
 export class SessionApp {
@@ -97,7 +101,8 @@ export class SessionApp {
   private theme: ThemeWatch;
   private remap: Record<string, string>;
   private pending?: DialogPending;
-  private questionCard?: QuestionCard;
+  private card?: Card<unknown>;
+  private parked = new ParkedDraft();
   private secretReady?: SecretRequest;
   private ended = false;
   private externalEditor = false;
@@ -124,6 +129,7 @@ export class SessionApp {
         (!this.state.draft &&
           !this.state.picker &&
           !this.runtime?.harness.busy)),
+    () => Boolean(this.state.draft || this.state.picker),
   );
   private backgroundCard = false;
   private agents = new SubagentNavigation();
@@ -493,72 +499,7 @@ export class SessionApp {
     this.runtime = new AgentRuntime({
       ...options,
       settings: this.settings,
-      approve: (call, signal, origin) =>
-        this.interactions.run(
-          async () => {
-            this.backgroundCard = Boolean(origin?.jobId);
-            try {
-              return await this.approve(
-                call,
-                signal,
-                origin?.jobId ? `${origin.jobId} ${origin.name} · ` : '',
-              );
-            } finally {
-              this.backgroundCard = false;
-            }
-          },
-          signal,
-          Boolean(origin?.jobId),
-        ),
-      question: (args, signal, origin) =>
-        this.interactions.run(
-          async () => {
-            this.backgroundCard = Boolean(origin?.jobId);
-            try {
-              if (!Array.isArray(args.questions))
-                throw new Error('invalid questions');
-              const answers: string[][] = [];
-              for (const question of args.questions as Question[])
-                answers.push(
-                  await this.askQuestion(
-                    {
-                      ...question,
-                      header: origin?.jobId
-                        ? `${origin.jobId} ${question.header}`
-                        : question.header,
-                    },
-                    signal,
-                  ),
-                );
-              return JSON.stringify(answers);
-            } finally {
-              this.backgroundCard = false;
-            }
-          },
-          signal,
-          Boolean(origin?.jobId),
-        ),
-      secret: (request, signal, origin) =>
-        this.interactions.run(
-          async () => {
-            this.backgroundCard = Boolean(origin?.jobId);
-            try {
-              await this.enterSecret(
-                {
-                  ...request,
-                  question:
-                    (origin?.jobId ? `${origin.jobId} · ` : '') +
-                    request.question,
-                },
-                signal,
-              );
-            } finally {
-              this.backgroundCard = false;
-            }
-          },
-          signal,
-          Boolean(origin?.jobId),
-        ),
+      ...this.cardHooks(),
     });
     this.offSignals?.();
     this.offSignals = installExitGuard(this.runtime, (code) => {
@@ -692,16 +633,70 @@ export class SessionApp {
       })
       .finally(() => this.repaint());
   }
-  private async askQuestion(
-    question: Question,
-    signal: AbortSignal,
-  ): Promise<string[]> {
-    const card = new QuestionCard(question);
-    this.questionCard = card;
+  // Approvals, questions and secrets reach the runtime through the card queue: one card at
+  // a time, the turn's own before a background agent's, none while you are typing.
+  private cardHooks(): Pick<RuntimeOptions, 'approve' | 'question' | 'secret'> {
+    const asCard = <T>(
+      action: () => Promise<T>,
+      signal: AbortSignal,
+      origin?: { jobId?: string },
+    ): Promise<T> =>
+      this.interactions.run(
+        async () => {
+          this.backgroundCard = Boolean(origin?.jobId);
+          try {
+            return await action();
+          } finally {
+            this.backgroundCard = false;
+          }
+        },
+        signal,
+        Boolean(origin?.jobId),
+      );
+    const label = (origin?: { jobId?: string; name?: string }): string =>
+      origin?.jobId ? `${origin.jobId} ${origin.name ?? ''}`.trim() : '';
+    return {
+      approve: (call, signal, origin) =>
+        asCard(() => this.approve(call, signal, label(origin)), signal, origin),
+      question: (args, signal, origin) =>
+        asCard(
+          async () => {
+            if (!Array.isArray(args.questions))
+              throw new Error('invalid questions');
+            // every question in one card; null (cancelled) tells the model nothing was answered
+            return JSON.stringify(
+              await this.showCard(
+                new QuestionCard(args.questions as Question[], label(origin)),
+                signal,
+              ),
+            );
+          },
+          signal,
+          origin,
+        ),
+      secret: (request, signal, origin) =>
+        asCard(
+          () =>
+            this.enterSecret(
+              {
+                ...request,
+                question:
+                  (origin?.jobId ? `${origin.jobId} · ` : '') +
+                  request.question,
+              },
+              signal,
+            ),
+          signal,
+          origin,
+        ),
+    };
+  }
+  private async showCard<T>(card: Card<T>, signal?: AbortSignal): Promise<T> {
+    this.card = card as Card<unknown>;
     try {
-      return JSON.parse(await this.dialog(card.state(), signal)) as string[];
+      return await this.dialog<T>(card.state(), signal);
     } finally {
-      this.questionCard = undefined;
+      this.card = undefined;
     }
   }
   private async enterSecret(
@@ -720,18 +715,19 @@ export class SessionApp {
         await cancelRequest(this.home, request.id);
         return;
       }
-      const value = await this.askText(
-        'secret',
-        `${request.question}\n${request.key} → ${request.target_file}`,
-        '',
-        true,
+      const value = await this.showCard(
+        new SecretCard(
+          `${request.question}\n${request.key} → ${request.target_file}`,
+          request.mask !== false,
+        ),
         signal,
       );
-      if (!value) {
+      if (value === null) {
         await cancelRequest(this.home, request.id);
         return;
       }
       await submitAnswer(this.home, request.id, value);
+      this.flash('Collected · not shown');
     } finally {
       this.secretReady = undefined;
     }
@@ -756,31 +752,36 @@ export class SessionApp {
       signal,
     );
   }
-  private dialog(
+  // A card takes the frame: the draft (text and cursor) is set aside and comes back when
+  // the card ends, whatever it was answered with; a list would compete for keys, so it closes.
+  private dialog<T = string>(
     state: NonNullable<ScreenState['dialog']>,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<T> {
     if (this.pending)
       return Promise.reject(new Error('another question is waiting'));
     if (signal?.aborted) return Promise.reject(signal.reason);
+    this.state.picker = undefined;
+    this.parked.park(this.state);
     this.state.dialog = state;
     this.state.waiting = true;
-    return new Promise((resolve, reject) => {
-      const abort = (): void => {
+    return new Promise<T>((resolve, reject) => {
+      const close = (): void => {
         this.pending = undefined;
         this.state.dialog = undefined;
         this.state.waiting = false;
+        this.parked.restore(this.state);
         this.repaint();
+      };
+      const abort = (): void => {
+        close();
         reject(signal?.reason || new Error('Interrupted'));
       };
       this.pending = {
         complete: (answer) => {
           signal?.removeEventListener('abort', abort);
-          this.pending = undefined;
-          this.state.dialog = undefined;
-          this.state.waiting = false;
-          this.repaint();
-          resolve(answer);
+          close();
+          resolve(answer as T);
         },
         abort,
       };
@@ -791,28 +792,20 @@ export class SessionApp {
   private async approve(
     call: ToolCall,
     signal: AbortSignal,
-    titlePrefix = '',
+    origin = '',
   ): Promise<ApprovalDecision> {
-    const review = this.runtime!.policy.review(call.name, call.args);
-    const choices = ['allow this call'];
-    const decisions: ApprovalDecision[] = ['approve'];
-    if (review.prefix.length && review.verdict === 'ASK') {
-      choices.push(`allow "${review.prefix.join(' ')} …" for this session`);
-      decisions.push('prefix');
-    }
-    if (review.pattern && review.verdict === 'ASK') {
-      choices.push(`allow ${review.scope} for this session`);
-      decisions.push('always');
-    }
-    choices.push('reject');
-    decisions.push('reject');
-    const answer = await this.askChoice(
-      titlePrefix + 'approval',
-      `${call.name}\n${JSON.stringify(call.args, null, 2)}`,
-      choices,
+    const runtime = this.runtime!;
+    return this.showCard(
+      new ApprovalCard(
+        approvalRequest(
+          call,
+          runtime.policy.review(call.name, call.args),
+          (path) => runtime.sandbox.resolvePath(path),
+          origin,
+        ),
+      ),
       signal,
     );
-    return decisions[choices.indexOf(answer)] || 'reject';
   }
   private handle(event: InputEvent): void {
     if (this.ended || this.externalEditor) return;
@@ -887,6 +880,8 @@ export class SessionApp {
       this.repaint();
       return;
     }
+    // a key or paste for the draft: a card that arrives now waits until typing pauses
+    if (!this.state.dialog) this.interactions.typed();
     if (event.type === 'paste') {
       if (this.state.find && !this.state.dialog) {
         this.state.find.query += event.text;
@@ -900,12 +895,12 @@ export class SessionApp {
           query: this.history.query!,
           match: match !== undefined,
         };
-      } else if (this.questionCard) {
-        this.questionCard.paste(event.text);
-        this.state.dialog = this.questionCard.state();
+      } else if (this.card) {
+        this.card.paste(event.text);
+        this.state.dialog = this.card.state();
       } else if (this.state.dialog?.input !== undefined)
         this.state.dialog.input += event.text;
-      else {
+      else if (!this.state.dialog) {
         this.composer.paste(event.text);
         this.composer.update();
       }
@@ -1040,11 +1035,22 @@ export class SessionApp {
     if (this.state.dialog) {
       if (key === 'ctrl+c' && this.backgroundCard) return;
       const dialog = this.state.dialog;
-      if (this.questionCard) {
-        const answer = this.questionCard.handle(key, char);
-        if (answer !== undefined)
-          this.pending?.complete(JSON.stringify(answer));
-        else this.state.dialog = this.questionCard.state();
+      if (this.card) {
+        const result = this.card.handle(key, char);
+        if (result === 'pass') {
+          // not the card's business: ctrl+c stops the turn, page keys scroll
+          if (key === 'ctrl+c' && this.runtime?.busy) {
+            this.jobWakeSnoozed = true;
+            void this.runtime.cancel();
+          } else if (key === 'pageup' || key === 'pagedown') {
+            const page = Math.max(1, (process.stdout.rows || 24) - 8);
+            this.state.scroll = Math.max(
+              0,
+              this.state.scroll + (key === 'pageup' ? page : -page),
+            );
+          }
+        } else if (result) this.pending?.complete(result.answer);
+        else this.state.dialog = this.card.state();
         this.repaint();
         return;
       }

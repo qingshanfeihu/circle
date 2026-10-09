@@ -162,20 +162,23 @@ test('question panels support multiple choices, custom text and cancellation wit
     options: ['one', { label: 'two', description: 'details' }],
     multiple: true,
   });
-  const card = new QuestionCard(question);
+  const card = new QuestionCard([question]);
   card.handle(' ', ' ');
   card.handle('down', '');
   card.handle(' ', ' ');
-  assert.deepEqual(card.handle('enter', ''), ['one', 'two']);
-  const cancelled = new QuestionCard(question);
-  assert.deepEqual(cancelled.handle('escape', ''), []);
-  const custom = new QuestionCard(
+  assert.deepEqual(card.handle('enter', ''), { answer: [['one', 'two']] });
+  // closing the card is not an empty answer: the model is told nothing was answered
+  const cancelled = new QuestionCard([question]);
+  assert.deepEqual(cancelled.handle('escape', ''), { answer: null });
+  const custom = new QuestionCard([
     panelQuestion({ question: 'choose', options: ['one'] }),
-  );
+  ]);
   custom.handle('down', '');
   custom.handle('enter', '');
   custom.paste('custom answer');
-  assert.deepEqual(custom.handle('enter', ''), ['custom answer']);
+  assert.deepEqual(custom.handle('enter', ''), {
+    answer: [['custom answer']],
+  });
 });
 test('headless ordinary questions are returned for chat, while secrets use the file channel and never enter history, requests or events', async (t) => {
   const root = scratch(t);
