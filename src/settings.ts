@@ -253,9 +253,14 @@ export type ProjectChanges = Record<string, [unknown, unknown]>;
 export function applyProjectSettings(
   settings: CircleSettings,
   workspace: string,
+  home = circleHome(),
 ): { changed: ProjectChanges; problems: string[] } {
   const path = join(workspace, '.circle', 'settings.json');
   const changed: ProjectChanges = {};
+  // Running Circle in the folder that holds `CIRCLE_HOME` would otherwise read the global
+  // settings.json as a project's, and report every key it owns as a problem.
+  if (normalizeWorkspace(path) === normalizeWorkspace(settingsPath(home)))
+    return { changed, problems: [] };
   if (!existsSync(path)) return { changed, problems: [] };
   let raw: unknown;
   try {
@@ -324,7 +329,7 @@ export function settingsForRun(
 ): { settings: CircleSettings; problems: string[] } {
   const settings = loadSettings(home);
   const { problems } = isFolderTrusted(settings, workspace)
-    ? applyProjectSettings(settings, workspace)
+    ? applyProjectSettings(settings, workspace, home)
     : { problems: [] };
   if (modelOverride) settings.auth.model = modelOverride;
   return { settings, problems };

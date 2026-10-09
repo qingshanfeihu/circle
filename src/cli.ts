@@ -440,7 +440,7 @@ async function headlessSettings(
     if (!trusted) throw new Declined();
     settings = trusted;
   }
-  const { problems } = applyProjectSettings(settings, options.workspace);
+  const { problems } = applyProjectSettings(settings, options.workspace, home);
   for (const problem of problems) process.stderr.write(problem + '\n');
   if (options.model) settings.auth.model = options.model;
   return settings;

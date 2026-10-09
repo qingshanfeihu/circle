@@ -4,6 +4,10 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Fixed
+
+- **Circle run in the folder that holds its data folder no longer reads the global `settings.json` as a project's.** `CIRCLE_HOME` was not known where the project's `.circle/settings.json` was looked for, so with `CIRCLE_HOME=~/.circle` and `~` as the folder, the global file was read as a project's and every key only it owns (`version`, `initialized`, `auth`, `trusted_folders`, `mcp_servers`, `extensions`, `update_check`, `models`) was named in red at start and on standard error in print mode. The keys the two files share were also applied as if the project had set them.
+
 ## 1.0.1 - 2026-10-09
 
 ### Changed
