@@ -288,6 +288,8 @@ test('a long paste becomes a placeholder: the model reads the paste, the transcr
   // /fork puts your message back with its paste, and sending it again sends the paste
   await app.command('fork', '');
   assert.match(picker()!.items[0]!.label, /Pasted text #3/);
+  // the list starts on your last message; the paste is the one before it
+  picker()!.handle('up', '');
   picker()!.handle('enter', '');
   await until(() => app.state.draft === '[Pasted text #3 +3 lines] explain');
   feed('\r');
@@ -319,7 +321,7 @@ test('typing / or @ lists completions above the box: arrows move, tab takes, ent
   assert.equal(list()?.items[0]!.value, '/hotkeys');
   feed('\r');
   assert.equal(app.state.draft, '');
-  assert.match(app.state.notices.at(-1)!, /model\.select/);
+  assert.match(app.state.notices.at(-1)!, /^Keyboard shortcuts:/);
   assert.equal(model.requests.length, 0);
   // ↑ ↓ wrap around the list; tab takes the marked entry
   type('/e');
@@ -406,7 +408,7 @@ test('an empty box shows the shortcuts on ? at once, and its scroll keys and arr
   const { app, ui, type } = session(t);
   key(ui, '?', '?');
   assert.equal(app.state.draft, '');
-  assert.match(app.state.notices.at(-1)!, /model\.select/);
+  assert.match(app.state.notices.at(-1)!, /^Keyboard shortcuts:/);
   type('why?');
   assert.equal(app.state.draft, 'why?');
   key(ui, 'ctrl+u');
@@ -454,8 +456,8 @@ test('esc clears the box, only esc esc on an empty box opens the tree, and ctrl+
   key(ui, 'escape'); // the first esc on an empty box: no tree yet
   assert.equal(picker(), undefined);
   key(ui, 'escape');
-  assert.equal(picker()?.title, 'tree');
-  key(ui, 'escape');
+  // esc esc ran /tree, which has nothing to show in a new session
+  assert.equal(app.state.flash, 'Nothing in this session yet');
   assert.equal(picker(), undefined);
   type('draft two');
   key(ui, 'ctrl+c');

@@ -45,15 +45,20 @@ export function discoverCustomCommands(
           .replace(/[^a-z0-9_-]+/g, '-')
           .replace(/^-+|-+$/g, '');
         if (!name) continue;
+        // pi's fallback description: the first line that has text, cut at 60 characters.
+        const first = Array.from(
+          body
+            .split('\n')
+            .find((line) => line.trim())
+            ?.trim() ?? '',
+        );
         byName.set(name, {
           name,
           description: (
             meta.description ||
-            body
-              .split('\n')
-              .find((line) => line.trim())
-              ?.trim()
-              .slice(0, 60) ||
+            (first.length > 60
+              ? first.slice(0, 60).join('') + '...'
+              : first.join('')) ||
             `Custom command ${name}`
           ).slice(0, 200),
           template: body.trim() || raw.trim(),
