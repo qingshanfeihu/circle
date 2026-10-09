@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   writeFileSync,
   rmSync,
   cpSync,
+  symlinkSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -39,6 +41,37 @@ assert.equal(
   createHash('sha256').update(bytes).digest('hex'),
 );
 const temporary = mkdtempSync(join(tmpdir(), 'circle-dist-smoke-'));
+// The installer removes Python copies of circle it finds through HOME and PATH. Give it a home
+// of its own and a PATH without any circle, so a developer's real installation is never seen.
+const fakeHome = join(temporary, 'home');
+const fakeAppData = join(fakeHome, 'AppData', 'Local');
+mkdirSync(fakeAppData, { recursive: true });
+const pathValue = Object.entries(process.env)
+  .filter(([key]) => key.toUpperCase() === 'PATH')
+  .map(([, value]) => value || '')
+  .join(delimiter)
+  .split(delimiter)
+  .filter(
+    (folder) =>
+      folder &&
+      !['circle', 'circle.exe', 'circle.cmd'].some((name) =>
+        existsSync(join(folder, name)),
+      ),
+  )
+  .join(delimiter);
+const isolated: NodeJS.ProcessEnv = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([key]) =>
+      key.toUpperCase() !== 'PATH' &&
+      !['CIRCLE_PREFIX', 'CIRCLE_BIN_DIR', 'CIRCLE_REPO'].includes(key),
+  ),
+);
+Object.assign(isolated, {
+  PATH: pathValue,
+  HOME: fakeHome,
+  USERPROFILE: fakeHome,
+  LOCALAPPDATA: fakeAppData,
+});
 let server: ReturnType<typeof createServer> | undefined;
 function sync(
   command: string,
@@ -170,7 +203,7 @@ try {
   saveSettings(trustFolder(settings, workspace), home);
   saveCredentials({ api_key: 'fake-release-smoke-key' }, home);
   const env = {
-    ...process.env,
+    ...isolated,
     CIRCLE_HOME: home,
     CIRCLE_NO_MODELS_REFRESH: '1',
   };
@@ -281,6 +314,60 @@ try {
   assert.equal(activeVersion(prefix), upgraded);
   for (const row of preserved)
     assert.deepEqual(readFileSync(row.path), row.bytes);
+  // A Python circle at the default location is replaced when no location is given.
+  const pythonPrefix = windows
+    ? join(fakeAppData, 'circle')
+    : join(fakeHome, '.local', 'share', 'circle');
+  const pythonBin = windows
+    ? join(pythonPrefix, 'bin')
+    : join(fakeHome, '.local', 'bin');
+  const frozen = join(pythonPrefix, 'versions', '0.5.0', 'circle');
+  mkdirSync(join(frozen, '_internal'), { recursive: true });
+  writeFileSync(join(frozen, windows ? 'circle.exe' : 'circle'), 'frozen');
+  symlinkSync(
+    join(pythonPrefix, 'versions', '0.5.0'),
+    join(pythonPrefix, 'current'),
+    windows ? 'junction' : 'dir',
+  );
+  if (!windows) {
+    mkdirSync(pythonBin, { recursive: true });
+    symlinkSync(
+      join(pythonPrefix, 'current', 'circle', 'circle'),
+      join(pythonBin, 'circle'),
+    );
+  }
+  const replaceEnv: NodeJS.ProcessEnv = {
+    ...env,
+    CIRCLE_VERSION: VERSION,
+    CIRCLE_ASSET_DIR: output,
+    CIRCLE_NO_PATH: '1',
+  };
+  sync(
+    windows ? 'powershell.exe' : 'bash',
+    windows
+      ? [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          resolve('install.ps1'),
+        ]
+      : [resolve('install.sh')],
+    replaceEnv,
+  );
+  assert.equal(existsSync(join(pythonPrefix, 'versions', '0.5.0')), false);
+  assert.equal(existsSync(join(pythonPrefix, 'current')), false);
+  assert.equal(activeVersion(pythonPrefix), VERSION);
+  assert.equal(
+    sync(
+      join(pythonBin, windows ? 'circle.cmd' : 'circle'),
+      ['--version'],
+      env,
+    ).trim(),
+    VERSION,
+  );
+  for (const row of preserved)
+    assert.deepEqual(readFileSync(row.path), row.bytes);
   process.stdout.write(
     JSON.stringify({
       target,
@@ -290,6 +377,7 @@ try {
       upgraded: true,
       checksumRejected: true,
       dataPreserved: true,
+      pythonReplaced: true,
       modelRequests: calls,
       sideEffect: 'receipt.txt',
     }) + '\n',

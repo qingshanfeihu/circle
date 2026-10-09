@@ -16,11 +16,26 @@ Windows, in PowerShell:
 irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
 ```
 
-`CIRCLE_VERSION` selects a version; otherwise the installer uses the latest release. `CIRCLE_REPO` selects the release repository. `CIRCLE_PREFIX` changes the installation root; `CIRCLE_BIN_DIR` changes the launcher directory. Windows adds that directory to the user PATH unless `CIRCLE_NO_PATH=1`. macOS/Linux print the directory to add to PATH.
+`CIRCLE_VERSION` selects a version; otherwise the installer uses the latest release. `CIRCLE_REPO` selects the release repository. `CIRCLE_PREFIX` changes the installation root; `CIRCLE_BIN_DIR` changes the launcher directory. Windows adds that directory to the user PATH unless `CIRCLE_NO_PATH=1`. macOS/Linux print the directory to add to PATH when it is not on it.
 
-The default roots are `~/.local/share/circle` and `%LOCALAPPDATA%\circle`. Each validated package lives under `versions/<version>/`. `current.ref` selects the running version; `installation.json` records the layout and repository. Existing version directories remain available.
+The default roots are `~/.local/share/circle` and `%LOCALAPPDATA%\circle`, with the launcher in `~/.local/bin` and `%LOCALAPPDATA%\circle\bin`. Each validated package lives under `versions/<version>/`. `current.ref` selects the running version; `installation.json` records the layout and repository. Existing version directories remain available.
 
 The installer checks the archive digest, rejects unsafe entries, verifies every package file and runs the bundled CLI before switching `current.ref`. Configuration, credentials and SQLite sessions stay in `CIRCLE_HOME` (default `~/.circle`). Installation and updates preserve these files.
+
+## Replacing the Python circle
+
+Circle 0.5.0 and older were written in Python. The one-command installer removes them before it selects the new version:
+
+- A copy installed by the old installer: its `versions/` folders, its `current` link and the `circle` link in the launcher directory. On Windows it also takes `<prefix>\current\circle` off the user PATH. Unless `CIRCLE_PREFIX` or `CIRCLE_BIN_DIR` say otherwise, the new version goes into the same root and launcher directory.
+- A copy installed with pip whose `circle` command is on PATH, including pipx and `pip install -e` checkouts: the installer runs `<that command's python> -m pip uninstall -y circle`. A checkout itself stays.
+
+The installer first downloads and checks the new release, so a failed download leaves the old copy in place. If a Python circle is still running, it stops before changing anything; close those sessions and run it again. If a pip uninstall fails, it stops and names the command that failed.
+
+The data folder is not touched. Settings, credentials, MCP servers, skills and trusted folders carry over; saved sessions are imported on the first start (see [sessions](sessions.md)). Python extensions do not load in this version; see [extensions](extensions.md).
+
+`circle update` in a Python version cannot install 1.0.0 or later: it stops with `release v1.0.0 has no circle-<os>-<arch>.tar.gz` (`.zip` on Windows), because release files now carry the version in their names. Run the one-command installer above instead.
+
+## Updates
 
 For installer-managed installations:
 

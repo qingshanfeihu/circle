@@ -20,52 +20,8 @@ import {
 } from '../src/install_layout.js';
 import { validVersion, compareVersions } from '../src/version.js';
 import { scratch } from './helpers.js';
+import { fixture } from './release-fixture.js';
 import { updateInstalled } from '../src/update.js';
-function fixture(base: string, version: string): string {
-  const root = join(base, 'release-' + version);
-  for (const directory of ['runtime', 'app/dist/data', 'app/dist/prompts'])
-    mkdirSync(join(root, directory), { recursive: true });
-  cpSync(
-    process.execPath,
-    join(root, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'),
-  );
-  if (process.platform !== 'win32')
-    chmodSync(join(root, 'runtime/node'), 0o755);
-  writeFileSync(
-    join(root, 'app/package.json'),
-    JSON.stringify({ type: 'module', version }),
-  );
-  writeFileSync(
-    join(root, 'app/dist/cli.js'),
-    `console.log(${JSON.stringify(version)});`,
-  );
-  writeFileSync(
-    join(root, 'app/dist/install_manager.js'),
-    '// fixture manager\n',
-  );
-  writeFileSync(
-    join(root, 'app/dist/data/models_dev.json.gz'),
-    'catalog fixture',
-  );
-  writeFileSync(
-    join(root, 'app/dist/data/provider_profiles.json.gz'),
-    'profile fixture',
-  );
-  writeFileSync(
-    join(root, 'app/dist/prompts/circle_guidelines.md'),
-    'fixture guidelines',
-  );
-  const manifest: ReleaseManifest = {
-    schema: 'circle-release/v1',
-    version,
-    target: targetFor(),
-    nodeVersion: process.versions.node,
-    commit: 'a'.repeat(40),
-    files: fileInventory(root),
-  };
-  writeFileSync(join(root, 'release.json'), JSON.stringify(manifest));
-  return root;
-}
 test('semantic versions reject unsafe paths and order prereleases and numeric components without floating-point loss', () => {
   for (const value of ['0.1.0-dev', '1.0.0-rc.1', '2.0.0+build.7'])
     assert.equal(validVersion(value), true);

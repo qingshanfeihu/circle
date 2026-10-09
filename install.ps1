@@ -5,8 +5,6 @@
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
     $repo = if ($env:CIRCLE_REPO) { $env:CIRCLE_REPO } else { 'qingshanfeihu/circle' }
     if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Invalid repository' }
-    $prefix = if ($env:CIRCLE_PREFIX) { $env:CIRCLE_PREFIX } else { Join-Path $env:LOCALAPPDATA 'circle' }
-    $binDir = if ($env:CIRCLE_BIN_DIR) { $env:CIRCLE_BIN_DIR } else { Join-Path $prefix 'bin' }
     $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
     $arch = switch ($architecture) { 'AMD64' { 'x64' } 'ARM64' { 'arm64' } default { throw "Unsupported architecture: $architecture" } }
     $web = @{ UseBasicParsing = $true }
@@ -56,20 +54,36 @@
         if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or -not (Test-Path -LiteralPath $manager -PathType Leaf)) { throw 'Incomplete release' }
         $manifest = Get-Content -LiteralPath (Join-Path $root 'release.json') -Raw | ConvertFrom-Json
         if ($manifest.version -ne $version) { throw 'Release version mismatch' }
-        & $node $manager $root $prefix $binDir $repo
-        if ($LASTEXITCODE -ne 0) { throw 'Release installation failed' }
-        if ($env:CIRCLE_NO_PATH -ne '1') {
-            $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-            try {
-                $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-                if (($raw -split ';') -notcontains $binDir) {
-                    $value = if ($raw) { "$raw;$binDir" } else { $binDir }
-                    $key.SetValue('Path', $value, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-                }
-            } finally { $key.Close() }
-            [Environment]::SetEnvironmentVariable('CIRCLE_PATH_TOUCH', $null, 'User')
-            $env:Path = "$binDir;$env:Path"
+        # Installs into CIRCLE_PREFIX and CIRCLE_BIN_DIR when they are set, otherwise where the
+        # Python circle was installed, otherwise %LOCALAPPDATA%\circle. Removes the Python circle.
+        $resultFile = Join-Path $temporary 'result.json'
+        $savedRepo = $env:CIRCLE_REPO
+        $env:CIRCLE_REPO = $repo
+        $env:CIRCLE_INSTALL_RESULT = $resultFile
+        try { & $node $manager $root }
+        finally {
+            $env:CIRCLE_REPO = $savedRepo
+            Remove-Item Env:CIRCLE_INSTALL_RESULT -ErrorAction SilentlyContinue
         }
+        if ($LASTEXITCODE -ne 0) { throw 'Release installation failed' }
+        $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
+        $binDir = $result.binDir
+        # The Python installer put <prefix>\current\circle on the user PATH.
+        $stale = @($result.removedPrefixes | ForEach-Object { (Join-Path $_ 'current\circle').TrimEnd('\') })
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        try {
+            $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $entries = @($raw -split ';' | Where-Object { $_ -and ($stale -notcontains [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\')) })
+            if ($env:CIRCLE_NO_PATH -ne '1' -and $entries -notcontains $binDir) { $entries += $binDir }
+            $value = $entries -join ';'
+            $changed = $value -ne $raw
+            if ($changed) { $key.SetValue('Path', $value, [Microsoft.Win32.RegistryValueKind]::ExpandString) }
+        } finally { $key.Close() }
+        # Setting a user variable tells running programs that the environment changed, so new
+        # terminals see the new PATH.
+        if ($changed) { [Environment]::SetEnvironmentVariable('CIRCLE_PATH_TOUCH', $null, 'User') }
+        $env:Path = (@($env:Path -split ';' | Where-Object { $_ -and ($stale -notcontains $_.TrimEnd('\')) }) -join ';')
+        if ($env:CIRCLE_NO_PATH -ne '1') { $env:Path = "$binDir;$env:Path" }
         Write-Host "[circle-install] Run circle, or $binDir\circle.cmd."
     } finally { Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue }
 }

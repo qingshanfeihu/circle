@@ -2,8 +2,6 @@
 set -euo pipefail
 
 repo="${CIRCLE_REPO:-qingshanfeihu/circle}"
-prefix="${CIRCLE_PREFIX:-$HOME/.local/share/circle}"
-bin_dir="${CIRCLE_BIN_DIR:-$HOME/.local/bin}"
 temporary=""
 cleanup() { [[ -z "$temporary" ]] || rm -rf -- "$temporary"; }
 trap cleanup EXIT
@@ -56,5 +54,6 @@ tar -xzf "$archive" -C "$temporary"
 root="$temporary/circle"
 [[ -x "$root/runtime/node" && -f "$root/app/dist/install_manager.js" ]] || fail 'Incomplete release'
 "$root/runtime/node" --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(process.argv[1])); if(m.version!==process.argv[2])throw Error("Release version mismatch");' "$root/release.json" "$version"
-"$root/runtime/node" "$root/app/dist/install_manager.js" "$root" "$prefix" "$bin_dir" "$repo"
-printf '[circle-install] Run %s/circle; add %s to PATH if needed.\n' "$bin_dir" "$bin_dir"
+# Installs into CIRCLE_PREFIX and CIRCLE_BIN_DIR when they are set, otherwise where the Python
+# circle was installed, otherwise ~/.local/share/circle and ~/.local/bin. Removes the Python circle.
+CIRCLE_REPO="$repo" "$root/runtime/node" "$root/app/dist/install_manager.js" "$root"

@@ -130,18 +130,25 @@ export function activeVersion(prefix: string): string | undefined {
     throw new Error('invalid installed version pointer');
   return value;
 }
+export const validRepo = (repo: string): boolean =>
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
 export function activateRelease(
   root: string,
   prefix: string,
   binDir: string,
   repo = DEFAULT_REPO,
 ): ReleaseManifest {
+  if (!validRepo(repo)) throw new Error('invalid release repository');
+  const manifest = stageRelease(root, prefix);
+  pointToRelease(manifest, prefix, binDir, repo);
+  return manifest;
+}
+// Checks the release, runs it once and copies it under versions/. Nothing that selects the
+// running version changes.
+export function stageRelease(root: string, prefix: string): ReleaseManifest {
   root = realpathSync(root);
   prefix = resolve(prefix);
-  binDir = resolve(binDir);
   const manifest = validateRelease(root);
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))
-    throw new Error('invalid release repository');
   const nodePath = join(
     root,
     'runtime',
@@ -169,7 +176,6 @@ export function activateRelease(
     throw new Error('release runtime version does not match manifest');
   const versions = join(prefix, 'versions');
   mkdirSync(versions, { recursive: true });
-  mkdirSync(binDir, { recursive: true });
   const destination = join(versions, manifest.version);
   if (existsSync(destination)) {
     const existing = validateRelease(destination);
@@ -185,6 +191,20 @@ export function activateRelease(
       rmSync(stage, { recursive: true, force: true });
     }
   }
+  return manifest;
+}
+// Writes the launcher and the receipt, then selects the staged version.
+export function pointToRelease(
+  manifest: ReleaseManifest,
+  prefix: string,
+  binDir: string,
+  repo = DEFAULT_REPO,
+): void {
+  if (!validRepo(repo)) throw new Error('invalid release repository');
+  prefix = resolve(prefix);
+  binDir = resolve(binDir);
+  validateRelease(join(prefix, 'versions', manifest.version));
+  mkdirSync(binDir, { recursive: true });
   const winPrefix = prefix.replaceAll('%', '%%');
   if (process.platform === 'win32') {
     if (/[\r\n"]/.test(prefix)) throw new Error('invalid installation prefix');
@@ -204,5 +224,4 @@ export function activateRelease(
     JSON.stringify({ schema: INSTALL_SCHEMA, repo, binDir, prefix }) + '\n',
   );
   atomicText(join(prefix, 'current.ref'), manifest.version + '\n');
-  return manifest;
 }
