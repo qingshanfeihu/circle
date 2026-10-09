@@ -8,7 +8,7 @@ A message that looks like a command but is not one, such as `/modles`, is **not 
 
 Most commands wait until the turn ends and answer `Busy · wait for the current turn to finish`. These work at any time:
 
-`/help`, `/hotkeys`, `/exit`, `/yolo`, `/settings`, `/approvals`, `/jobs`, `/session`, `/name`, `/tree`, `/themes`, `/thinking`, `/details`, `/copy`, `/export`, `/share`, `/unshare`, `/mcp` (listing only)
+`/help`, `/hotkeys`, `/exit`, `/yolo`, `/settings`, `/approvals`, `/jobs`, `/session`, `/name`, `/tree`, `/themes`, `/thinking`, `/details`, `/copy`, `/export`, `/share`, `/unshare`, `/logout`, `/mcp` (listing only), `/skill` and `/extensions` (listing only: `/skill <name>` and `/extensions reload` wait)
 
 Going back with `/tree` while a turn runs stops the turn first. A [custom command](custom-commands.md) also works: its text is queued like any message.
 

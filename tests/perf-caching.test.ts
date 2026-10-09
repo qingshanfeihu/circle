@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { CheckpointStore } from '../src/checkpoint_store.js';
 import { SessionApp } from '../src/tui/session_app.js';
@@ -216,6 +218,12 @@ test('a streaming turn keeps the loop responsive: a key works right away and fra
 
 test('/logout and /skill run during a turn instead of waiting for it', async (t) => {
   const root = scratch(t);
+  // A skill of the run's own, so the list does not depend on the machine's ~/.agents.
+  mkdirSync(join(root, 'skills', 'demo'), { recursive: true });
+  writeFileSync(
+    join(root, 'skills', 'demo', 'SKILL.md'),
+    '---\nname: demo\ndescription: A demo skill\n---\nAlways answer in haiku.\n',
+  );
   const settings = defaultSettings();
   saveCredentials({ api_key: 'sk-live' }, root);
   const model = new ScriptedModel([
@@ -246,8 +254,28 @@ test('/logout and /skill run during a turn instead of waiting for it', async (t)
   assert.ok(app.state.notices.some((note) => note.includes('Signed out')));
   await app.command('skill', '');
   assert.ok(
-    app.state.notices.some((note) => note.includes('Skills:')),
+    app.state.notices.some(
+      (note) => note.startsWith('Skills:') && note.includes('demo'),
+    ),
     'the skill list is answered while the turn runs',
+  );
+  // Loading one writes into the conversation the turn is writing, and a reload replaces
+  // the tools the turn may be calling: those forms wait for the turn.
+  const head = runtime.store.get(runtime.session.id)?.head;
+  await app.command('skill', 'demo');
+  assert.equal(
+    app.state.flash,
+    'Busy · load the skill when the turn has finished',
+  );
+  assert.equal(runtime.store.get(runtime.session.id)?.head, head);
+  assert.ok(!app.state.notices.some((note) => note.startsWith('Loaded skill')));
+  await app.command('extensions', 'reload');
+  assert.equal(
+    app.state.flash,
+    'Busy · reload extensions when the turn has finished',
+  );
+  assert.ok(
+    !app.state.notices.some((note) => note.startsWith('Extensions reloaded')),
   );
   await runtime.cancel();
   await turn;

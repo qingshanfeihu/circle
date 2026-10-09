@@ -102,11 +102,15 @@ const BUSY_OK = new Set([
   'tree',
   'jobs',
   'logout',
-  'skill',
-  'extensions',
 ]);
+// These only show a list when they have no argument. With one they change what the turn
+// works with: `/skill <name>` writes into the conversation the turn is writing, and
+// `/extensions reload` replaces the tools it may be calling. That form waits.
+const BUSY_OK_BARE = new Set(['skill', 'extensions']);
 const BUSY_WORDS: Record<string, string> = {
   models: 'Busy · switch models when the turn has finished',
+  skill: 'Busy · load the skill when the turn has finished',
+  extensions: 'Busy · reload extensions when the turn has finished',
   effort: 'Busy · change the thinking depth when the turn has finished',
   resume: 'Busy · switch sessions when the turn has finished',
 };
@@ -209,7 +213,11 @@ export async function runCommand(
     await host.send(prompt);
     return true;
   }
-  if (!BUSY_OK.has(name) && runtime.busy) {
+  if (
+    runtime.busy &&
+    !BUSY_OK.has(name) &&
+    !(BUSY_OK_BARE.has(name) && !args.trim())
+  ) {
     host.flash(
       BUSY_WORDS[name] ?? 'Busy · wait for the current turn to finish',
     );
