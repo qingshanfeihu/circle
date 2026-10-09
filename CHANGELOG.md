@@ -6,11 +6,18 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ### Changed
 
+- **Circle keeps up while a turn runs, and long sessions stay quick.** A repaint no longer reads the whole conversation back from the session database or draws every earlier message again, and streamed text is drawn at most every 16 ms instead of once per token. Typing, the wheel and `ctrl+o` answer while the model writes.
+- **`/logout` works while a turn runs, and so do `/skill` and `/extensions` when they only list.** `/skill <name>` and `/extensions reload` still wait for the turn to end.
+- **The model's answers are marked `●` instead of `⏺`.** Windows draws `⏺` as a blue emoji button. The lamps use the same `●` and are told apart by colour.
+- **The terminal's cursor sits where you type**, as in 0.5.0, so input methods open their candidates there.
 - **Thinking has no background tint.** A thought, folded or open, and the same line on a subagent's page, sit on the terminal background. The line stays italic blue and the open text stays faint, on a dark theme and on a light one. The plan and questions keep the magenta tint.
 
 ### Fixed
 
 - **Circle run in the folder that holds its data folder no longer reads the global `settings.json` as a project's.** `CIRCLE_HOME` was not known where the project's `.circle/settings.json` was looked for, so with `CIRCLE_HOME=~/.circle` and `~` as the folder, the global file was read as a project's and every key only it owns (`version`, `initialized`, `auth`, `trusted_folders`, `mcp_servers`, `extensions`, `update_check`, `models`) was named in red at start and on standard error in print mode. The keys the two files share were also applied as if the project had set them.
+- **The input box keeps its right edge on Windows Terminal.** Each changed row was written and then erased to the end of the line, and on Windows Terminal that erase also took the last column.
+- **The input method's candidate window opens at the cursor on Windows** instead of at the far right of the screen.
+- **The plan stays on screen while the card asks whether to implement it.** It was hidden while the card was up.
 - **`✖ Interrupted` leaves when the next turn starts.** Stopping a turn still marks it, and the mark stays while Circle is idle. It no longer sits at the bottom of the transcript after a new turn has begun.
 
 ## 1.0.1 - 2026-10-09

@@ -56,7 +56,7 @@ Two modes change what Circle is allowed to do. The current one is shown in the b
 
 ## The plan
 
-When Circle plans with `write_todos`, a box above the input shows the steps: green lamp for done, yellow for the one in progress. It shows five rows and follows the current step. Scroll it with the mouse wheel. It is hidden while a card is up and comes back afterwards.
+When Circle plans with `write_todos`, a box above the input shows the steps: green lamp for done, yellow for the one in progress. It shows five rows and follows the current step. Scroll it with the mouse wheel. It stays above a card, so when the model asks to implement the plan you can read it.
 
 ## Subagents
 
