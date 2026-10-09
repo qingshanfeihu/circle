@@ -83,7 +83,7 @@ test('Ctrl+B and the default timeout promote the actual running command without 
   cleanup(t, () => jobs.close().then(() => {}));
   const command = script(
     root,
-    `const fs=require('fs'); fs.appendFileSync('runs.txt','once\\n'); console.log('started'); setTimeout(()=>console.log('completed'),200);`,
+    `const fs=require('fs'); fs.appendFileSync('runs.txt','once\\n'); console.log('started'); setTimeout(()=>console.log('completed'),1000);`,
   );
   const first = jobs.execute(
     command,
@@ -105,13 +105,14 @@ test('Ctrl+B and the default timeout promote the actual running command without 
     { sessionId: 'one' },
     new AbortController().signal,
   );
-  // once it has printed, ctrl+b: what it printed stays with the result
+  // once it has printed, ctrl+b: what it printed stays with the result. It runs on for a
+  // second after printing, so a slow runner still finds it running when it looks.
   const logs = (): string[] =>
     readdirSync(root, { recursive: true })
       .map((name) => join(root, String(name)))
       .filter((path) => path.endsWith('.log'))
       .map((path) => readFileSync(path, 'utf8'));
-  await until(() => logs().includes('started\n'));
+  await until(() => logs().includes('started\n'), 15000);
   assert.equal(jobs.backgroundForeground(), 1);
   const userMoved = await second;
   assert.equal(userMoved.how, 'moved');

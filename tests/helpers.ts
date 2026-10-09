@@ -25,7 +25,13 @@ function owned(t: TestContext): Resources {
       }
       for (const root of state!.roots.reverse()) {
         try {
-          rmSync(root, { recursive: true, force: true });
+          // Windows keeps a folder busy for a moment after a process in it was killed.
+          rmSync(root, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,
+            retryDelay: 100,
+          });
         } catch (error) {
           errors.push(error);
         }
