@@ -7,6 +7,7 @@ import { palette } from '../ink/theme.js';
 import { stringWidth, truncate } from '../ink/string_width.js';
 import { EFFORT_LEVELS } from '../model.js';
 import type { Usage } from '../types.js';
+import type { CompactionProgress } from '../compaction.js';
 
 // What the frame's top edge says while the model works, one word picked per turn.
 export const BUSY_VERBS = [
@@ -211,6 +212,31 @@ export interface TurnUsage {
 export function turnUsageRow(usage: TurnUsage): string {
   const p = palette();
   return `   ${p.dim}${formatElapsed(usage.seconds)} · ↑ ${formatTokens(usage.input)} · ↓ ${formatTokens(usage.output)}${p.reset}`;
+}
+
+// Above the input box while a compaction runs: `auto-compacting · ████░░░░ summarizing · 12s`
+// (`compacting` for /compact and the model's own call). The bar is full only once the
+// summary is in; a narrow screen drops the stage and the clock before the bar.
+const BAR_CELLS = 16;
+export function compactionRow(
+  progress: CompactionProgress,
+  width: number,
+  now = Date.now(),
+): string {
+  const p = palette();
+  const fraction = progress.fraction();
+  let filled = Math.round(fraction * BAR_CELLS);
+  if (fraction < 1) filled = Math.min(filled, BAR_CELLS - 1);
+  const head = `${progress.label} · `;
+  let tail = ` ${progress.stage} · ${Math.round(progress.elapsed(now))}s`;
+  const room = Math.max(8, width - 2);
+  if (stringWidth(head) + BAR_CELLS + stringWidth(tail) > room) tail = '';
+  if (stringWidth(head) + BAR_CELLS > room)
+    return ' ' + p.faint + truncate((head + tail).trimEnd(), room) + p.reset;
+  return (
+    ` ${p.faint}${head}${p.text}${'█'.repeat(filled)}` +
+    `${p.faint}${'░'.repeat(BAR_CELLS - filled)}${p.reset}${p.faint}${tail}${p.reset}`
+  );
 }
 
 // The terminal window's title, as pi sets it: `circle - <title> - <folder>`.

@@ -100,7 +100,7 @@ export function agentActivity(agent: SubagentView): string {
     : agent.description;
   return task.split(/\s+/).filter(Boolean).join(' ') || '—';
 }
-function agentSeconds(agent: SubagentView, now: number): number {
+export function agentSeconds(agent: SubagentView, now: number): number {
   const end = ['running', 'waiting'].includes(agent.state)
     ? now
     : (agent.updated ?? now);

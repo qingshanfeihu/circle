@@ -114,6 +114,26 @@ export function outputTail(
 export function jobLine(job: Job): string {
   return `${job.id} · ${job.kind} · ${job.status}${job.exitCode !== undefined ? `, exit ${job.exitCode}` : ''}${job.reason && job.reason !== 'exit' ? ` (${job.reason})` : ''} · ${elapsed(job)} · ${job.title} · output ${job.virtualPath}`;
 }
+// `done`, `failed · exit 1`, `failed · timeout`, `stopped`.
+export function outcomeWords(job: Job): string {
+  if (job.status === 'done') return 'done';
+  if (job.status === 'failed')
+    return job.reason && job.reason !== 'exit'
+      ? `failed · ${job.reason}`
+      : job.exitCode !== undefined
+        ? `failed · exit ${job.exitCode}`
+        : 'failed';
+  return job.status || 'ended';
+}
+// What the conversation shows for a finished job: `◆ j3 failed · exit 1 · npm test · 12s`.
+export function noticeLine(job: Job): string {
+  const title = plainJobOutput(job.title)
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+  const chars = Array.from(title);
+  return `◆ ${job.id} ${outcomeWords(job)} · ${chars.length > 60 ? chars.slice(0, 59).join('') + '…' : title} · ${elapsed(job)}`;
+}
 export function jobNotice(job: Job): string {
   let output = 'Output is unavailable.';
   try {
@@ -617,12 +637,7 @@ export class JobRegistry {
         id: randomUUID(),
         role: 'user',
         content: `<system-reminder data-source="circle-jobs">\n${taken.map(jobNotice).join('\n\n')}\n\nThis is a background-job notice.\n</system-reminder>`,
-        display: taken
-          .map(
-            (job) =>
-              `◆ ${job.id} ${job.status} · ${job.title} · ${elapsed(job)}`,
-          )
-          .join('\n'),
+        display: taken.map(noticeLine).join('\n'),
         internal: 'job_notice',
       },
     ];

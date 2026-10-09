@@ -163,6 +163,8 @@ export class SessionApp {
   private welcomeState: WelcomeState;
   // The runtime is loading the folder's things (attach): the welcome's lamps blink.
   private connecting = false;
+  // Setup asks before a session: the welcome shows no model until one is saved.
+  private settingUp = false;
   private started = false;
   private title = '';
   private titleAt = 0;
@@ -433,6 +435,7 @@ export class SessionApp {
         runtime: this.runtime,
         connected: this.state.connected,
         trusted,
+        settingUp: this.settingUp,
       }),
     );
     if (!this.started || Date.now() - this.titleAt < 1000) return;
@@ -471,6 +474,7 @@ export class SessionApp {
   }
   async initialize(force = false): Promise<boolean> {
     if (force || !this.settings.initialized) {
+      this.settingUp = !this.runtime;
       const url = await this.askText(
         'connect',
         'API base URL',
@@ -485,7 +489,21 @@ export class SessionApp {
         true,
       );
       if (this.ended || !key) return false;
-      const result = await resolveEndpoint(url, key);
+      // The card says what Circle is doing while the endpoint lists its models.
+      this.state.dialog = {
+        title: 'Looking for models…',
+        body: `asking ${url}`,
+        options: [],
+        focus: 0,
+        lamp: 'running',
+      };
+      this.repaint();
+      let result: Awaited<ReturnType<typeof resolveEndpoint>>;
+      try {
+        result = await resolveEndpoint(url, key);
+      } finally {
+        this.state.dialog = undefined;
+      }
       const protocol = result.inferred
         ? await this.askChoice('protocol', 'Choose the API protocol', [
             'openai',
@@ -511,6 +529,7 @@ export class SessionApp {
       saveCredentials({ api_key: key }, this.home);
       saveSettings(settings, this.home);
       this.settings = settings;
+      this.settingUp = false;
     }
     if (!isFolderTrusted(this.settings, this.workspace)) {
       const answer = await this.askChoice(
@@ -884,6 +903,7 @@ export class SessionApp {
     this.theme.feed(event);
     if (event.type === 'color' || event.type === 'scheme') return;
     if (event.type === 'mouse') {
+      if (this.pageButton(event)) return;
       if (this.selectionMouse(event)) return;
       if (
         event.action === 'press' &&
@@ -1783,6 +1803,30 @@ export class SessionApp {
   /** pbcopy, wl-copy or xclip (clip on Windows); false when none took the text. */
   private async copy(text: string): Promise<boolean> {
     return this.clipboard.copyNative(text);
+  }
+  /** A press on a subagent page's band: `main` goes back, `prev` and `next` step through. */
+  private pageButton(event: Extract<InputEvent, { type: 'mouse' }>): boolean {
+    const band = this.state.pageButtons;
+    if (
+      !band ||
+      event.action !== 'press' ||
+      event.button !== 0 ||
+      event.y !== band.row
+    )
+      return false;
+    const hit = band.spans.find(
+      ([start, end]) => event.x >= start && event.x < end,
+    );
+    if (!hit) return false;
+    this.agents.handle(
+      hit[2] === 'back' ? 'escape' : hit[2] === 'prev' ? 'left' : 'right',
+      '',
+      (this.state.subagents ?? []).map((agent) => agent.id),
+      '',
+    );
+    this.state.scroll = 0;
+    this.repaint();
+    return true;
   }
   /** A mouse event for the selection; a press on a task row opens the task instead. */
   private selectionMouse(
