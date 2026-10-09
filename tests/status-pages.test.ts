@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -421,7 +421,18 @@ test('a background job is one faint line under its call and a notice row whose g
       },
     ]),
     async () => {
-      setTimeout(() => runtime.jobs.backgroundForeground(), 400);
+      // ctrl+b once the command has printed, as you would: a fixed delay lost the race
+      // against a slow start on a busy runner.
+      const printed = (): boolean =>
+        readdirSync(root, { recursive: true })
+          .map((name) => join(root, String(name)))
+          .filter((path) => path.endsWith('.log'))
+          .some((path) => readFileSync(path, 'utf8').includes('ready\n'));
+      void (async () => {
+        for (const end = Date.now() + 15000; !printed() && Date.now() < end;)
+          await delay(20);
+        runtime.jobs.backgroundForeground();
+      })();
       return reply('p2', '', [
         { id: 'fg', name: 'execute', args: { command: `${node} slow.cjs` } },
       ]);
