@@ -62,6 +62,7 @@ export function nextPruneState(
     if (
       message.role !== 'tool' ||
       old.has(message.id) ||
+      Boolean(message.attachments?.length) ||
       ['question', 'skill'].includes(name) ||
       message === latestTodos ||
       completeJson(message.content)
@@ -99,6 +100,7 @@ export function pruneMessages(
     if (message.role === 'tool' && pruned.has(message.id))
       return {
         ...message,
+        attachments: undefined,
         content: `${Array.from(message.content).slice(0, 160).join('')}\n…[older tool output pruned to free context: ${Array.from(message.content).length} characters originally. Call the tool again if you need the full text.]`,
       };
     if (message.role === 'assistant' && stripped.has(message.id))

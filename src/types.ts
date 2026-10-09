@@ -18,6 +18,7 @@ export interface Message {
   model?: string;
   request_model?: string;
   content: string;
+  attachments?: MediaAttachment[];
   thinking?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
@@ -44,6 +45,15 @@ export interface Tool {
 export interface ToolContext {
   signal: AbortSignal;
   sessionId: string;
+  emitAttachments?: (attachments: MediaAttachment[]) => void;
+}
+export interface MediaAttachment {
+  kind: 'image' | 'document';
+  mime_type:
+    'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'application/pdf';
+  filename: string;
+  data: string;
+  sha256: string;
 }
 export interface ModelRequest {
   system: string;

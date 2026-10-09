@@ -16,6 +16,7 @@ import { applyPatch } from './apply_patch.js';
 import { QUESTION_SCHEMA } from './questions.js';
 import { JobRegistry, jobLine, jobNotice } from './jobs.js';
 import { readTextWindow } from './file_read.js';
+import { mediaType, readAttachment } from './media.js';
 export interface Todo {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
@@ -102,6 +103,14 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
         return readdirSync(path, { withFileTypes: true })
           .map((entry) => entry.name + (entry.isDirectory() ? '/' : ''))
           .join('\n');
+      if (mediaType(path)) {
+        if (!context.emitAttachments)
+          throw new Error('this caller does not accept media attachments');
+        const attachment = await readAttachment(path, context.signal);
+        context.emitAttachments([attachment]);
+        read.add(path);
+        return `Read ${attachment.filename} (${attachment.mime_type}) as an attachment.`;
+      }
       const offset = Math.max(0, Math.trunc(Number(args.offset ?? 0)));
       const limit = Math.max(0, Math.trunc(Number(args.limit ?? 2000)));
       const content = await readTextWindow(path, offset, limit, context.signal);

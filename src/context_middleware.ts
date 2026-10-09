@@ -15,6 +15,7 @@ import { loopReminder } from './middleware/loop_guard.js';
 import { isRecord } from './settings.js';
 import type { CompactionEvent } from './compaction.js';
 import { redact } from './redact.js';
+import { summaryMessages } from './media.js';
 import {
   runningJobReminder,
   pollingJobReminder,
@@ -43,7 +44,16 @@ export function messageTokens(messages: Message[]): number {
           ? JSON.stringify(message.provider_content)
           : message.content + (message.thinking || ''),
       ) +
-      tokenLen(JSON.stringify(message.tool_calls ?? [])),
+      tokenLen(JSON.stringify(message.tool_calls ?? [])) +
+      (message.attachments ?? []).reduce(
+        (sum, item) =>
+          sum +
+          // Preflight estimates only; persisted usage and prices use API receipts.
+          (item.kind === 'image'
+            ? 2048
+            : Math.max(8192, Math.ceil(item.data.length / 4))),
+        0,
+      ),
     0,
   );
 }
@@ -362,7 +372,11 @@ export class ContextManager {
           'Summarize the conversation so another coding agent can continue. Preserve exact goals, constraints, decisions, paths, completed results and unresolved tasks. Use these headings: Goal, Decisions, Files & paths, Open tasks, Notes. Reply with the summary only. ' +
           hint,
         messages: [
-          { id: randomUUID(), role: 'user', content: JSON.stringify(prefix) },
+          {
+            id: randomUUID(),
+            role: 'user',
+            content: JSON.stringify(summaryMessages(prefix)),
+          },
         ],
         tools: [],
         signal,

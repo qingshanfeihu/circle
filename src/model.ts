@@ -31,6 +31,11 @@ import { circleHome } from './paths.js';
 import { ModelCatalog, type ModelFacts } from './model_catalog.js';
 import { modelProfile, fitEffort, THINKING_BUDGET } from './model_profiles.js';
 import { priceCall } from './pricing.js';
+import {
+  checkRequestMedia,
+  openAIContent,
+  anthropicContent,
+} from './model_media.js';
 export const EFFORT_LEVELS = [
   'minimal',
   'low',
@@ -91,6 +96,7 @@ export class GatewayModel implements ChatModel {
     );
   }
   async complete(request: ModelRequest): Promise<ModelResponse> {
+    checkRequestMedia(request.messages);
     const response = await this.guard.execute(request, (current) =>
       this.anthropic
         ? this.completeAnthropic(current)
@@ -169,16 +175,32 @@ export class GatewayModel implements ChatModel {
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: request.system },
     ];
+    const toolMedia: import('./types.js').MediaAttachment[] = [];
+    const flushToolMedia = (): void => {
+      if (!toolMedia.length) return;
+      messages.push({
+        role: 'user',
+        content: openAIContent(
+          'Attachments returned by the preceding tools:',
+          toolMedia,
+        ),
+      });
+      toolMedia.length = 0;
+    };
     for (const message of request.messages) {
+      // Chat Completions allows media only in user content. Keep the complete
+      // tool-result batch together, then project its media into a user item.
+      if (message.role !== 'tool') flushToolMedia();
       if (message.role === 'system')
         messages.push({ role: 'system', content: message.content });
-      else if (message.role === 'tool')
+      else if (message.role === 'tool') {
         messages.push({
           role: 'tool',
           content: message.content,
           tool_call_id: message.tool_call_id!,
         });
-      else if (message.role === 'assistant')
+        toolMedia.push(...(message.attachments ?? []));
+      } else if (message.role === 'assistant')
         messages.push({
           role: 'assistant',
           content: message.content || null,
@@ -195,8 +217,15 @@ export class GatewayModel implements ChatModel {
               }
             : {}),
         });
-      else messages.push({ role: 'user', content: message.content });
+      else
+        messages.push({
+          role: 'user',
+          content: message.attachments?.length
+            ? openAIContent(message.content, message.attachments)
+            : message.content,
+        });
     }
+    flushToolMedia();
     const body: ChatCompletionCreateParamsStreaming = {
       model: this.model,
       messages,
@@ -348,7 +377,9 @@ export class GatewayModel implements ChatModel {
           {
             type: 'tool_result',
             tool_use_id: message.tool_call_id!,
-            content: message.content,
+            content: message.attachments?.length
+              ? anthropicContent(message.content, message.attachments)
+              : message.content,
             is_error: message.status === 'error',
           },
         ];
@@ -369,7 +400,7 @@ export class GatewayModel implements ChatModel {
             ];
       } else {
         role = 'user';
-        content = [{ type: 'text', text: message.content }];
+        content = anthropicContent(message.content, message.attachments);
       }
       const previous = messages.at(-1);
       if (previous?.role === role && Array.isArray(previous.content))

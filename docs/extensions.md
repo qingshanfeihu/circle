@@ -25,6 +25,7 @@ Exports and registration may be asynchronous. A failed registration is discarded
 ## API
 
 - `registerTool(name, description, parameters, execute, options)`: JSON Schema parameters; string results remain text, other results become JSON. Tools require approval unless read-only or explicitly configured with `approval: false`. Read-only mode still blocks mutating and unknown effects.
+- A tool context provides `emitAttachments(items)` for image/PDF output alongside the returned text. Each item contains `kind` (`image` or `document`), `mime_type`, `filename`, canonical base64 `data` and the bytes' SHA-256 `sha256`. Emitted attachments are validated and copied; a failed or cancelled call discards them. MCP image and embedded PDF results use the same channel.
 - `registerCommand(name, description, handler)`: receives `workspace`, `toast`, `append` and `sendUserMessage` in its context. Built-in and custom-command names are reserved.
 - `registerMiddleware(handler, slot)`: `model_call` receives `(request, next)`, `tool_boundary` receives `(invocation, next)`, and `after_model` receives `(response, request)`. Tool middleware cannot replace an approved invocation.
 - `registerSubagent(spec, toolNames)`: spec contains `name`, `description` and `system_prompt`, with optional `model`. Missing tool names disable that agent with a warning. Later agents of the same name replace earlier agents, including bundled agents.

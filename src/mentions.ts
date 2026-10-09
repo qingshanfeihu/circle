@@ -6,12 +6,18 @@ import {
   statSync,
 } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
+import type { MediaAttachment } from './types.js';
+import { mediaType, readAttachment, validateAttachments } from './media.js';
 const SKIP = new Set(
   '.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .tox dist build .next .cache'.split(
     ' ',
   ),
 );
-export function attachFiles(text: string, root: string): string {
+export function attachFiles(
+  text: string,
+  root: string,
+  allowed: (path: string) => boolean = () => true,
+): string {
   root = realpathSync(root);
   const seen = new Set<string>();
   const blocks: string[] = [];
@@ -25,6 +31,7 @@ export function attachFiles(text: string, root: string): string {
         rel === '..' ||
         rel.startsWith('..' + sep) ||
         seen.has(full) ||
+        !allowed(full) ||
         !statSync(full).isFile() ||
         statSync(full).size > 65536
       )
@@ -40,6 +47,47 @@ export function attachFiles(text: string, root: string): string {
     }
   }
   return blocks.length ? text + '\n\n' + blocks.join('\n\n') : text;
+}
+export async function attachPrompt(
+  text: string,
+  root: string,
+  signal: AbortSignal,
+  allowed: (path: string) => boolean,
+): Promise<{ content: string; attachments?: MediaAttachment[] }> {
+  root = realpathSync(root);
+  const attachments: MediaAttachment[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(/(?<!\S)@([^\s@]+)/g)) {
+    const raw = match[1]!.replace(/[.,;:!?)]+$/, '');
+    let full: string;
+    try {
+      full = realpathSync(resolve(root, raw));
+    } catch {
+      continue;
+    }
+    const rel = relative(root, full);
+    if (
+      rel === '..' ||
+      rel.startsWith('..' + sep) ||
+      seen.has(full) ||
+      !allowed(full) ||
+      !statSync(full).isFile() ||
+      !mediaType(full)
+    )
+      continue;
+    seen.add(full);
+    attachments.push(await readAttachment(full, signal));
+  }
+  signal.throwIfAborted();
+  validateAttachments(attachments);
+  return {
+    content: attachFiles(
+      text,
+      root,
+      (path) => allowed(path) && !mediaType(path),
+    ),
+    ...(attachments.length ? { attachments } : {}),
+  };
 }
 export function complete(partial: string, root: string, limit = 20): string[] {
   const slash = partial.lastIndexOf('/');

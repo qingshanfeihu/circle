@@ -1,12 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import type { ChatModel, Message, Tool, ToolCall, Usage } from './types.js';
+import type {
+  ChatModel,
+  Message,
+  Tool,
+  ToolCall,
+  Usage,
+  MediaAttachment,
+} from './types.js';
 import { emptyUsage, addUsage } from './types.js';
 import { EventBus } from './events.js';
-import { ApprovalPolicy } from './approvals.js';
+import { ApprovalPolicy, wildcard } from './approvals.js';
 import { CheckpointStore, type Session } from './checkpoint_store.js';
-import { attachFiles } from './mentions.js';
+import { attachPrompt } from './mentions.js';
 import { prepareToolCall, RecoverableToolError } from './tool_call_compat.js';
 import { redact } from './redact.js';
+import { validateAttachments } from './media.js';
 export type ApprovalDecision = 'approve' | 'reject' | 'always' | 'prefix';
 export interface HarnessOptions {
   model: ChatModel;
@@ -36,6 +44,12 @@ export interface HarnessOptions {
   planFileMutation?: (call: ToolCall) => boolean;
 }
 export class Harness {
+  private promptFileAllowed(path: string): boolean {
+    const name = path.replaceAll('\\', '/').split('/').at(-1)!;
+    return !this.options.policy.credentialFiles.some((pattern) =>
+      wildcard(pattern, name),
+    );
+  }
   readonly bus: EventBus;
   readonly sessionId: string;
   tools: Tool[];
@@ -128,7 +142,12 @@ export class Harness {
       this.save({
         id: randomUUID(),
         role: 'user',
-        content: attachFiles(prompt, this.options.session.workspace),
+        ...(await attachPrompt(
+          prompt,
+          this.options.session.workspace,
+          signal,
+          (path) => this.promptFileAllowed(path),
+        )),
         display: prompt,
       });
     const session = this.options.store.get(this.sessionId)!;
@@ -145,7 +164,9 @@ export class Harness {
           this.save({
             id: randomUUID(),
             role: 'user',
-            content: attachFiles(message, session.workspace),
+            ...(await attachPrompt(message, session.workspace, signal, (path) =>
+              this.promptFileAllowed(path),
+            )),
             display: message,
           });
           this.bus.emit('steer', { payload: { message } });
@@ -207,6 +228,8 @@ export class Harness {
           let content = '';
           let status: 'success' | 'error' = 'success';
           let recoverable = false;
+          let attachments: MediaAttachment[] = [];
+          let acceptingAttachments = true;
           this.bus.emit('tool_call', { payload: { ...call } });
           try {
             signal.throwIfAborted();
@@ -261,7 +284,18 @@ export class Harness {
             )
               throw new Error('read-only mode: this tool cannot run');
             this.bus.emit('tool_start', { payload: { ...call } });
-            const context = { signal, sessionId: this.sessionId };
+            const context = {
+              signal,
+              sessionId: this.sessionId,
+              emitAttachments: (items: MediaAttachment[]) => {
+                if (!acceptingAttachments)
+                  throw new Error('tool attachment channel is closed');
+                signal.throwIfAborted();
+                validateAttachments(items);
+                attachments.push(...structuredClone(items));
+                validateAttachments(attachments);
+              },
+            };
             const guardedTool: Tool = {
               ...tool,
               run: async (args, context) => {
@@ -280,12 +314,16 @@ export class Harness {
               : await guardedTool.run(call.args, context);
             if (typeof content !== 'string')
               throw new Error('tool must return text');
+            signal.throwIfAborted();
           } catch (error) {
             status = 'error';
             recoverable = error instanceof RecoverableToolError;
+            attachments = [];
             content = redact(
               error instanceof Error ? error.message : String(error),
             );
+          } finally {
+            acceptingAttachments = false;
           }
           this.save({
             id: randomUUID(),
@@ -294,6 +332,7 @@ export class Harness {
             tool_call_id: call.id,
             name: call.name,
             status,
+            ...(attachments.length ? { attachments } : {}),
             ...(recoverable ? { recoverable: true } : {}),
           });
           this.bus.emit('tool_result', {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Message, ToolCall } from './types.js';
 import { isRecord } from './settings.js';
 import { isConstructor } from './legacy_codec.js';
+import { inlineLegacyAttachments } from './media.js';
 export interface LegacyMessage {
   type: string;
   data: Record<string, unknown>;
@@ -69,6 +70,14 @@ export function fromLegacyMessage(record: LegacyMessage, index = 0): Message {
           .map((block) => String(block.text || ''))
           .join('');
   const extra = isRecord(data.additional_kwargs) ? data.additional_kwargs : {};
+  const attachments = ['user', 'tool'].includes(role)
+    ? inlineLegacyAttachments(
+        blocks,
+        typeof extra.read_file_path === 'string'
+          ? extra.read_file_path
+          : 'attachment',
+      )
+    : [];
   const thinking =
     blocks
       .filter(isRecord)
@@ -107,6 +116,7 @@ export function fromLegacyMessage(record: LegacyMessage, index = 0): Message {
     id,
     role,
     content,
+    ...(attachments.length ? { attachments } : {}),
     ...(thinking ? { thinking } : {}),
     ...(blocks.length ? { provider_content: blocks } : {}),
     ...(calls.length ? { tool_calls: calls } : {}),

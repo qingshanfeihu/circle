@@ -5,9 +5,11 @@ import { createHash } from 'node:crypto';
 import {
   graphMessages,
   validateSessionGraph,
+  validateMessages,
   type SessionGraph,
 } from './session_graph.js';
 import type { CheckpointStore } from './checkpoint_store.js';
+import { validateAttachments } from './media.js';
 export interface SessionMeta {
   thread_id: string;
   title: string;
@@ -164,6 +166,7 @@ export function fromJsonl(text: string): {
     }
   }
   if (pending.size) throw new Error('export has pending tool calls');
+  validateMessages(messages);
   return { header, messages };
 }
 export function escapeHtml(text: string): string {
@@ -188,13 +191,25 @@ export function toMarkdown(messages: Message[], meta: SessionMeta): string {
   );
 }
 export function toHtml(messages: Message[], meta: SessionMeta): string {
+  const mediaHtml = (message: Message): string => {
+    if (!message.attachments?.length) return '';
+    validateAttachments(message.attachments);
+    return message.attachments
+      .map((item) => {
+        const uri = `data:${item.mime_type};base64,${item.data}`;
+        return item.kind === 'image'
+          ? `<figure><img style="max-width:100%" src="${uri}" alt="${escapeHtml(item.filename)}"><figcaption>${escapeHtml(item.filename)}</figcaption></figure>`
+          : `<p><a href="${uri}" download="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</a></p>`;
+      })
+      .join('');
+  };
   const body = messages
     .filter((message) => !message.internal)
     .map((message) => {
       if (message.role === 'user')
-        return `<div class="you">${escapeHtml(message.display ?? message.content)}</div>`;
+        return `<div class="you">${escapeHtml(message.display ?? message.content)}</div>${mediaHtml(message)}`;
       if (message.role === 'tool')
-        return `<details><summary>${message.status === 'error' ? '✖' : '●'} ${escapeHtml(message.name || 'tool')}</summary><pre>${escapeHtml(message.content)}</pre></details>`;
+        return `<details><summary>${message.status === 'error' ? '✖' : '●'} ${escapeHtml(message.name || 'tool')}</summary><pre>${escapeHtml(message.content)}</pre>${mediaHtml(message)}</details>`;
       return `${message.thinking ? `<details><summary>thinking</summary><pre>${escapeHtml(message.thinking)}</pre></details>` : ''}<div class="answer">${escapeHtml(message.content)}</div>`;
     })
     .join('\n');

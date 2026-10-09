@@ -4,7 +4,8 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { Tool } from './types.js';
+import type { Tool, MediaAttachment } from './types.js';
+import { attachmentFromBase64 } from './media.js';
 import { isRecord } from './settings.js';
 import { shellEnvironment } from './sandbox.js';
 
@@ -165,15 +166,51 @@ export class McpManager {
                   const content = Array.isArray(result.content)
                     ? result.content
                     : [];
+                  const attachments: MediaAttachment[] = [];
                   const text = content
-                    .map((block) =>
-                      isRecord(block) && block.type === 'text'
-                        ? String(block.text || '')
-                        : JSON.stringify(block),
-                    )
+                    .map((block) => {
+                      if (!isRecord(block)) return JSON.stringify(block);
+                      if (block.type === 'text')
+                        return String(block.text || '');
+                      const resource =
+                        block.type === 'resource' && isRecord(block.resource)
+                          ? block.resource
+                          : undefined;
+                      const data =
+                        block.type === 'image' ? block.data : resource?.blob;
+                      const mime =
+                        block.type === 'image'
+                          ? block.mimeType
+                          : resource?.mimeType;
+                      if (
+                        context.emitAttachments &&
+                        typeof data === 'string' &&
+                        typeof mime === 'string' &&
+                        [
+                          'image/png',
+                          'image/jpeg',
+                          'image/gif',
+                          'image/webp',
+                          'application/pdf',
+                        ].includes(mime)
+                      ) {
+                        const filename = `${spec.name}-${attachments.length + 1}.${mime.split('/')[1]}`;
+                        attachments.push(
+                          attachmentFromBase64(
+                            data,
+                            mime as MediaAttachment['mime_type'],
+                            filename,
+                          ),
+                        );
+                        return `Attachment: ${filename} (${mime})`;
+                      }
+                      return JSON.stringify(block);
+                    })
                     .join('\n');
                   if (result.isError)
                     throw new Error(text || 'MCP tool failed');
+                  context.signal.throwIfAborted();
+                  if (attachments.length) context.emitAttachments!(attachments);
                   return text || JSON.stringify(result.structuredContent ?? {});
                 },
               });

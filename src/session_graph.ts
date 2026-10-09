@@ -1,6 +1,7 @@
 import type { Session, Checkpoint, ContextState } from './checkpoint_store.js';
 import type { Message } from './types.js';
 import { isRecord } from './settings.js';
+import { validateAttachments } from './media.js';
 export interface SessionGraphNode {
   session: Session;
   checkpoints: Checkpoint[];
@@ -33,6 +34,11 @@ function validateMessage(message: Message, previous: Set<string>): Set<string> {
     typeof message.content !== 'string'
   )
     throw new Error('invalid session message');
+  if (message.attachments !== undefined) {
+    if (!['user', 'tool'].includes(message.role) || message.status === 'error')
+      throw new Error('invalid media message');
+    validateAttachments(message.attachments);
+  }
   if (
     message.tool_calls !== undefined &&
     (!Array.isArray(message.tool_calls) || message.role !== 'assistant')

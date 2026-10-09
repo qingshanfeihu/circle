@@ -21,6 +21,11 @@ for await (const line of input) {
     send(request.id, {
       tools: [
         {
+          name: 'media',
+          description: 'Return image and PDF fixtures.',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
           name: 'write_receipt',
           description: 'Write an observable test receipt.',
           inputSchema: {
@@ -59,6 +64,24 @@ for await (const line of input) {
               ambient: process.env.OPENAI_API_KEY,
               supplied: process.env.TEST_SUPPLIED,
             }),
+          },
+        ],
+      });
+    else if (name === 'media')
+      send(request.id, {
+        content: [
+          {
+            type: 'image',
+            mimeType: 'image/png',
+            data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8xkAAAAASUVORK5CYII=',
+          },
+          {
+            type: 'resource',
+            resource: {
+              uri: 'file:///fixture.pdf',
+              mimeType: 'application/pdf',
+              blob: Buffer.from('%PDF-1.4\nfixture\n%%EOF').toString('base64'),
+            },
           },
         ],
       });

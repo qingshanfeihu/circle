@@ -4,6 +4,10 @@ The runtime registers tools with JSON Schema arguments and declared effects. Bui
 
 `read_file` uses a zero-based line offset and one-based displayed line numbers: `{ "file_path": "src/cli.ts", "offset": 20, "limit": 40 }` reads source lines 21–60. Omitted bounds read up to 2000 lines from the beginning; a non-positive limit requests no lines. Files and background logs are read as streams, with LF, CRLF and CR line endings accepted. An offset beyond the last line reports an error.
 
+PNG, JPEG, GIF, WebP and PDF reads return media attachments instead of numbered binary text. The same formats can be supplied as workspace mentions, for example `Inspect @screenshot.png`. Credential-file rules apply to mentions as well as file tools. Each attachment is limited to 20 MiB, and a model request accepts up to 28 MiB of encoded media data. The selected model and endpoint must accept the media format; provider errors are reported without converting binary data into text.
+
+Attachment bytes and SHA-256 receipts persist in SQLite and JSONL session bundles. HTML exports embed images and provide PDF download links. Terminal output shows file names and MIME types. Context summaries keep attachment metadata and archive the original bytes; preflight media token counts are estimates, while usage and prices come from API responses. Protocol formats follow [OpenAI images](https://developers.openai.com/api/docs/guides/images-vision), [OpenAI PDF inputs](https://developers.openai.com/api/docs/guides/file-inputs), and [Anthropic PDF inputs](https://platform.claude.com/docs/en/build-with-claude/pdf-support).
+
 Model-facing tools also include plans, skills, questions, subagents, context compaction and web fetching. Tool results are saved in the session before the next model request. A rejected or cancelled call receives an error result with the original call ID.
 
 `execute` and `task` accept `background: true`. `list_jobs` and `stop_job` manage the resulting jobs; subagents additionally have `wait_jobs`. See [background jobs](background-jobs.md) for output, timeout and completion behavior.
