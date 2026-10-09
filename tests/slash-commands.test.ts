@@ -668,20 +668,20 @@ test('/tree, /fork, /clone, /new, /continue and /resume move between branches an
   };
   await app.submit('/tree');
   assert.equal(app.state.picker!.title, 'Session tree');
-  await pick('assistant: answer two');
+  await pick('⏺ answer two');
   assert.equal(app.state.flash, 'Already here');
   await app.submit('/tree');
   const picker = app.state.picker!;
   picker.focus = picker
     .matches()
-    .findIndex((item) => item.label === 'assistant: answer two');
+    .findIndex((item) => item.label === '⏺ answer two');
   await key('L');
   assert.equal(app.state.dialog?.title, 'label');
   app.state.dialog!.input = 'start';
   await key('enter');
   assert.equal(
-    app.state.picker!.items.find((item) => item.label.startsWith('['))!.label,
-    '[start] assistant: answer two',
+    app.state.picker!.items.find((item) => item.label.includes('['))!.label,
+    '⏺ [start] answer two',
   );
   assert.deepEqual(Object.values(runtime.store.labels(runtime.session.id)), [
     'start',
@@ -689,7 +689,7 @@ test('/tree, /fork, /clone, /new, /continue and /resume move between branches an
   await key('escape');
   await app.submit('/tree two');
   assert.equal(app.state.picker!.query, 'two');
-  await pick('user: question two');
+  await pick('› question two');
   assert.equal(app.state.draft, 'question two');
   assert.equal(
     app.state.notices.at(-1),
@@ -704,7 +704,7 @@ test('/tree, /fork, /clone, /new, /continue and /resume move between branches an
   const first = runtime.session.id;
   await app.submit('/fork');
   assert.equal(app.state.picker!.title, 'Fork from a message');
-  await pick('user: question one');
+  await pick('question one');
   assert.notEqual(runtime.session.id, first);
   assert.equal(app.state.draft, 'question one');
   assert.equal(

@@ -20,7 +20,11 @@ import {
   saveSettingsChange,
   type CircleSettings,
 } from '../settings.js';
-import type { PickerItem, PickerOptions } from '../ink/components/picker.js';
+import type {
+  Picker,
+  PickerItem,
+  PickerOptions,
+} from '../ink/components/picker.js';
 import { palette } from '../ink/theme.js';
 import { stripAnsi } from '../ink/string_width.js';
 import { transcriptRows, type ScreenState } from './render.js';
@@ -33,6 +37,13 @@ import { discoverSkills, loadSkillBody } from '../skills.js';
 import { readPrompt } from '../system_prompt.js';
 import { helpText, hotkeysText } from './slash_commands.js';
 import type { ScreenSnapshot, UndoHistory } from './undo_history.js';
+import {
+  conversationTree,
+  pathTo,
+  rowText,
+  treeRow,
+  walk,
+} from './conversation_tree.js';
 
 export interface CommandHost {
   readonly runtime: AgentRuntime;
@@ -67,6 +78,10 @@ export interface CommandHost {
   setTheme(mode: CircleSettings['theme']): void;
   trustWorkspace(): void;
   clipboard(text: string): Promise<boolean>;
+  // While `list` is open it takes `rows()` again whenever a job starts, changes or ends.
+  followJobs(list: Picker, rows: () => PickerItem[]): void;
+  // The footer's ctx is unknown until the next answer (after /undo and /redo, as in 0.5.0).
+  clearContextMeter(): void;
 }
 type Handler = (host: CommandHost, args: string) => Promise<void> | void;
 
@@ -537,6 +552,7 @@ async function undo(host: CommandHost): Promise<void> {
     return;
   }
   await showSnapshot(host, previous);
+  host.clearContextMeter();
   host.notice('Undid the last turn');
 }
 async function redo(host: CommandHost): Promise<void> {
@@ -546,6 +562,7 @@ async function redo(host: CommandHost): Promise<void> {
     return;
   }
   await showSnapshot(host, next);
+  host.clearContextMeter();
   host.notice('Redid the turn');
 }
 
@@ -994,6 +1011,7 @@ function jobs(host: CommandHost, args: string): void {
       keys: { 'ctrl+d': stop },
     },
   );
+  if (host.state.picker) host.followJobs(host.state.picker, rows);
 }
 
 function skill(host: CommandHost, args: string): void {
@@ -1208,18 +1226,13 @@ async function tree(
 ): Promise<void> {
   const runtime = host.runtime;
   host.snoozeJobs();
-  const all = runtime.store
-    .tree(runtime.session.id)
-    .filter((checkpoint) => !checkpoint.message.internal);
-  const head = runtime.store.get(runtime.session.id)?.head;
-  let mine = fork;
-  const choices = (): typeof all =>
-    all.filter((checkpoint) => !mine || checkpoint.message.role === 'user');
+  const branches = conversationTree(runtime.store, runtime.session.id);
+  const order = walk(branches);
   const go = async (key: string, named = false): Promise<void> => {
     const checkpoint = runtime.store.checkpoint(key)!;
     if (!checkpoint.message) throw new Error('selected entry has no message');
     const user = checkpoint.message.role === 'user';
-    if (!fork && key === head && !user) {
+    if (!fork && key === branches.leaf && !user) {
       host.flash('Already here');
       return;
     }
@@ -1251,62 +1264,90 @@ async function tree(
     );
   };
   // /fork <id>: straight from that message.
-  const named = fork && all.find((checkpoint) => checkpoint.id === args.trim());
-  if (named) {
-    await go(named.id, true);
+  const target = args.trim();
+  if (
+    fork &&
+    target &&
+    runtime.store
+      .tree(runtime.session.id)
+      .some(
+        (checkpoint) =>
+          checkpoint.id === target && !checkpoint.message.internal,
+      )
+  ) {
+    await go(target, true);
     return;
   }
-  if (!choices().length) {
-    host.flash(
-      fork ? 'No message to fork from yet' : 'Nothing in this session yet',
+  // Yours in the order /tree shows them, the last one marked: as 0.5.0's fork list.
+  const yours = order
+    .map(([key]) => branches.entries.get(key)!)
+    .filter((entry) => entry.role === 'user');
+  if (fork) {
+    if (!yours.length) {
+      host.flash('No message to fork from yet');
+      return;
+    }
+    host.picker(
+      'Fork from a message',
+      yours.map((entry, index) => ({
+        key: entry.key,
+        label: rowText(entry.text),
+        meta: `${index + 1}/${yours.length}`,
+      })),
+      (item) => go(item.key),
+      {
+        hint: 'a new session with everything before it; the message comes back to edit',
+        focusKey: yours.at(-1)!.key,
+      },
     );
+    if (args.trim() && host.state.picker) host.state.picker.query = args.trim();
     return;
   }
+  if (!order.length) {
+    host.flash('Nothing in this session yet');
+    return;
+  }
+  let mine = false;
   let marks = runtime.store.labels(runtime.session.id);
-  const rows = (): PickerItem[] =>
-    choices().map((checkpoint) => {
-      const mark = marks[checkpoint.message.id];
-      return {
-        key: checkpoint.id,
-        label:
-          (mark ? `[${mark}] ` : '') +
-          `${checkpoint.message.role}: ${checkpoint.message.display || checkpoint.message.content || '(tool call)'}`,
-        search: mark ?? '',
-        current: checkpoint.id === head,
-      };
-    });
-  host.picker(
-    fork ? 'Fork from a message' : 'Session tree',
-    rows(),
-    (item) => go(item.key),
-    fork
-      ? {
-          hint: 'a new session with everything before it; the message comes back to edit',
-          focusKey: choices().at(-1)?.id,
-        }
-      : {
-          hint: 'enter goes back there · L labels · ctrl+u only your messages',
-          keys: {
-            'ctrl+u': () => {
-              mine = !mine;
-              host.state.picker?.setItems(rows());
-            },
-            L: async (item) => {
-              const message =
-                item && runtime.store.checkpoint(item.key)?.message;
-              if (!message) return;
-              const text = await host.askText(
-                'label',
-                'Label (empty removes it)',
-                marks[message.id] ?? '',
-              );
-              runtime.store.setLabel(runtime.session.id, message.id, text);
-              marks = runtime.store.labels(runtime.session.id);
-              host.state.picker?.setItems(rows());
-            },
-          },
-        },
-  );
+  // Every branch: indented where it splits, `here` at the point the conversation is at and
+  // `·` on the way to it.
+  const rows = (): PickerItem[] => {
+    const onPath = new Set(pathTo(branches, branches.leaf));
+    return order
+      .filter(([key]) => !mine || branches.entries.get(key)!.role === 'user')
+      .map(([key, depth]) => {
+        const mark = marks[branches.entries.get(key)!.message.id];
+        return {
+          key,
+          label: treeRow(branches, key, depth, mark),
+          meta: key === branches.leaf ? 'here' : onPath.has(key) ? '·' : '',
+          search: mark ?? '',
+          current: key === branches.leaf,
+        };
+      });
+  };
+  host.picker('Session tree', rows(), (item) => go(item.key), {
+    hint: 'enter goes back there · L labels · ctrl+u only your messages',
+    focusKey: branches.leaf,
+    keys: {
+      'ctrl+u': () => {
+        mine = !mine;
+        host.state.picker?.setItems(rows());
+      },
+      L: async (item) => {
+        const message = item && branches.entries.get(item.key)?.message;
+        if (!message) return;
+        const text = await host.askText(
+          'label',
+          'Label (empty removes it)',
+          marks[message.id] ?? '',
+        );
+        runtime.store.setLabel(runtime.session.id, message.id, text);
+        marks = runtime.store.labels(runtime.session.id);
+        host.state.picker?.setItems(rows());
+      },
+    },
+  });
   if (args.trim() && host.state.picker) host.state.picker.query = args.trim();
 }
 async function clone(host: CommandHost): Promise<void> {

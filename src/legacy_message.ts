@@ -109,6 +109,15 @@ export function fromLegacyMessage(record: LegacyMessage, index = 0): Message {
         throw new Error('invalid legacy tool call');
       calls.push({ id: call.id, name: call.name, args: call.args });
     }
+  // The long pastes a message showed folded (0.5.0 kept them as circle_pastes, numbered
+  // keys), so /fork and /tree put the paste back with the message.
+  const pastes = isRecord(extra.circle_pastes)
+    ? Object.fromEntries(
+        Object.entries(extra.circle_pastes)
+          .filter(([number]) => /^\d+$/.test(number))
+          .map(([number, text]) => [String(Number(number)), String(text)]),
+      )
+    : {};
   const usage = isRecord(data.usage_metadata) ? data.usage_metadata : undefined;
   const input = usage?.input_tokens;
   const output = usage?.output_tokens;
@@ -153,6 +162,7 @@ export function fromLegacyMessage(record: LegacyMessage, index = 0): Message {
       : typeof extra.circle_shown === 'string'
         ? { display: extra.circle_shown }
         : {}),
+    ...(Object.keys(pastes).length ? { pastes } : {}),
     ...(typeof input === 'number' && typeof output === 'number'
       ? {
           usage: {

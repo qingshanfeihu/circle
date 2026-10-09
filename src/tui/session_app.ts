@@ -79,8 +79,9 @@ import {
   type CommandHost,
 } from './slash_handlers.js';
 import { UndoHistory, type ScreenSnapshot } from './undo_history.js';
+import { editorCommand } from './external_editor.js';
 import { GatewayModel } from '../model.js';
-import { discoverCustomCommands, splitArguments } from '../commands.js';
+import { discoverCustomCommands } from '../commands.js';
 import { complete } from '../mentions.js';
 import { VERSION } from '../version.js';
 import {
@@ -120,6 +121,11 @@ export class SessionApp {
   private completion: Promise<number>;
   private previousSession = '';
   private lastEscape = 0;
+  private lastCtrlC = 0;
+  // The /jobs list while it is open, with its rows: it follows the jobs as they change.
+  private jobsList?: { list: Picker; rows: () => PickerItem[] };
+  // After /undo or /redo, the answer whose request the footer's ctx no longer describes.
+  private meterCleared?: string;
   private history: InputHistory;
   private composer: Composer;
   private commandList?: Map<string, string>;
@@ -166,6 +172,29 @@ export class SessionApp {
     for (const event of this.input.feed(data)) this.handle(event);
   };
   private resizeListener = (): void => this.repaint();
+  // The terminal and the process as lending the screen out uses them (ctrl+z to the shell,
+  // /editor to $EDITOR). Tests put their own in place.
+  terminal = {
+    platform: process.platform as NodeJS.Platform,
+    write: (text: string): void => {
+      process.stdout.write(text);
+    },
+    // on: Circle reads the keys, raw; off: the shell or the editor has them, in line mode.
+    input: (on: boolean): void => {
+      if (on) {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        process.stdin.on('data', this.dataListener);
+      } else {
+        process.stdin.off('data', this.dataListener);
+        process.stdin.pause();
+        process.stdin.setRawMode(false);
+      }
+    },
+    kill: (signal: NodeJS.Signals): void => {
+      process.kill(process.pid, signal);
+    },
+  };
   private signalListener = (): void => {
     if (this.externalEditor) return;
     if (this.backgroundCard) return;
@@ -303,6 +332,12 @@ export class SessionApp {
         lastAnswer.request_model === this.runtime.harness.model.model
           ? lastAnswer?.usage?.input_tokens
           : undefined;
+      // After /undo or /redo the meter is unknown until the next answer, as in 0.5.0.
+      if (this.meterCleared !== undefined) {
+        if ((lastAnswer?.id ?? '') === this.meterCleared)
+          this.state.contextInput = undefined;
+        else this.meterCleared = undefined;
+      }
       this.state.costText = formatCosts(
         [stats.costs],
         facts.rates?.input !== undefined && facts.rates.output !== undefined,
@@ -550,6 +585,8 @@ export class SessionApp {
         }
       }
       if (event.kind === 'job_ended') this.jobWakeAt = Date.now() + 1000;
+      if (['job_started', 'job_updated', 'job_ended'].includes(event.kind))
+        this.refreshJobsList();
       if (event.tags.subagent) {
         const id = String(event.tags.subagent);
         const old = this.agentActivity.get(id);
@@ -1041,7 +1078,13 @@ export class SessionApp {
       this.repaint();
       return;
     }
-    if (this.state.jobDetail && !this.state.dialog) {
+    // The job page keeps its keys; ctrl+c and ctrl+z work there as anywhere
+    if (
+      this.state.jobDetail &&
+      !this.state.dialog &&
+      key !== 'ctrl+c' &&
+      key !== 'ctrl+z'
+    ) {
       const job = this.state.jobDetail;
       if (key === 'escape') {
         this.state.jobDetail = undefined;
@@ -1068,16 +1111,19 @@ export class SessionApp {
       return;
     }
     if (this.state.dialog) {
-      if (key === 'ctrl+c' && this.backgroundCard) return;
+      if (key === 'ctrl+c' && this.backgroundCard) {
+        // Not an answer: it stops the turn, or leaves on a second press; the card stays.
+        this.ctrlC();
+        this.repaint();
+        return;
+      }
       const dialog = this.state.dialog;
       if (this.card) {
         const result = this.card.handle(key, char);
         if (result === 'pass') {
           // not the card's business: ctrl+c stops the turn, page keys scroll
-          if (key === 'ctrl+c' && this.runtime?.busy) {
-            this.jobWakeSnoozed = true;
-            void this.runtime.cancel();
-          } else if (key === 'pageup' || key === 'pagedown') {
+          if (key === 'ctrl+c' && this.runtime?.busy) this.ctrlC();
+          else if (key === 'pageup' || key === 'pagedown') {
             const page = Math.max(1, (process.stdout.rows || 24) - 8);
             this.state.scroll = Math.max(
               0,
@@ -1142,19 +1188,22 @@ export class SessionApp {
       return;
     }
     if (key === 'ctrl+c') {
-      this.jobWakeSnoozed = true;
-      if (this.runtime?.busy) void this.runtime.cancel();
-      else {
+      if (this.state.draft && !this.runtime?.busy) {
         // What you typed is cleared but stays in the history
+        this.jobWakeSnoozed = true;
         this.history.add(this.state.draft);
         this.composer.clear();
-      }
+        this.lastCtrlC = 0;
+      } else this.ctrlC();
+    } else if (key === 'ctrl+z') {
+      this.suspend();
+      return;
     } else if (key === 'escape') {
       this.jobWakeSnoozed = true;
       if (this.runtime?.busy) void this.runtime.cancel();
       else if (
         !this.state.draft &&
-        Date.now() - this.lastEscape < 600 &&
+        Date.now() - this.lastEscape < 500 &&
         this.settings.double_escape !== 'none'
       )
         void this.command(this.settings.double_escape, '');
@@ -1165,9 +1214,16 @@ export class SessionApp {
     } else if (key === 'ctrl+b') {
       const count = this.runtime?.jobs.backgroundForeground() ?? 0;
       this.flash(
-        count
-          ? `Moved ${count} command${count === 1 ? '' : 's'} to background`
-          : 'No foreground command',
+        count === 1
+          ? 'Moved to the background'
+          : count
+            ? `${count} commands moved to the background`
+            : this.runtime?.busy &&
+                this.state.subagents?.some(
+                  (agent) => !agent.background && agent.state === 'running',
+                )
+              ? "Subagents can't move to the background"
+              : 'Nothing to move',
       );
     } else if (key === 'ctrl+o') {
       this.state.showTools = !this.state.showTools;
@@ -1180,9 +1236,12 @@ export class SessionApp {
           ? 'Thinking expanded'
           : 'Thinking collapsed',
       );
-    } else if (key === 'ctrl+l')
+    } else if (key === 'ctrl+l') {
+      // The screen is drawn again from scratch, then the model list opens
+      this.terminal.write('\x1b[2J');
+      this.screen.invalidate();
       void this.command('models', '').catch((error) => this.fail(error));
-    else if (key === 'ctrl+g')
+    } else if (key === 'ctrl+g')
       void this.command('editor', '').catch((error) => this.fail(error));
     else if (key === 'ctrl+x')
       void this.command('copy', '').catch((error) => this.fail(error));
@@ -1211,6 +1270,75 @@ export class SessionApp {
       if (this.state.draft.trim()) this.send('followUp');
     } else this.composer.key(key, char);
     this.repaint();
+  }
+  // ctrl+c with nothing typed, as in 0.5.0: it stops a running turn; otherwise the first press
+  // says how to leave and a second within 1.5 s leaves (so does one just after a stop).
+  private ctrlC(): void {
+    this.jobWakeSnoozed = true;
+    const now = Date.now();
+    if (this.runtime?.busy) {
+      void this.runtime.cancel();
+      this.lastCtrlC = now;
+    } else if (now - this.lastCtrlC < 1500) this.exit(0);
+    else {
+      this.lastCtrlC = now;
+      const live =
+        this.runtime?.jobs.list().filter((job) => job.status === 'running')
+          .length ?? 0;
+      this.flash(
+        'Press ctrl+c again to exit' +
+          (live ? ` · stops ${live} job${live === 1 ? '' : 's'}` : ''),
+        1500,
+      );
+    }
+  }
+  // ctrl+z: the shell gets the terminal back and `fg` brings Circle back with the screen drawn
+  // again (0.5.0's _suspend). Windows has no job control.
+  private suspend(): void {
+    if (this.terminal.platform === 'win32') {
+      this.flash('Suspending is not supported here');
+      return;
+    }
+    if (this.externalEditor) return;
+    this.lendTerminal();
+    try {
+      // The process stops here; the call returns once the shell continues it.
+      this.terminal.kill('SIGTSTP');
+    } catch (error) {
+      this.fail(error);
+    } finally {
+      this.takeTerminal();
+    }
+  }
+  // The screen goes to another program (the shell after ctrl+z, $EDITOR): the terminal as it
+  // was before Circle, keys in line mode. Nothing is drawn or asked until it comes back.
+  private lendTerminal(): void {
+    this.externalEditor = true;
+    this.input.reset();
+    this.terminal.write(
+      '\x1b[?2031l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
+    );
+    this.terminal.input(false);
+  }
+  private takeTerminal(): void {
+    this.externalEditor = false;
+    if (this.ended) return;
+    this.terminal.input(true);
+    this.terminal.write(
+      '\x1b[22;0t' +
+        (this.title ? `\x1b]0;${this.title}\x07` : '') +
+        '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?2031h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J',
+    );
+    this.screen.invalidate();
+    this.repaint();
+  }
+  // The open /jobs list takes the jobs as they are now (0.5.0's _refresh_jobs_picker). While
+  // it asks something (stop this job?) it is put aside and keeps following.
+  private refreshJobsList(): void {
+    const open = this.jobsList;
+    if (!open) return;
+    if (this.state.picker === open.list) open.list.setItems(open.rows());
+    else if (!this.state.dialog) this.jobsList = undefined;
   }
   /** Send the draft: the model reads the long pastes, the screen and the history keep it as shown. */
   private send(kind: 'steer' | 'followUp'): void {
@@ -1407,6 +1535,15 @@ export class SessionApp {
       },
       trustWorkspace: () => this.trustWorkspace(),
       clipboard: (text) => this.clipboard.copyNative(text),
+      followJobs: (list, rows) => {
+        this.jobsList = { list, rows };
+      },
+      clearContextMeter: () => {
+        this.meterCleared =
+          this.runtime?.harness.messages
+            .filter((message) => message.role === 'assistant' && message.usage)
+            .at(-1)?.id ?? '';
+      },
     };
   }
   // The screen before a turn, which /undo goes back to. The turn's own message is saved
@@ -1560,8 +1697,8 @@ export class SessionApp {
       return;
     }
     if (name === 'editor') {
-      await this.editor();
-      this.flash('Loaded from the editor · enter sends');
+      if (await this.editor())
+        this.flash('Loaded from the editor · enter sends');
       return;
     }
     if (name === 'login') {
@@ -1673,56 +1810,46 @@ export class SessionApp {
       (error) => this.fail(error),
     );
   }
-  private async editor(): Promise<void> {
+  // $VISUAL, $EDITOR, or nvim, vim or nano (notepad on Windows), on the draft in full; what
+  // it leaves in the file comes back to the box, whatever the editor exits with (0.5.0).
+  private async editor(): Promise<boolean> {
     if (this.externalEditor) throw new Error('an editor is already running');
-    const words = splitArguments(
-      process.env.VISUAL ||
-        process.env.EDITOR ||
-        (process.platform === 'win32' ? 'notepad' : 'vi'),
-    );
+    const words = editorCommand(process.env, this.terminal.platform);
+    if (!words) {
+      this.fail('No $VISUAL / $EDITOR set, and no nvim, vim or nano found');
+      return false;
+    }
     const directory = mkdtempSync(join(tmpdir(), 'circle-editor-'));
     const path = join(directory, 'draft.md');
     // The editor gets the draft in full, pastes written out
     writeFileSync(path, this.composer.modelText(this.state.draft), {
       mode: 0o600,
     });
-    this.externalEditor = true;
-    process.stdin.off('data', this.dataListener);
-    this.input.reset();
-    process.stdin.pause();
-    process.stdin.setRawMode(false);
-    process.stdout.write(
-      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
-    );
+    this.lendTerminal();
     try {
-      await new Promise<void>((resolveEditor, reject) => {
-        const child = spawn(words[0]!, [...words.slice(1), path], {
-          cwd: this.workspace,
-          stdio: 'inherit',
+      try {
+        await new Promise<void>((resolveEditor, reject) => {
+          const child = spawn(words[0]!, [...words.slice(1), path], {
+            cwd: this.workspace,
+            stdio: 'inherit',
+          });
+          child.once('error', reject);
+          child.once('exit', () => resolveEditor());
         });
-        child.once('error', reject);
-        child.once('exit', (code) =>
-          code === 0
-            ? resolveEditor()
-            : reject(new Error(`editor exited ${code}`)),
-        );
-      });
+      } finally {
+        this.takeTerminal();
+      }
       // Back in the box like a paste: a long text folded again
       this.composer.clear();
       this.composer.paste(readFileSync(path, 'utf8').replace(/\n+$/, ''));
+      return true;
+    } catch (error) {
+      this.fail(
+        `Could not open the editor: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
     } finally {
       rmSync(directory, { recursive: true, force: true });
-      this.externalEditor = false;
-      if (!this.ended) {
-        process.stdin.setRawMode(true);
-        process.stdin.resume();
-        process.stdin.on('data', this.dataListener);
-        process.stdout.write(
-          `\x1b[22;0t\x1b]0;${this.title}\x07\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h`,
-        );
-        this.screen.invalidate();
-        this.repaint();
-      }
     }
   }
   exit(code: number): void {
