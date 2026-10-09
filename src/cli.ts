@@ -27,6 +27,7 @@ import { resolveEndpoint } from './probe.js';
 import { mediaType } from './media.js';
 import { EFFORT_LEVELS } from './model.js';
 import { installExitGuard } from './exit_guard.js';
+import { configureNetwork } from './net.js';
 import { VERSION } from './version.js';
 export { VERSION } from './version.js';
 export class UsageError extends Error {}
@@ -444,10 +445,17 @@ async function headlessSettings(
   if (options.model) settings.auth.model = options.model;
   return settings;
 }
+let networkConfigured = false;
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let runtime: import('./runtime.js').AgentRuntime | undefined;
   let offSignals: (() => void) | undefined;
   try {
+    // HTTPS_PROXY, NO_PROXY, SSL_CERT_FILE and SSL_CERT_DIR, before the first request
+    if (!networkConfigured) {
+      networkConfigured = true;
+      for (const problem of configureNetwork().problems)
+        process.stderr.write(problem + '\n');
+    }
     if (argv[0] === 'update') {
       const { updateInstalled } = await import('./update.js');
       return await updateInstalled(argv.slice(1));

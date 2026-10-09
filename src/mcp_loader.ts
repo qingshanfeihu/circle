@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -23,14 +24,35 @@ export interface McpStatus {
   tools: string[];
   error: string;
 }
+// Model APIs take tool names of letters, digits, `_` and `-`, at most 64 characters. 0.5.0
+// offered `<server>_<tool>` for any server name; the same name, with every other character
+// turned into `_`, keeps that and lets the request through. A name that would be longer is
+// shortened and given a hash of the original, so two long names stay apart.
+export function mcpToolName(server: string, tool: string): string {
+  const part = (value: string): string =>
+    value.replace(/[^A-Za-z0-9_-]+/g, '_') || '_';
+  const name = `${part(server)}_${part(tool)}`;
+  if (name.length <= 64) return name;
+  const hash = createHash('sha256')
+    .update(`${server}\0${tool}`)
+    .digest('hex')
+    .slice(0, 8);
+  return `${name.slice(0, 55)}_${hash}`;
+}
+export interface McpConnections {
+  connections: McpConnection[];
+  // Entries that are not started, with the reason (`/mcp` lists them)
+  skipped: McpStatus[];
+}
 export function buildMcpConnections(
   servers: Record<string, unknown>[],
-): McpConnection[] {
+): McpConnections {
   const connections = new Map<string, McpConnection>();
+  const skipped: McpStatus[] = [];
   for (const [index, item] of servers.entries()) {
+    if (!isRecord(item)) continue;
     const name = String(item.name || item.id || `mcp${index}`);
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(name))
-      throw new Error(`invalid MCP server name: ${name}`);
+    let connection: McpConnection | undefined;
     if (item.command) {
       const args =
         item.args === undefined
@@ -46,22 +68,35 @@ export function buildMcpConnections(
             ]),
           )
         : undefined;
-      connections.set(name, {
+      connection = {
         name,
         transport: 'stdio',
         command: String(item.command),
         args,
         env,
-      });
+      };
     } else if (item.url) {
       const raw = String(item.transport || 'sse').toLowerCase();
       const transport = ['sse', 'streamable_http', 'websocket'].includes(raw)
         ? (raw as McpConnection['transport'])
         : 'sse';
-      connections.set(name, { name, transport, url: String(item.url) });
+      connection = { name, transport, url: String(item.url) };
     }
+    if (!connection) continue;
+    // As in 0.5.0 the later of two servers with one name is used; the earlier is reported.
+    const earlier = connections.get(name);
+    if (earlier) {
+      connections.delete(name);
+      skipped.push({
+        name,
+        connection: earlier.command || earlier.url || '',
+        tools: [],
+        error: `another MCP server is also named '${name}'; the later one is used`,
+      });
+    }
+    connections.set(name, connection);
   }
-  return [...connections.values()];
+  return { connections: [...connections.values()], skipped };
 }
 function transportFor(connection: McpConnection, workspace: string): Transport {
   if (connection.transport === 'stdio')
@@ -88,13 +123,18 @@ function transportFor(connection: McpConnection, workspace: string): Transport {
     return new WebSocketClientTransport(url);
   return new SSEClientTransport(url);
 }
+// The longest a timer can wait; the MCP SDK stops a request after 60 seconds unless told.
+const NO_LIMIT = 2_147_483_647;
 export class McpManager {
   tools: Tool[] = [];
   status: McpStatus[] = [];
   private clients: Client[] = [];
+  // `timeout` bounds connecting and listing tools. A tool call has no limit unless `callTimeout`
+  // is given, as in 0.5.0: a tool may wait minutes (a login), and an interrupt cancels it.
   constructor(
     readonly workspace: string,
     readonly timeout = 30000,
+    readonly callTimeout?: number,
   ) {}
   async load(
     servers: Record<string, unknown>[],
@@ -105,7 +145,9 @@ export class McpManager {
     const tools: Tool[] = [];
     const status: McpStatus[] = [];
     try {
-      for (const connection of buildMcpConnections(servers)) {
+      const { connections, skipped } = buildMcpConnections(servers);
+      status.push(...skipped);
+      for (const connection of connections) {
         signal?.throwIfAborted();
         const state: McpStatus = {
           name: connection.name,
@@ -138,9 +180,7 @@ export class McpManager {
               { signal: combined, timeout: this.timeout },
             );
             for (const spec of listed.tools) {
-              const name = `${connection.name}_${spec.name}`;
-              if (!/^[A-Za-z0-9_-]{1,64}$/.test(name))
-                throw new Error(`invalid MCP tool name: ${name}`);
+              const name = mcpToolName(connection.name, spec.name);
               if (
                 reserved.has(name) ||
                 tools.some((tool) => tool.name === name) ||
@@ -159,8 +199,8 @@ export class McpManager {
                     undefined,
                     {
                       signal: context.signal,
-                      timeout: this.timeout,
-                      maxTotalTimeout: this.timeout,
+                      timeout: this.callTimeout ?? NO_LIMIT,
+                      maxTotalTimeout: this.callTimeout,
                     },
                   );
                   const content = Array.isArray(result.content)
