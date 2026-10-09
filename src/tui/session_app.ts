@@ -609,7 +609,12 @@ export class SessionApp {
       if (event.kind === 'run_start') {
         this.plan.follow();
         this.state.started = Date.now();
+        // The stop mark belongs to the turn that was stopped. Snapshot it for /undo,
+        // then drop it: a new turn has started, so it must not stay at the bottom.
         this.undo.push(this.screenBefore(event.payload.message));
+        this.state.notices = this.state.notices.filter(
+          (note) => note !== '✖ Interrupted',
+        );
         this.state.scroll = 0;
       } else if (event.kind === 'llm_start') {
         this.state.streaming = '';
