@@ -26,3 +26,6 @@ compile-excel-skills/
 compile_outputs/
 .agents/
 .circle/
+
+# 界面设计草稿与竞品调研，仅本地留存
+docs/development/design-history/

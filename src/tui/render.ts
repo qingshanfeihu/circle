@@ -50,8 +50,10 @@ import {
   detailRows,
   taskAgents,
   taskSummaryRows,
+  agentRunning,
   type DetailBand,
 } from './agent_rows.js';
+import { paletteRev } from '../ink/theme.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
@@ -127,6 +129,15 @@ const CONTINUES: Record<string, string[]> = {
   thinking: ['thinking'],
   tool: ['tool'],
 };
+// Rows of a frozen message, by message identity: the store serves the same message objects
+// while a head does not move, so the rows survive repaints. The key carries the theme, the
+// width, the fold flags and the turn's numbers; anything dynamic is never cached.
+interface CachedBlock {
+  key: string;
+  rows: string[];
+  outKind: string;
+}
+const blockCache = new WeakMap<Message, CachedBlock>();
 export function transcriptRows(state: ScreenState, width: number): string[] {
   const p = palette();
   const rows: string[] = [...state.welcome];
@@ -232,7 +243,49 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
   const newestReply = messages.findLast(
     (message) => message.role === 'assistant' && message.tool_calls?.length,
   );
+  // Indexes over the messages, so matching a call to its result is a lookup, not a scan
+  // of the whole history for every call.
+  const toolResults = new Map<string, Message>();
+  const calledIds = new Set<string>();
   for (const message of messages) {
+    for (const call of message.tool_calls ?? []) calledIds.add(call.id);
+    if (message.role === 'tool' && message.tool_call_id)
+      toolResults.set(message.tool_call_id, message);
+  }
+  const anchored = new Map<string, UserShellView[]>();
+  for (const shell of localShells)
+    if (shell.anchor)
+      anchored.set(shell.anchor, [
+        ...(anchored.get(shell.anchor) ?? []),
+        shell,
+      ]);
+  // A message whose rows nothing will change: every call has its result, no subagent
+  // under it is still running, no `!` command anchors here. Its rows are cached and
+  // replayed until the width, the fold flags, the theme or the turn's numbers change.
+  const cacheable = (message: Message): boolean => {
+    if (message.role === 'assistant')
+      for (const call of message.tool_calls ?? []) {
+        if (!toolResults.has(call.id)) return false;
+        const agent = agents.get(call.id);
+        if (agent && call.args.background !== true && agentRunning(agent))
+          return false;
+      }
+    return !anchored.has(message.id);
+  };
+  const blockKey = (message: Message, inKind: string, lead: number): string =>
+    [
+      paletteRev(),
+      width,
+      state.showTools ? 1 : 0,
+      state.showThinking ? 1 : 0,
+      state.thinkingExpanded ? 1 : 0,
+      state.renderToolResult ? 1 : 0,
+      state.thinkingSeconds?.[message.id] ?? '',
+      state.turnUsage?.[message.id]?.seconds ?? '',
+      inKind,
+      lead,
+    ].join('|');
+  const emit = (message: Message): void => {
     if (message.shell) {
       if (!localIds.has(message.id))
         shellRows({
@@ -245,7 +298,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
         (shell) => shell.anchor === message.id,
       ))
         shellRows(shell);
-      continue;
+      return;
     }
     if (message.internal === 'job_notice') {
       gap('notice');
@@ -262,10 +315,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       // run together: each is running (or waiting) from its subagent until its result is in.
       let first = true;
       for (const call of message.tool_calls ?? []) {
-        const result = messages.find(
-          (message) =>
-            message.role === 'tool' && message.tool_call_id === call.id,
-        );
+        const result = toolResults.get(call.id);
         // A call left without a result by a turn that has ended (interrupted, or a
         // session from an older version) is not running: its lamp stays unlit.
         const live = state.agentDetail
@@ -304,9 +354,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       }
     } else if (message.role === 'tool') {
       // A result whose call is not in view (the turn was cut short of it).
-      const called = messages.some((other) =>
-        other.tool_calls?.some((call) => call.id === message.tool_call_id),
-      );
+      const called = calledIds.has(message.tool_call_id ?? '');
       if (!called && !HIDDEN_TOOLS.has(message.name ?? '')) {
         const call = {
           id: message.tool_call_id ?? '',
@@ -329,6 +377,29 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       rows.push(turnUsageRow(usage));
       lastKind = 'usage';
     }
+  };
+  for (const message of messages) {
+    const frozen = cacheable(message);
+    if (frozen) {
+      const inKind = lastKind;
+      // How the next block's leading gap will decide: 0 no rows yet, 1 last row is
+      // content, 2 last row is the blank that separated blocks.
+      const lead = rows.length ? (rows.at(-1) === '' ? 2 : 1) : 0;
+      const key = blockKey(message, inKind, lead);
+      const cached = blockCache.get(message);
+      if (cached && cached.key === key) {
+        rows.push(...cached.rows);
+        lastKind = cached.outKind;
+        continue;
+      }
+      const start = rows.length;
+      emit(message);
+      const block = rows.slice(start);
+      if (block.length)
+        blockCache.set(message, { key, rows: block, outKind: lastKind });
+      continue;
+    }
+    emit(message);
   }
   if (state.thinking)
     thinking(
@@ -415,7 +486,9 @@ export function renderScreen(
       ...state.picker.rows(width, Math.max(3, Math.floor(height / 3))),
     );
   const { rows: strip, ids: stripIds } = stripRows(state, width, height);
-  if (!state.dialog && state.todos.length) {
+  // The plan frame stays up while a card asks: the plan-exit card is about it, so the plan
+  // you would implement sits above the card instead of being hidden by it.
+  if (state.todos.length) {
     bottom.push(
       ...planRows(
         state.todos,

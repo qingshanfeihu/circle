@@ -83,7 +83,8 @@ export interface CommandHost {
 }
 type Handler = (host: CommandHost, args: string) => Promise<void> | void;
 
-// What may run while a turn is running; the rest wait for it to end.
+// What may run while a turn is running; the rest wait for it to end. Read-only views,
+// credentials and busy-aware toggles are in: they touch neither the session nor the model.
 const BUSY_OK = new Set([
   'yolo',
   'approvals',
@@ -100,6 +101,9 @@ const BUSY_OK = new Set([
   'name',
   'tree',
   'jobs',
+  'logout',
+  'skill',
+  'extensions',
 ]);
 const BUSY_WORDS: Record<string, string> = {
   models: 'Busy · switch models when the turn has finished',

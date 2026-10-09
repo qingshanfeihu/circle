@@ -216,6 +216,30 @@ test('esc esc opens the tree only within half a second, as 0.5.0 timed it', asyn
   assert.equal(list(), 'Session tree');
 });
 
+test('stopping a turn marks it interrupted, and the mark goes once the next turn starts', async (t) => {
+  const { app, ui, runtime, model } = await session(t, [
+    (request) =>
+      new Promise((_resolve, reject) =>
+        request.signal.addEventListener('abort', () =>
+          reject(request.signal.reason),
+        ),
+      ),
+    answer('after'),
+  ]);
+  const turn = app.submit('think forever');
+  await until(() => model.requests.length === 1 && runtime.busy);
+  ui.handle({ type: 'key', key: 'escape', char: '' });
+  await turn;
+  assert.equal(runtime.busy, false);
+  assert.ok(app.state.notices.includes('✖ Interrupted'));
+  // A failure from another cause stays; only the stop mark belongs to the old turn.
+  app.state.notices.push('✖ Incorrect API key');
+  await app.submit('continue');
+  assert.equal(model.requests.length, 2);
+  assert.ok(!app.state.notices.includes('✖ Interrupted'));
+  assert.ok(app.state.notices.includes('✖ Incorrect API key'));
+});
+
 test('ctrl+c during a turn stops it, and a second press right after leaves', async (t) => {
   const { app, ui, runtime, model } = await session(t, [
     (request) =>

@@ -60,7 +60,7 @@ import {
   type CompactionEvent,
 } from '../compaction.js';
 import { formatCosts } from '../pricing.js';
-import { SubagentNavigation } from './subagents.js';
+import { SubagentNavigation, type SubagentView } from './subagents.js';
 import { TurnStatus } from './turn_status.js';
 import { WelcomeState } from './welcome_state.js';
 import { windowTitle } from './status_rows.js';
@@ -160,6 +160,23 @@ export class SessionApp {
     }
   >();
   private frameRows: string[] = [];
+  // Frame scheduling, as pi's TUI does it: `repaint` draws now and stays synchronous (the
+  // tests read the frame right after calling it), while high-frequency sources (stream
+  // tokens, the animation tick) ask through `requestRender`, which coalesces them into one
+  // frame at most every 16 ms.
+  private renderTimer?: NodeJS.Timeout;
+  private renderQueued = false;
+  private lastRenderAt = 0;
+  // The subagent rows, rebuilt only when the store or the agents' activity moved: a
+  // repaint otherwise re-walked every child session and re-summed its tokens each frame.
+  private subagentCache?: {
+    store: import('../checkpoint_store.js').CheckpointStore;
+    sessionId: string;
+    version: number;
+    activity: number;
+    views: NonNullable<ScreenState['subagents']>;
+  };
+  private activityVersion = 0;
   // The terminal's and the system's clipboard; tests put their own in its place.
   clipboard = new Clipboard();
   private selection = new MouseSelection({
@@ -301,7 +318,7 @@ export class SessionApp {
         this.state.agentDetail ||
         this.connecting
       )
-        this.repaint();
+        this.requestRender();
       this.wakeJobs();
     }, 160);
     this.repaint();
@@ -310,6 +327,11 @@ export class SessionApp {
     // A repaint can come from work that settles after leaving (a stopped job, a late reply):
     // the session store may be closed by then.
     if (this.ended || this.externalEditor || this.runtime?.isClosing) return;
+    // A direct draw supersedes any coalesced frame still waiting.
+    if (this.renderTimer) clearTimeout(this.renderTimer);
+    this.renderTimer = undefined;
+    this.renderQueued = false;
+    this.lastRenderAt = performance.now();
     if (this.runtime) {
       this.state.messages = this.undo.visible(this.runtime.harness.messages);
       this.state.userShells = this.runtime.userShells.views.filter(
@@ -356,39 +378,60 @@ export class SessionApp {
         facts.rates?.input !== undefined && facts.rates.output !== undefined,
       );
       this.state.jobs = this.runtime.jobs.list();
-      const collect = (
-        parent: string,
-      ): import('../checkpoint_store.js').Session[] =>
-        this.runtime!.store.children(parent).flatMap((child) => [
-          child,
-          ...collect(child.id),
-        ]);
-      this.state.subagents = collect(this.runtime.session.id).map((session) => {
-        const activity = this.agentActivity.get(session.id);
-        const messages = this.runtime!.store.messages(session.id);
-        const last = messages.at(-1);
-        return {
-          id: session.id,
-          name: activity?.name || session.title.split(':')[0] || 'subagent',
-          description: session.title,
-          background: activity?.background,
-          messages,
-          state:
-            activity?.state ??
-            (last?.role === 'assistant' && !last.tool_calls?.length
-              ? 'done'
-              : 'interrupted'),
-          started: session.created,
-          updated: session.updated,
-          tokens: messages.reduce(
-            (sum, message) =>
-              sum +
-              (message.usage?.input_tokens ?? 0) +
-              (message.usage?.output_tokens ?? 0),
-            0,
-          ),
+      const cache = this.subagentCache;
+      if (
+        cache &&
+        cache.store === this.runtime.store &&
+        cache.sessionId === this.runtime.session.id &&
+        cache.version === this.runtime.store.version &&
+        cache.activity === this.activityVersion
+      ) {
+        this.state.subagents = cache.views;
+      } else {
+        const collect = (
+          parent: string,
+        ): import('../checkpoint_store.js').Session[] =>
+          this.runtime!.store.children(parent).flatMap((child) => [
+            child,
+            ...collect(child.id),
+          ]);
+        const views: SubagentView[] = collect(this.runtime.session.id).map(
+          (session) => {
+            const activity = this.agentActivity.get(session.id);
+            const messages = this.runtime!.store.messages(session.id);
+            const last = messages.at(-1);
+            return {
+              id: session.id,
+              name: activity?.name || session.title.split(':')[0] || 'subagent',
+              description: session.title,
+              background: activity?.background,
+              messages,
+              state:
+                activity?.state ??
+                (last?.role === 'assistant' && !last.tool_calls?.length
+                  ? 'done'
+                  : 'interrupted'),
+              started: session.created,
+              updated: session.updated,
+              tokens: messages.reduce(
+                (sum, message) =>
+                  sum +
+                  (message.usage?.input_tokens ?? 0) +
+                  (message.usage?.output_tokens ?? 0),
+                0,
+              ),
+            };
+          },
+        );
+        this.subagentCache = {
+          store: this.runtime.store,
+          sessionId: this.runtime.session.id,
+          version: this.runtime.store.version,
+          activity: this.activityVersion,
+          views,
         };
-      });
+        this.state.subagents = views;
+      }
       this.state.selectedAgent = this.agents.selected;
       this.state.agentDetail = this.state.subagents.find(
         (agent) => agent.id === this.agents.detail,
@@ -431,6 +474,19 @@ export class SessionApp {
     );
     this.frameRows = rows;
     this.screen.render(this.selection.frame(rows, this.state), cursor.value);
+  }
+  // Coalesced frame request for high-frequency sources; one draw at most every 16 ms.
+  requestRender(): void {
+    if (this.ended || this.externalEditor) return;
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    const wait = Math.max(0, 16 - (performance.now() - this.lastRenderAt));
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = undefined;
+      if (!this.renderQueued) return;
+      this.renderQueued = false;
+      this.repaint();
+    }, wait);
   }
   // The header, the welcome and the window title follow the session.
   private syncStatus(): void {
@@ -572,6 +628,8 @@ export class SessionApp {
       );
     });
     this.off = this.runtime.bus.subscribe((event) => {
+      // Stream tokens draw through the coalescing scheduler; everything else at once.
+      let coalesce = false;
       this.turns.apply(event, () => this.runtime?.harness.messages.at(-1)?.id);
       if (event.kind === 'compaction') {
         const progress = event.payload as unknown as CompactionEvent;
@@ -609,18 +667,25 @@ export class SessionApp {
           name: String(event.tags.name || old?.name || 'subagent'),
           background: Boolean(event.tags.job_id) || old?.background,
         });
+        this.activityVersion++;
         if (event.kind === 'llm_end')
           for (const key of Object.keys(
             this.state.usage,
           ) as (keyof typeof this.state.usage)[])
             this.state.usage[key] += event.usage?.[key] ?? 0;
-        this.repaint();
+        if (event.kind === 'llm_token') this.requestRender();
+        else this.repaint();
         return;
       }
       if (event.kind === 'run_start') {
         this.plan.follow();
         this.state.started = Date.now();
+        // The stop mark belongs to the turn that was stopped. Snapshot it for /undo,
+        // then drop it: a new turn has started, so it must not stay at the bottom.
         this.undo.push(this.screenBefore(event.payload.message));
+        this.state.notices = this.state.notices.filter(
+          (note) => note !== '✖ Interrupted',
+        );
         this.state.scroll = 0;
       } else if (event.kind === 'llm_start') {
         this.state.streaming = '';
@@ -629,6 +694,7 @@ export class SessionApp {
         if (event.payload.thinking)
           this.state.thinking += String(event.payload.text);
         else this.state.streaming += String(event.payload.text);
+        coalesce = true;
       } else if (event.kind === 'llm_end') {
         this.state.streaming = '';
         this.state.thinking = '';
@@ -673,7 +739,8 @@ export class SessionApp {
         else if (notice.event === 'repetition_stopped')
           this.notice('Model output was repeating; stopped the stream');
       }
-      this.repaint();
+      if (coalesce) this.requestRender();
+      else this.repaint();
     });
     try {
       await this.runtime.initialize();
@@ -2062,6 +2129,7 @@ export class SessionApp {
     this.theme.close();
     if (this.animation) clearInterval(this.animation);
     if (this.flashTimer) clearTimeout(this.flashTimer);
+    if (this.renderTimer) clearTimeout(this.renderTimer);
     this.selection.close();
     process.stdout.off('resize', this.resizeListener);
     process.off('SIGINT', this.signalListener);
