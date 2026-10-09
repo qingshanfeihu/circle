@@ -49,11 +49,11 @@ The syntax is pi's, so pi prompt templates work unchanged.
 | `${@:2:3}` | Three arguments, from the second on |
 | `` !`command` `` | The output of a shell command, run when the command is used |
 
-Arguments are split like a shell: spaces separate them, and `"` or `'` keep words together (`/review src/app.py "error handling"`). There is no backslash escaping. Placeholders are replaced once: an argument that itself contains `$1` stays as written.
+Arguments are split like a shell: spaces separate them, and `"` or `'` keep words together (`/review src/app.ts "error handling"`). There is no backslash escaping. Placeholders are replaced once: an argument that itself contains `$1` stays as written. They are replaced before the shell snippets run, so an argument used inside `` !`…` `` becomes part of that command.
 
 ## Shell snippets run without asking
 
-`` !`command` `` runs on your machine straight away, in the workspace, with your full environment, a 30 second limit, and **no approval card**. Circle does not check the command against the approval rules and does not check that the folder is trusted.
+`` !`command` `` runs on your machine straight away, in the workspace, with your environment less the variables whose names look secret, a 30 second limit, and **no approval card**. Only the refusals apply: a snippet that uses `sudo` or names a credential file is not run. Nothing else in the approval rules is checked.
 
 Only use `!` in commands you wrote yourself. Read the commands in a repository before you run Circle in it.
 
@@ -70,11 +70,12 @@ If two commands have the same name, the one lower in the list wins.
 | `.pi/commands`, `.pi/prompts` | Project, shared with pi |
 | `.circle/commands`, `.circle/prompts` | Project |
 
-Only `.md` files directly inside the folder are read. Commands are read at start and after `/reload` and other rebuilds. They show in `/help` under "Custom commands", and `tab` completes their names.
+Only `.md` files directly inside the folder are read. Circle reads the folders each time you use a command or open the command list, so a new or changed file works at once. Commands show in `/help` under "Custom commands", and in the list that opens when you type `/`.
 
 ## Things to know
 
 - A custom command with the same name as a built-in command replaces it, except `/help`, `/hotkeys` and `/exit`. A file named `init.md` replaces `/init`; a file named after an alias such as `clear.md` is never reached.
+- Custom commands work only in the full-screen interface. In print mode, line mode and RPC mode, a message that starts with `/` is not expanded.
 - You can use a custom command while Circle is working. It is queued like any message.
 - A message shaped like a command that matches nothing, such as `/reveiw`, is not sent. The footer says it is unknown and suggests the closest name.
 - Commands that add tools or change how Circle works belong in an [extension](extensions.md).

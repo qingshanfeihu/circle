@@ -1,33 +1,132 @@
 # Sessions and context
 
-Sessions live in `circle.sqlite` in the data folder. Every saved message receives an immutable checkpoint. A session's head selects its active branch; restarting and continuing uses that head, without replaying tools. An interrupted call missing a result is recorded as interrupted instead of being executed again.
+A session is one conversation: its messages, tool calls and results. Circle keeps every session in `circle.sqlite` in the data folder, saved after every message, so the model's memory of a conversation survives a crash and a restart. The same file lists each folder's sessions with their titles, so they can be reopened.
 
-`-c` resumes the latest conversation in the workspace. `/resume` selects a session, `/tree` selects an earlier point, `/fork` creates a session before a selected user message, and `/clone` copies the active branch. Going back changes conversation context, not files. `/undo` and `/redo` only alter the view.
+This page also lists what the current version does not do. Read [What does not carry over](#what-does-not-carry-over) before you rely on it.
 
-Child sessions belong to their parent conversation and are excluded from ordinary session discovery. Forking clones the selected branch and its referenced children, so deleting the original conversation leaves the fork intact. Plan-mode boundaries restore the real read-only gate after restart and import.
+## Start, name and switch
 
-## Projections
+| Command | What it does |
+|---|---|
+| `/new` (`/clear`) | Start a new session. The old one stays in the folder's list. |
+| `/resume` (`/sessions`) | Pick a session from a list. See [Pick a session](#pick-a-session). |
+| `/resume <n or id>` | Open a session by its place in that list or by the end of its id. |
+| `/continue` | Switch back to the previous session. |
+| `/name <title>` | Give the session a title. The first line of your first message is used until you do. |
+| `/session` | Show the session's id and title, its folder and model, where it is kept, how many messages and tool calls it holds, and the tokens this run has used. |
 
-Model context is derived from the raw conversation. Large tool results are saved as exact bytes under the project's data folder and replaced in requests by an excerpt and a recoverable `/large_tool_results/` path. Full results remain in history and exports. Existing artifacts are checked against raw bytes; corrupt files are reported rather than overwritten.
+Session ids look like `circle-3f9a1c2e`. `circle --session-id <id>` opens or starts a session with an id you choose, `--name` gives it a title from the start, and `--no-session` keeps a conversation in memory only. See [CLI](cli.md#arguments-and-options).
 
-Old unpruned tool output outside a recent 40,000-token window is shortened in batches of at least 20,000 estimated tokens. Questions, skills, complete JSON documents and the latest todo result are protected from this pruning pass. The batch records affected message IDs and already-existing thinking blocks; later responses do not lose their thinking unless a later batch affects them.
+## Pick a session
 
-Compaction summarizes a balanced prefix, keeps recent messages and stores the earlier raw history under `/conversation_history/`. Summary and pruning versions belong to checkpoint ancestry. Branch selection and forks retain their own context decisions. Raw stored messages are never rewritten by compaction.
+`/resume` and `circle -r` open a list of this folder's sessions, newest first, with how long ago each was used. Type to narrow it.
 
-Automatic compaction uses the [model's context window and output reservation](models.md). Request estimates include system instructions and tools. `CIRCLE_PRUNE_TOOL_OUTPUTS=0` stops new prune decisions; previous recorded decisions remain deterministic. `CIRCLE_PRUNE_PROTECT_TOKENS` changes the recent window for future batches.
+| Key | What it does |
+|---|---|
+| `enter` | Open the session. |
+| `tab` | Switch between this folder's sessions and every folder's. |
+| `ctrl+r` | Rename the session. |
+| `ctrl+d` | Delete the session and its messages, after you confirm. The session you are in cannot be deleted. |
+| `esc` | Clear the search, or close the list. |
 
-Persistent plan and loop reminders guide long tool sequences. They are marked separately from real user input and hidden from the transcript, Markdown and HTML exports. JSONL retains the raw records.
+A session from another folder is not moved. Picking one copies it into a new session in this folder, and the original stays where it was.
 
-## Import and export
+## Reopen a session after a restart
 
-`/export` writes Markdown; `html`, `jsonl` or a filename selects another format. `circle --export <id> <file.jsonl>` also creates a native bundle. `/import <file.jsonl>` creates an independent conversation.
+```bash
+circle -c                      # the most recent session in this folder
+circle -r                      # pick one from the list
+circle --session 3f9a1c2e      # a session by its id, or the end of it
+circle --fork 3f9a1c2e         # a copy of it, as a new session here
+circle -p -c "and now the tests"   # go on with it in print mode
+```
 
-Version 3 JSONL bundles contain every checkpoint branch, selected head, labels, context versions, summary accounting and owned child-session history. A SHA-256 seal detects changes to the file. Import validates the graph and commits all sessions in one transaction, assigning fresh session/checkpoint identities while preserving raw message records. Long-output and history artifacts are reconstructed from those records in the receiving data directory. Account settings and credentials are supplied by the receiving installation.
+A reopened session is drawn again from its saved messages: your messages, the answers, thinking and tool calls, folded as they were, and `ctrl+o` and `ctrl+t` work on them. Tools are never run again. A tool call that was cut off before its result was saved (Circle was killed, or the terminal closed) gets the result `Interrupted before a tool result was saved`, so the model knows it did not finish. Sessions from `circle -p`, line mode and RPC mode are in the list too, so `circle -c` can pick up a scripted run in the full-screen interface.
 
-Wait for the current turn and background subagents to finish before exporting from the TUI. Existing version 1 and version 2 message exports remain readable. Interrupted child histories remain inspectable records; importing a bundle starts no model call, tool, job or child agent.
+## Undo and redo
 
-Legacy indexed `sessions.sqlite` and `checkpoints.sqlite` files are read without modification. Logical conversations and nested child namespaces are imported into `circle.sqlite`, with private source archives and SHA-256 receipts. MessagePack and JSON are decoded as data; serialized Python constructors are never executed. Independent markers support adding child records to earlier migrations and prevent deleted records from reappearing. Unsupported data is reported per scope. See [migration details](development/migration-data.md).
+`/undo` removes your last message and Circle's reply from the screen and puts the screen back as it was. `/redo` brings them back. You can undo up to 40 turns.
 
-## Subagent details
+`/undo` only changes what the screen shows. **The model still remembers the turn**, and files it changed stay changed. Use it to tidy the view.
 
-While foreground subagents run, press Down with an empty prompt to select an agent, then Enter to inspect its transcript. Left/Right switch details; Esc returns. Clicking a task row opens its saved details; when several children are available, choose one in the picker. Details display live or restored history without resuming the child.
+## Branches
+
+You can go back to an earlier point of a session and continue from there. Nothing is lost: the earlier continuation stays in the session as another branch, and you can go back to it.
+
+`/tree`, or `esc` twice on an empty input box, lists every message of the session, all branches, oldest first. `/tree <words>` opens the list searching for those words. Going back stops a running turn first.
+
+| Key | What it does |
+|---|---|
+| `enter` | Go back to that message. |
+| `L` | Give the message a label, shown as `[label]`. An empty label removes it. |
+| `ctrl+u` | Show only your messages. |
+| type | Search. |
+
+Going back to one of Circle's answers shows the conversation up to that answer. Going back to one of your messages shows the conversation before it and puts the message back in the input box, so you can change it and send it again. Your next message starts a new branch from that point, and the model sees only the history up to it.
+
+Circle remembers the point you went back to. Reopen the session after a restart and it is still there; send a message and the branch continues from it.
+
+A point where a turn stopped on an approval card cannot be gone back to. Choose the message before it.
+
+`/fork` and `/clone` make a new session instead:
+
+- `/fork` lists your messages. Pick one and a new session starts with everything before it; the message is put back in the input box. `/fork <words>` opens the list searching for those words.
+- `/clone` starts a new session with the current branch, up to the point you went back to if you did.
+
+A fork or clone takes the branch with what Circle knows about it: an earlier compaction, the plan and the subagents' records. The original session stays in `/resume`. `esc` twice opens `/fork` instead of `/tree`, or nothing, when you set `double_escape` in [settings](settings.md#keys).
+
+## Compaction
+
+Long conversations are summarized automatically when they pass 85% of the model's context window, the number the footer shows after `ctx`, or sooner when the room kept for the answer needs it (see [Models](models.md#cost-and-context-in-the-footer)). Older messages are replaced by a summary and the most recent tenth of the window is kept. The originals are saved in the data folder, under `projects/<folder>-<id>/conversation_history/`; the model can still read them at `/conversation_history/`. The stored conversation itself is never rewritten.
+
+While a compaction runs, automatic or not, a row above the input box shows it with a progress bar, the step and the time, for example `auto-compacting · ████████░░░░ summarizing · 12s`. `esc` stops an automatic one with its turn: the older messages stay as they were, and it runs again on the next request that is over the threshold. When it is done, one faint line stays in the conversation: `auto-compacted · ~171.0k → ~18.0k tokens · summarized 40 messages, kept 6 · 34s · history: /conversation_history/….jsonl` (the token counts are estimates of the whole request, on the scale of the footer's `ctx`). When it fails, a red line says why. A summary that was stopped, came back cut off, or no longer matches the conversation is not used.
+
+`/compact [hint]` does it now, with the same row and closing line, reading `compacting` and `compacted`. The hint is added to the summarizer's instructions, for example `/compact keep the API decisions`. When everything still fits in the part that is kept, the footer says `Nothing to compact yet`. A compaction cannot start while a turn runs.
+
+The footer shows how full the context is: `ctx 12.5k/1.0M (1%)`.
+
+Circle also trims what it sends, without touching the stored conversation:
+
+- A tool result over 80,000 characters is saved in the data folder (`large_tool_results/`), and the model gets its first 1,600 characters and a path to read the rest with `read_file`.
+- Once the tool output older than the most recent 40,000 tokens adds up to at least 20,000 tokens, it is shortened to its first 160 characters and a note, in one batch. Answers to questions, loaded skills, results that are a whole JSON document, attachments and the latest plan are kept. `CIRCLE_PRUNE_TOOL_OUTPUTS=0` stops new batches; `CIRCLE_PRUNE_PROTECT_TOKENS` changes the 40,000.
+
+Reminders Circle adds for the model (about the plan, a loop, waiting jobs) are kept apart from your messages and are not shown in the conversation or in Markdown and HTML exports.
+
+## Export and import
+
+| Command | What it does |
+|---|---|
+| `/export [path]` | Write the conversation as Markdown, as it is on screen. Default: `exports/` in the data folder. A relative path is inside the workspace. |
+| `/export html`, `/export <file>.html` | Write it as one web page: your messages, the answers, and thinking and tool calls folded. It follows the browser's light or dark setting, and shows images. |
+| `/export jsonl`, `/export <file>.jsonl` | Write the whole session for `/import`: every branch, the point you are at, labels, compactions, costs and the subagents' records. A checksum at its end detects a changed file. Not while a turn or a background subagent runs. |
+| `/import <file>.jsonl` | Start a new session from a JSONL export. The model remembers it exactly, and `/tree`, `/fork` and `ctrl+o` work on it. Nothing runs: no model call, tool or job. |
+| `/import <file>` | Any other text file starts a new session with its text on screen; the first 8,000 characters are given to the model as earlier context. |
+| `/share` | Write a Markdown copy under `shares/` in the data folder and copy its path. Nothing is uploaded. |
+| `/unshare` | Delete that copy. |
+
+`circle --export <id> [file]` writes a saved session without opening it: HTML by default, as `<id>.html` in the current folder, or a JSONL bundle when the file name ends in `.jsonl`.
+
+`/import` also reads the JSONL exports of Circle 0.5.0 and older. Those versions cannot read the exports of this one.
+
+## Sessions from 0.5.0
+
+Circle 0.5.0 and older kept sessions in `sessions.sqlite` and `checkpoints.sqlite` in the same data folder. Each time Circle starts it imports the ones it has not imported yet into `circle.sqlite`, with their titles, branches, labels and the subagents' records, and they show in `/resume` as before. The old files are read, never changed, and a copy of what was read is kept in `migration-backups/`. A session that cannot be imported is named in a red line (on standard error without the full-screen interface), and the others still come over. A session you delete is not imported again. Details are in [Session data migration](development/migration-data.md).
+
+## Prompt history
+
+Your messages are saved in `history` in the data folder (last 1,000). `↑` and `↓` walk through them and `ctrl+r` searches. `CIRCLE_HISTORY_PATH` keeps it somewhere else.
+
+## Subagent records
+
+While subagents run, a strip below the footer lists them. Press `↓` in an empty prompt to select one, `enter` to open its record, `←` `→` to switch between subagents and `esc` to go back. Clicking a subagent's row in the conversation opens its saved record, also after a restart. A record only shows what the subagent did; it does not start it again.
+
+## What does not carry over
+
+These are limits of the current version:
+
+- **Going back does not undo file changes.** `/tree` and `/fork` change the conversation, not your files.
+- **`/undo` and `/redo` do not change the model's memory or your files.** Use `/tree` to go back for the model.
+- **The undo history is kept in memory only.** The tree is read from the saved messages, so it survives a restart; `/undo` does not.
+- **A session closed while a card was waiting** reopens without the card. Send a message to go on.
+- **`auto` mode is not saved** with the session. See [Security](security.md#auto-mode).
+- **Background jobs end with Circle.** A reopened session has none running; when you left normally, the conversation has a note naming the jobs that were stopped. A job of another session goes on while you switch with `/resume` or `/new`, and its notice waits until that session is open again. See [Background jobs](background-jobs.md).

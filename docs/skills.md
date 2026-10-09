@@ -19,16 +19,16 @@ description: Write a changelog entry in this project's format. Use when asked to
 Add entries under `## Unreleased`, newest first, one line each ...
 ```
 
-- `name` and `description` are required. Circle skips a skill that lacks either.
-- The name should match the folder name. Use lowercase letters, digits and hyphens.
+- Give it a `name` and a `description`. Without a `name`, or with one that is not lowercase letters, digits and hyphens, the folder name is used; without a `description`, the model sees only `Skill from <folder>`.
+- The name should match the folder name.
 - The description is what Circle reads to decide whether the skill applies, so say **what it does and when to use it**. Descriptions are cut at 1,024 characters.
-- Put scripts, templates and references next to `SKILL.md` and mention them in the text. Circle lists up to ten of the folder's files when it loads the skill, and never runs bundled scripts by itself.
+- Put scripts, templates and references next to `SKILL.md` and mention them in the text by relative path. When the skill is loaded, the model is told the skill's folder, so it can find them. Circle never runs bundled scripts by itself.
 
-Each skill must be exactly one folder below the skills folder: `skills/changelog/SKILL.md`. A skill nested one level deeper can be loaded with `/skill` but does not appear in the list Circle shows the model.
+A skill is a folder below the skills folder, `skills/changelog/SKILL.md`, or one level deeper inside a folder that has no `SKILL.md` of its own, `skills/team/changelog/SKILL.md`.
 
 ## How Circle uses skills
 
-At the start of a session Circle puts each skill's name and description in the system prompt. When a task matches, the model reads the full file (or calls the `skill` tool), and follows it. Skills load only what a task needs.
+Circle puts each skill's name and description in the system prompt. When a task matches, the model calls the `skill` tool (or reads the file), and follows it. Skills load only what a task needs.
 
 You can also load one yourself:
 
@@ -38,9 +38,9 @@ You can also load one yourself:
 /skill:changelog v0.2.0    load it and pass an argument
 ```
 
-A skill loaded this way is added to the conversation without starting a turn. Circle follows it "until you say otherwise".
+A skill loaded this way is added to the conversation without starting a turn; the model reads it with your next message and follows it "until the user says otherwise". Typing `/skill:` in the input box lists the skills too.
 
-Skills are read when a session starts and again after `/reload`, `/models`, `/plan`, `/mcp reload` and similar commands.
+Circle reads the skill folders when it starts. `/skill` reads them again each time, so a new skill can be loaded with it at once, but the list in the system prompt and the model's `skill` tool see it only after a restart. See [Known issues](known-issues.md#configuration-and-skills).
 
 ## Where skills live
 
@@ -62,7 +62,7 @@ Circle looks in all of these. If two skills have the same name, the one lower in
 
 One quirk: a skill in a parent folder's `.agents/skills` overrides one with the same name in the workspace's own.
 
-Project skills are read whether or not you have trusted the folder. A skill can tell the model to do anything, so read the skills in a repository before you run Circle in it.
+Project skills apply once you trust the folder, and the `.agents/skills` folders above it apply with them. A skill can tell the model to do anything, so read the skills in a repository before you trust it.
 
 ## Install skills
 

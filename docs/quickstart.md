@@ -4,9 +4,7 @@ Circle runs in your terminal and works on the files in a folder you choose. To u
 
 ## 1. Install
 
-Circle runs on macOS, Linux and Windows 10 or newer. Windows console interaction still needs real-machine testing; read the [Windows entry in Known issues](known-issues.md#install-and-release) first.
-
-**Prebuilt program** is faster and needs no Python, but check the [Releases page](https://github.com/qingshanfeihu/circle/releases) first: a release only helps if it has a file for your platform. Releases built by the release workflow carry macOS (Apple silicon and Intel), Linux (x86_64 and arm64) and Windows (x86_64).
+Circle runs on macOS, Linux and Windows 10 or newer, on x64 and arm64. A release carries its own Node.js, so nothing else needs to be installed first. The Windows build has not yet been tried in a real console; read the [Windows entries in Known issues](known-issues.md#install-and-release) first.
 
 On macOS and Linux:
 
@@ -20,36 +18,19 @@ On Windows, in PowerShell:
 irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
 ```
 
-The installer downloads the release for your OS and CPU, checks its sha256, unpacks it under `~/.local/share/circle/versions/<version>` (`%LOCALAPPDATA%\circle` on Windows), points `current` at it, puts `circle` on your `PATH`, and adds that folder to your shell's startup file if needed. On macOS and Linux it starts the new program once before that, which takes a few seconds the first time; if it does not start, your previous install is left as it was. To pin a version, set `CIRCLE_VERSION`, for example `CIRCLE_VERSION=0.2.0`.
-
-If `install.sh` runs in a Windows shell (Git Bash, MobaXterm, Cygwin), it hands over to PowerShell and installs the Windows program. Run `circle` in Windows Terminal, PowerShell or cmd: a terminal window that is not a Windows console cannot show the full-screen interface, use `circle --line` for [line mode](cli.md#full-screen-and-line-mode) there.
-
-If the installer stops with a certificate error, your network is replacing HTTPS certificates. Export its root certificate as a PEM file and run the installer again with `CURL_CA_BUNDLE=/path/to/ca.pem` (macOS, Linux) or import it into the Windows certificate store (PowerShell uses that store).
-
-To upgrade later, run `circle update`. See [Updating](cli.md#updating).
-
-**From source** works everywhere and is the way to get the current code. It needs Python 3.11 or newer. Check first:
-
-```bash
-python3 --version
-```
-
-macOS comes with Python 3.9 as `python3`, which is too old. With it the install fails with messages that do not mention the version, such as `No matching distribution found for deepagents==…`. Install a newer Python first (for example `brew install python@3.12`) and use `python3.12` in place of `python3` below.
-
-```bash
-git clone https://github.com/qingshanfeihu/circle
-cd circle
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
-```
+The installer downloads the release for your system, checks it, puts `circle` on your `PATH`, and adds that folder to your shell's startup file if needed. Open a new terminal afterwards. To pin a version, set `CIRCLE_VERSION`, for example `CIRCLE_VERSION=1.0.0`. If it stops with a certificate error, or you want to install from source, see [Installation and updates](installation.md).
 
 Verify:
 
 ```bash
 circle --version
 ```
+
+To upgrade later, run `circle update`.
+
+### Upgrading from 0.5.0
+
+Circle 0.5.0 and older were written in Python, and their `circle update` cannot install this version. Run the install command above instead: it removes the Python version and installs this one in its place. Your data folder stays as it was, so the endpoint, key, trusted folders, MCP servers, skills, custom commands and prompt history carry over, and your saved sessions show up in `/resume` after the first start. Python extensions have to be rewritten. See [Replacing the Python circle](installation.md#replacing-the-python-circle).
 
 ## 2. Start Circle
 
@@ -62,9 +43,9 @@ circle
 
 The first time, Circle walks you through two steps. Both are asked in the input box at the bottom of the session screen, under the welcome block, so the screen you answer them on is the one you then work in.
 
-**Connect a model.** Choose **API URL + KEY**, paste the base URL and the key (it shows as dots), then pick a model from the list Circle fetches, or type its id. If Circle cannot list the endpoint's models, it says why, asks whether the API is OpenAI-style or Anthropic-style, and you type the model id your provider documents. See [Choose a model](models.md). The OAuth choice is not available yet.
+**Connect a model.** Paste the API base URL and the key (it shows as dots). Circle asks the endpoint for its models, then asks for the model id, showing a few of the listed ones. If it cannot list the endpoint's models, it asks whether the API is OpenAI-style or Anthropic-style, and you type the model id your provider documents. See [Choose a model](models.md).
 
-**Trust the folder.** Circle asks before it works in a folder for the first time, and says what trusting loads from it: its instruction files, skills, commands, extensions and settings. Extensions run their own code, so the card says so when the folder has any. Trusting records the folder in your settings; nothing is written into the folder. Choose **Trust and continue** (or press `y`).
+**Trust the folder.** Circle asks before it works in a folder for the first time, and says what the folder can supply: instructions, skills, commands and extensions, and that extensions run code. Trusting records the folder in your settings; nothing is written into the folder. Choose **trust this folder** (or press `y`).
 
 After that, `circle` goes straight to the session.
 
@@ -98,13 +79,13 @@ Add type hints to quicksort.py and write pytest tests for it.
 Find where the config file is read and tell me which settings can be overridden.
 ```
 
-Press `esc` to stop a turn. You can type the next message while Circle is working. It is queued and sent when the turn ends.
+Press `esc` to stop a turn. You can type while Circle is working: `enter` gives the message to the model after its current step, and `ctrl+q` keeps it for when the turn ends. See [Steer a running turn](usage.md#steer-a-running-turn).
 
 ## 4. Continue
 
 Everything you type is kept in your prompt history: press `↑` in an empty prompt to bring back earlier messages, or `ctrl+r` to search.
 
-Inside a session, `/new` starts a fresh conversation, `/export` writes the transcript to a Markdown file, and `/exit` (or `ctrl+d`) leaves. Circle keeps each conversation in its data folder: `circle -c` goes on with the last one in this folder, and `/resume` lists the others. See [Sessions](sessions.md).
+Inside a session, `/new` starts a fresh conversation, `/export` writes the transcript to a Markdown file, and `/exit` (or `ctrl+d` on an empty box) leaves. Circle keeps each conversation in its data folder: `circle -c` goes on with the last one in this folder, and `/resume` lists the others. See [Sessions](sessions.md).
 
 To use Circle from a script, run one prompt with `circle -p "…"`; the answer is printed. See [CLI](cli.md#print-mode).
 
