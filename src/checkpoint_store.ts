@@ -56,6 +56,19 @@ export const emptyContextState = (): ContextState => ({
 export class CheckpointStore {
   private db: DatabaseSync;
   private closed = false;
+  // The messages of each session's current head, so a repaint does not walk the checkpoint
+  // chain (one query per message) again. The array and its messages are shared: callers
+  // must not modify them. Invalidated by every write that moves a head.
+  private messageCache = new Map<
+    string,
+    { head: string | null; messages: Message[] }
+  >();
+  // Moved on every write, so callers can tell whether a derived view of the store
+  // (the subagent rows) is still current without re-querying.
+  private writeVersion = 0;
+  get version(): number {
+    return this.writeVersion;
+  }
   constructor(home?: string) {
     this.db = new DatabaseSync(
       home ? join(ensureHome(home), 'circle.sqlite') : ':memory:',
@@ -164,6 +177,7 @@ export class CheckpointStore {
     this.db
       .prepare('UPDATE sessions SET title = ?, updated = ? WHERE id = ?')
       .run(title, Date.now(), id);
+    this.writeVersion++;
   }
   private decode(row: Record<string, unknown>): Checkpoint {
     return {
@@ -214,6 +228,14 @@ export class CheckpointStore {
         .prepare('UPDATE sessions SET head = ?, updated = ? WHERE id = ?')
         .run(head, Date.now(), sessionId);
       this.db.exec('COMMIT');
+      // When the cache holds the head this append started from, the new messages extend
+      // it; otherwise the chain is walked again on the next read.
+      const cached = this.messageCache.get(sessionId);
+      if (cached && cached.head === session.head) {
+        cached.head = head;
+        cached.messages = cached.messages.concat(messages);
+      } else this.messageCache.delete(sessionId);
+      this.writeVersion++;
       return head;
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -221,9 +243,13 @@ export class CheckpointStore {
     }
   }
   messages(sessionId: string, head?: string | null): Message[] {
-    let cursor = head === undefined ? this.get(sessionId)?.head : head;
+    const resolved =
+      head === undefined ? (this.get(sessionId)?.head ?? null) : head;
+    const cached = this.messageCache.get(sessionId);
+    if (cached && cached.head === resolved) return cached.messages;
     const messages: Message[] = [];
     const seen = new Set<string>();
+    let cursor = resolved;
     while (cursor) {
       if (seen.has(cursor)) throw new Error('checkpoint ancestry cycle');
       seen.add(cursor);
@@ -233,7 +259,9 @@ export class CheckpointStore {
       if (row.message) messages.push(row.message);
       cursor = row.parent;
     }
-    return messages.reverse();
+    messages.reverse();
+    this.messageCache.set(sessionId, { head: resolved, messages });
+    return messages;
   }
   select(sessionId: string, head: string | null): void {
     const messages = this.messages(sessionId, head);
@@ -241,6 +269,7 @@ export class CheckpointStore {
     this.db
       .prepare('UPDATE sessions SET head = ?, updated = ? WHERE id = ?')
       .run(head, Date.now(), sessionId);
+    this.writeVersion++;
   }
   fork(sessionId: string, workspace: string, head?: string | null): Session {
     const parent = this.get(sessionId);
@@ -252,12 +281,14 @@ export class CheckpointStore {
       if (seen.has(id)) throw new Error('session parent cycle');
       seen.add(id);
       for (const child of this.children(id)) visit(child.id, seen);
+      this.messageCache.delete(id);
       this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
     };
     this.db.exec('BEGIN IMMEDIATE');
     try {
       visit(sessionId, new Set());
       this.db.exec('COMMIT');
+      this.writeVersion++;
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
@@ -451,6 +482,7 @@ export class CheckpointStore {
           Date.now(),
         );
       this.db.exec('COMMIT');
+      this.writeVersion++;
       return 'imported';
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -632,6 +664,7 @@ export class CheckpointStore {
             .run(sessionIds.get(node.session.id)!, id, label);
       }
       this.db.exec('COMMIT');
+      this.writeVersion++;
       return this.get(sessionIds.get(graph.root)!)!;
     } catch (error) {
       this.db.exec('ROLLBACK');

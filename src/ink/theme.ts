@@ -242,11 +242,17 @@ export function buildPalette(
   };
 }
 let current = buildPalette(...DEFAULT_DARK);
+// Bumped on every palette swap, so caches of painted rows know to drop their entries.
+let paletteEpoch = 0;
 export function palette(): Palette {
   return current;
 }
+export function paletteRev(): number {
+  return paletteEpoch;
+}
 export function setPalette(value: Palette): void {
   current = value;
+  paletteEpoch++;
 }
 export type LampState = 'running' | 'ok' | 'error' | 'wait' | 'none';
 // The lamp's colour alone, so a tinted row can put its background in the same SGR

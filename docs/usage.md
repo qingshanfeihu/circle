@@ -33,7 +33,7 @@ What each approval option does is explained in [Security](security.md#approvals)
 
 ## Interrupt
 
-Press `esc` to stop a turn. Circle marks it `✖ Interrupted`. A shell command that is running is ended, with everything it started, within about a second (on Windows with `taskkill`, not yet tried on a real machine). [Background jobs](background-jobs.md) keep running; a job that ends after you stopped the turn waits for your next message instead of starting a turn. `ctrl+c` also stops a turn. `ctrl+b` moves the command being waited on to the background instead of stopping it. When Circle is idle, `esc` and `ctrl+c` clear what you typed (`ctrl+c` keeps it in the history), and `ctrl+d` on an empty box leaves.
+Press `esc` to stop a turn. Circle marks it `✖ Interrupted` until the next turn starts. A shell command that is running is ended, with everything it started, within about a second (on Windows with `taskkill`, not yet tried on a real machine). [Background jobs](background-jobs.md) keep running; a job that ends after you stopped the turn waits for your next message instead of starting a turn. `ctrl+c` also stops a turn. `ctrl+b` moves the command being waited on to the background instead of stopping it. When Circle is idle, `esc` and `ctrl+c` clear what you typed (`ctrl+c` keeps it in the history), and `ctrl+d` on an empty box leaves.
 
 ## Steer a running turn
 

@@ -4,6 +4,10 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Fixed
+
+- **`✖ Interrupted` leaves when the next turn starts.** Stopping a turn still marks it, and the mark stays while Circle is idle. It no longer sits at the bottom of the transcript after a new turn has begun.
+
 ## 1.0.1 - 2026-10-09
 
 ### Changed

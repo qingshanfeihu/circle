@@ -12,6 +12,8 @@ import { AgentRuntime } from '../src/runtime.js';
 import { SessionApp } from '../src/tui/session_app.js';
 import { defaultSettings } from '../src/settings.js';
 import { ScriptedModel } from '../src/testing.js';
+import { renderScreen } from '../src/tui/render.js';
+import { emptyUsage } from '../src/types.js';
 import type { Todo } from '../src/tools.js';
 import { cleanup, scratch } from './helpers.js';
 
@@ -51,6 +53,57 @@ test('plan follows actual statuses, preserves manual scrolling until updates and
   }));
   assert.equal(planStart(allDone), 7);
   assert.ok(stripAnsi(planRows(allDone, 60)[0]!).includes('Plan 12/12'));
+});
+
+test('the plan frame stays above a card, so the plan-exit card is answered with the plan in view', () => {
+  const todos_: Todo[] = [
+    { content: 'step one', status: 'completed' },
+    { content: 'step two', status: 'in_progress' },
+  ];
+  const state = {
+    messages: [],
+    notices: [],
+    welcome: [],
+    draft: '',
+    draftCursor: 0,
+    model: 'model-x',
+    workspace: '/project/app',
+    version: '1.0.0',
+    busy: false,
+    waiting: true,
+    planMode: true,
+    autoMode: false,
+    todos: todos_,
+    showThinking: true,
+    showTools: false,
+    streaming: '',
+    thinking: '',
+    usage: emptyUsage(),
+    flash: '',
+    started: Date.now(),
+    scroll: 0,
+    hiddenTurns: 0,
+    dialog: {
+      title: 'plan',
+      body: 'Implement the completed plan?',
+      options: ['implement plan', 'continue planning'],
+      focus: 0,
+    },
+  } as unknown as Parameters<typeof renderScreen>[0];
+  const rows = renderScreen(state, 60, 24).map(stripAnsi);
+  const plan = rows.findIndex((row) => row.includes('Plan 1/2'));
+  const card = rows.findIndex((row) =>
+    row.includes('Implement the completed plan?'),
+  );
+  assert.ok(plan >= 0, 'the plan frame is drawn');
+  assert.ok(card >= 0, 'the card is drawn');
+  assert.ok(plan < card, 'the plan sits above the card');
+  const cardTop = rows.findLastIndex((row) => row.startsWith('╭'));
+  assert.equal(
+    rows[cardTop - 1],
+    rows.filter((row) => row.startsWith('└')).at(-1),
+    'the card frame starts right under the plan frame',
+  );
 });
 
 test('actual session input routes wheel events to the plan and Alt+Up takes unsent messages back from the real harness', async (t) => {
