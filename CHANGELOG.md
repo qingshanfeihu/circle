@@ -13,6 +13,8 @@ Circle 1.0 is a rewrite in TypeScript. It works as 0.5.0 did: the same screen, k
 - **Saved sessions move to `circle.sqlite`.** On the first start Circle imports the conversations in `sessions.sqlite` and `checkpoints.sqlite` without changing those files, and keeps a copy of what it read in `migration-backups/`.
 - **Extensions are JavaScript or TypeScript** (`extension.mjs`, `extension.js` or `extension.ts`); `extension.py` no longer loads. The API is the same in camelCase. See [Extensions](docs/extensions.md).
 - **Release files carry the version in their name**, `circle-<version>-<os>-<arch>.tar.gz` (`.zip` on Windows), and there are builds for Windows on ARM64.
+- **`SSL_CERT_FILE` and `SSL_CERT_DIR` add to the certificate authorities Circle trusts** instead of replacing them, and `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` apply to all of Circle's requests.
+- **Only `task` calls run at the same time.** 0.5.0 asked every approval of a reply first and then ran all its calls together; now the other calls run one after another, each asking when its turn comes.
 
 ### Added
 
