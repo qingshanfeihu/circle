@@ -883,11 +883,11 @@ export class AgentRuntime {
       Boolean(this.activeCompaction)
     );
   }
-  async cancel(): Promise<void> {
+  async cancel(options: { keepQueue?: boolean } = {}): Promise<void> {
     this.compactionController?.abort(new Error('Interrupted'));
     await Promise.allSettled([
       this.activeCompaction,
-      this.harness.cancel(),
+      this.harness.cancel(options),
       this.userShells.cancel(),
     ]);
   }
