@@ -20,6 +20,7 @@ export function rpcMessage(message: Message): {
   if (message.thinking && !message.provider_content)
     extra.reasoning_content = message.thinking;
   if (message.internal) extra.circle_internal = message.internal;
+  if (message.shell) extra.circle_shell = { ...message.shell };
   if (message.display !== undefined && message.display !== message.content)
     extra.circle_shown = message.display;
   let content: unknown = message.provider_content ?? message.content;

@@ -40,6 +40,7 @@ import {
   type CostSummary,
 } from './pricing.js';
 import { addUsage, emptyUsage } from './types.js';
+import { UserShells } from './user_shell.js';
 const BUILTIN_TOOL_NAMES = new Set([
   'ls',
   'read_file',
@@ -136,6 +137,7 @@ export class AgentRuntime {
     return this.withIntegrationTools(this.coreTools, false);
   }
   todos: Todo[] = [];
+  readonly userShells: UserShells;
   session: Session;
   harness: Harness;
   constructor(options: RuntimeOptions) {
@@ -169,12 +171,20 @@ export class AgentRuntime {
       this.sandbox.credentialFiles,
       (path) => this.sandbox.resolvePath(path),
     );
-    this.jobs = new JobRegistry(this.sandbox, (kind, job) =>
+    this.jobs = new JobRegistry(this.sandbox, (kind, job) => {
+      if (kind === 'job_ended') this.userShells?.ended(job);
       this.bus.emit(kind, {
         payload: { job },
         tags: { session_id: job.sessionId },
-      }),
-    );
+      });
+    });
+    this.userShells = new UserShells(this.jobs, this.store, {
+      sessionId: () => this.session.id,
+      busy: () => this.busy,
+      modelBusy: () => this.harness.busy,
+      planMode: () => this.harness.planMode,
+      changed: () => this.bus.emit('info', { payload: { user_shell: true } }),
+    });
     this.skills = discoverSkills(options.workspace, options.home);
     this.mcp = new McpManager(options.workspace);
     this.lsp = new LspManager(this.sandbox);
@@ -553,10 +563,12 @@ export class AgentRuntime {
       priceUsage: (model, usage) =>
         priceCall(this.catalog.facts(model, this.options.settings), usage),
       beforeRun: async (signal) => {
+        if (this.userShells.busy) throw new Error('a user command is running');
         if (this.activeCompaction) throw new Error('a compaction is running');
         await this.initialize(signal);
       },
       beforeStep: () => {
+        this.userShells.flush();
         const messages = this.jobs.takeNotices(this.harness.sessionId);
         if (messages.length)
           this.store.append(this.harness.sessionId, messages);
@@ -859,11 +871,19 @@ export class AgentRuntime {
     }
   }
   get busy(): boolean {
-    return this.harness.busy || Boolean(this.activeCompaction);
+    return (
+      this.harness.busy ||
+      this.userShells.busy ||
+      Boolean(this.activeCompaction)
+    );
   }
   async cancel(): Promise<void> {
     this.compactionController?.abort(new Error('Interrupted'));
-    await Promise.allSettled([this.activeCompaction, this.harness.cancel()]);
+    await Promise.allSettled([
+      this.activeCompaction,
+      this.harness.cancel(),
+      this.userShells.cancel(),
+    ]);
   }
   async newSession(): Promise<void> {
     if (this.busy) throw new Error('a turn is running');
@@ -936,7 +956,9 @@ export class AgentRuntime {
     this.compactionController?.abort(new Error('Interrupted'));
     await this.activeCompaction?.catch(() => {});
     await this.harness.cancel();
+    await this.userShells.cancel();
     const stopped = await this.jobs.close();
+    this.userShells.flush();
     for (const sessionId of saveJobNotes
       ? new Set(stopped.map((job) => job.sessionId))
       : []) {

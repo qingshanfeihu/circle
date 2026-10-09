@@ -125,7 +125,8 @@ export class Harness {
     signal.throwIfAborted();
     const total = emptyUsage();
     let answer = '';
-    let next: string | undefined = prompt;
+    let next: string | undefined =
+      prompt ?? this.steering.shift() ?? this.followUps.shift();
     do {
       const result = await this.runTurn(next, signal);
       answer = result.answer;

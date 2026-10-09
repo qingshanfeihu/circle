@@ -207,6 +207,9 @@ export class SessionApp {
     if (this.ended || this.externalEditor) return;
     if (this.runtime) {
       this.state.messages = this.runtime.harness.messages;
+      this.state.userShells = this.runtime.userShells.views.filter(
+        (shell) => shell.sessionId === this.runtime!.session.id,
+      );
       this.state.todos = this.runtime.todos;
       this.plan.update(this.state.todos);
       this.state.planStart = this.plan.start;
@@ -1078,7 +1081,7 @@ export class SessionApp {
       const message = this.state.draft.trim();
       this.setDraft('');
       this.history.add(message);
-      if (this.runtime?.harness.busy) {
+      if (this.runtime?.busy) {
         this.runtime.harness.queue(message, 'followUp');
         this.flash('Queued follow-up');
       } else void this.submit(message).catch((error) => this.fail(error));
@@ -1158,9 +1161,22 @@ export class SessionApp {
       return;
     }
     if (!this.runtime) return;
+    if (message.startsWith('!')) {
+      try {
+        await this.runtime.userShells.run(
+          message.slice(message.startsWith('!!') ? 2 : 1),
+          message.startsWith('!!'),
+        );
+      } finally {
+        if (!this.runtime.busy && this.runtime.harness.pendingMessageCount)
+          void this.runtime.harness.run().catch((error) => this.fail(error));
+        this.repaint();
+      }
+      return;
+    }
     this.jobWakeSnoozed = false;
     this.jobWakeCount = 0;
-    if (this.runtime.harness.busy) {
+    if (this.runtime.busy) {
       this.runtime.harness.queue(message);
       this.flash('Queued steering');
     } else {

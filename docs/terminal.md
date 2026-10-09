@@ -22,4 +22,6 @@ Enter while busy queues steering for the next model step. Ctrl+Q queues a follow
 
 Press Down with an empty prompt to select a running foreground subagent, then Enter for its details. Left/Right change the detail view; Esc returns. Click a saved task row to inspect earlier children. `/jobs` and Ctrl+B manage background work; see [background jobs](background-jobs.md).
 
+Enter `!command` to run a shell command yourself and share its output with the next model request, without starting a model turn. `!!command` keeps the output in the terminal view. Esc or Ctrl+C stops the foreground process tree; Ctrl+B moves it to a background job. Shared commands persist and replay as command/output cards. Quiet foreground and background output stays out of saved conversation messages and automatic completion notices. Plan mode blocks direct shell execution.
+
 Bindings can be overridden in `CIRCLE_HOME/keybindings.json`. `/hotkeys` shows the configured action names. Remaining interaction differences are recorded in [known issues](known-issues.md).

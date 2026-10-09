@@ -40,6 +40,15 @@ function validateMessage(message: Message, previous: Set<string>): Set<string> {
     validateAttachments(message.attachments);
   }
   if (
+    message.shell !== undefined &&
+    (message.role !== 'user' ||
+      !isRecord(message.shell) ||
+      typeof message.shell.command !== 'string' ||
+      typeof message.shell.output !== 'string' ||
+      !Number.isInteger(message.shell.exit_code))
+  )
+    throw new Error('invalid user shell message');
+  if (
     message.tool_calls !== undefined &&
     (!Array.isArray(message.tool_calls) || message.role !== 'assistant')
   )

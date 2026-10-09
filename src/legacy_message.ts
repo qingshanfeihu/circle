@@ -116,6 +116,18 @@ export function fromLegacyMessage(record: LegacyMessage, index = 0): Message {
     id,
     role,
     content,
+    ...(isRecord(extra.circle_shell) &&
+    typeof extra.circle_shell.command === 'string' &&
+    typeof extra.circle_shell.output === 'string' &&
+    typeof extra.circle_shell.exit_code === 'number'
+      ? {
+          shell: {
+            command: extra.circle_shell.command,
+            output: extra.circle_shell.output,
+            exit_code: extra.circle_shell.exit_code,
+          },
+        }
+      : {}),
     ...(attachments.length ? { attachments } : {}),
     ...(thinking ? { thinking } : {}),
     ...(blocks.length ? { provider_content: blocks } : {}),

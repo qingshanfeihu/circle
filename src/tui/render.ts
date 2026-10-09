@@ -5,6 +5,7 @@ import type { Todo } from '../tools.js';
 import { dialogRows, type DialogState } from '../ink/components/dialog_card.js';
 import type { Picker } from '../ink/components/picker.js';
 import { planRows } from '../ink/components/plan_panel.js';
+import type { UserShellView } from '../user_shell.js';
 import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
 import type { CompactionProgress } from '../compaction.js';
 import type { SubagentView } from './subagents.js';
@@ -29,6 +30,7 @@ export interface ScreenState {
   todos: Todo[];
   planStart?: number;
   queue?: { steering: string[]; followUp: string[] };
+  userShells?: UserShellView[];
   showThinking: boolean;
   showTools: boolean;
   streaming: string;
@@ -85,7 +87,55 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       '',
     );
   };
+  const shellRows = (shell: {
+    command: string;
+    output: string;
+    exitCode?: number;
+    status: UserShellView['status'];
+    quiet?: boolean;
+  }): void => {
+    block('›', (shell.quiet ? '!!' : '!') + shell.command, '', p.blue);
+    block(
+      statusLight(
+        shell.status === 'running'
+          ? 'running'
+          : shell.status === 'done'
+            ? 'ok'
+            : shell.status === 'error'
+              ? 'error'
+              : 'none',
+      ),
+      `execute(${shell.command})${shell.exitCode !== undefined ? ` · exit ${shell.exitCode}` : ''}${shell.status === 'background' ? ' · background' : ''}`,
+      p.write_bg,
+    );
+    const lines = wrap(terminalText(shell.output), width - 5);
+    for (const line of state.showTools ? lines : lines.slice(0, 3))
+      rows.push('   ' + p.dim + '⎿ ' + line + p.reset);
+    if (!state.showTools && lines.length > 3)
+      rows.push(p.faint + `… +${lines.length - 3} lines · ctrl+o` + p.reset);
+    rows.push('');
+  };
+  const localShells = state.agentDetail ? [] : (state.userShells ?? []);
+  const localIds = new Set(
+    localShells.map((shell) => shell.persistedMessageId),
+  );
+  for (const shell of localShells.filter((shell) => !shell.anchor))
+    shellRows(shell);
   for (const message of messages) {
+    if (message.shell) {
+      if (!localIds.has(message.id))
+        shellRows({
+          command: message.shell.command,
+          output: message.shell.output,
+          exitCode: message.shell.exit_code,
+          status: message.shell.exit_code === 0 ? 'done' : 'error',
+        });
+      for (const shell of localShells.filter(
+        (shell) => shell.anchor === message.id,
+      ))
+        shellRows(shell);
+      continue;
+    }
     if (message.internal === 'job_notice')
       block(
         '◆',
@@ -166,6 +216,10 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
         );
       rows.push('');
     }
+    for (const shell of localShells.filter(
+      (shell) => shell.anchor === message.id,
+    ))
+      shellRows(shell);
   }
   if (state.thinking)
     block(

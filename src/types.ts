@@ -19,6 +19,7 @@ export interface Message {
   request_model?: string;
   content: string;
   attachments?: MediaAttachment[];
+  shell?: { command: string; output: string; exit_code: number };
   thinking?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
