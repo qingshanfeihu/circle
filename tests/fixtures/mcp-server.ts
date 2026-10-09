@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 const pending = new Map<unknown, NodeJS.Timeout>();
 const input = createInterface({ input: process.stdin, terminal: false });
 const send = (id: unknown, result: unknown): void => {
@@ -48,12 +48,28 @@ for await (const line of input) {
           description: 'Return an MCP error.',
           inputSchema: { type: 'object', properties: {} },
         },
+        {
+          name: 'login.wait',
+          description: 'Answer once a file exists, however long that takes.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              path: { type: 'string' },
+              started: { type: 'string' },
+            },
+            required: ['path'],
+          },
+        },
       ],
     });
   else if (request.method === 'tools/call') {
     const name = request.params?.name;
     const args =
-      (request.params?.arguments as { path?: string; delay?: number }) || {};
+      (request.params?.arguments as {
+        path?: string;
+        delay?: number;
+        started?: string;
+      }) || {};
     if (name === 'environment')
       send(request.id, {
         content: [
@@ -90,7 +106,16 @@ for await (const line of input) {
         isError: true,
         content: [{ type: 'text', text: 'fixture error' }],
       });
-    else if (name === 'write_receipt') {
+    else if (name === 'login.wait') {
+      if (args.started) writeFileSync(args.started, '');
+      const poll = setInterval(() => {
+        if (!existsSync(args.path!)) return;
+        clearInterval(poll);
+        pending.delete(request.id);
+        send(request.id, { content: [{ type: 'text', text: 'logged in' }] });
+      }, 10);
+      pending.set(request.id, poll);
+    } else if (name === 'write_receipt') {
       const finish = (): void => {
         writeFileSync(args.path!, 'MCP wrote this');
         pending.delete(request.id);
