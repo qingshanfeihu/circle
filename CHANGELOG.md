@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 1.0.1 - 2026-10-09
+
 ### Changed
 
 - **The welcome logo is three rows tall and finer**: the ring of `docs/images/logo.svg` drawn with sextant blocks (two by three sub-cells a cell) instead of six rows of quadrants, with the version, the model and the folder beside it.
