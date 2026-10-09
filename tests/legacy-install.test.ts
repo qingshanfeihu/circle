@@ -324,8 +324,12 @@ test('a running Python circle blocks the installation and nothing changes', asyn
   const child = spawn(frozen, ['-e', 'setTimeout(() => {}, 60000)'], {
     stdio: 'ignore',
   });
-  cleanup(t, () => {
+  // Windows cannot delete the folder while the program in it still runs: wait for its exit.
+  cleanup(t, async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise((resolve) => child.once('exit', resolve));
     child.kill();
+    await exited;
   });
   await new Promise((resolve) => child.once('spawn', resolve));
   const path = windows ? [pathEntry] : [bin];
@@ -345,8 +349,8 @@ test('a running Python circle blocks the installation and nothing changes', asyn
 
 test('an explicit prefix and bin folder win over the Python location, which wins over the default', (t) => {
   const base = scratch(t);
-  const { prefix, bin } = pythonInstall(base);
-  const where = around(base, windows ? [] : [bin]);
+  const { prefix, bin, pathEntry } = pythonInstall(base);
+  const where = around(base, [windows ? pathEntry : bin]);
   const copies = findPythonCopies(where);
   if (!windows) assert.equal(chooseLocation(copies, where).binDir, bin);
   assert.equal(chooseLocation(copies, where).prefix, realpathSync(prefix));

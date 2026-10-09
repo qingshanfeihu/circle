@@ -122,6 +122,10 @@ export class AgentRuntime {
   readonly catalog: ModelCatalog;
   private childJobOwners = new Map<string, import('./jobs.js').JobOwner>();
   private closing = false;
+  /** close() has begun: the session store may already be closed. */
+  get isClosing(): boolean {
+    return this.closing;
+  }
   private closingPromise?: Promise<void>;
   readonly policy;
   readonly runOptions: RunOptions;

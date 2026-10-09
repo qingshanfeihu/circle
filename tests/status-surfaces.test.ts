@@ -517,9 +517,10 @@ test('the welcome lists what the folder brings, unlit until trusted, blinking wh
     untrusted.items.map((item) => [item.kind, item.text, item.state]),
     [
       ['instructions', 'AGENTS.md', 'none'],
-      ['skills', '1 in .circle/skills', 'none'],
-      ['commands', '1 in .circle/commands', 'none'],
-      ['settings', '.circle/settings.json', 'none'],
+      // paths in the system's own separator, as 0.5.0 wrote them
+      ['skills', `1 in ${join('.circle', 'skills')}`, 'none'],
+      ['commands', `1 in ${join('.circle', 'commands')}`, 'none'],
+      ['settings', join('.circle', 'settings.json'), 'none'],
     ],
   );
   // Filled in as setup is answered: the model and its host once the connection is saved.

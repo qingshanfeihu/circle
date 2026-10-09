@@ -298,7 +298,9 @@ export class SessionApp {
     this.repaint();
   }
   private repaint(): void {
-    if (this.ended || this.externalEditor) return;
+    // A repaint can come from work that settles after leaving (a stopped job, a late reply):
+    // the session store may be closed by then.
+    if (this.ended || this.externalEditor || this.runtime?.isClosing) return;
     if (this.runtime) {
       this.state.messages = this.undo.visible(this.runtime.harness.messages);
       this.state.userShells = this.runtime.userShells.views.filter(
