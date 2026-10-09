@@ -4,6 +4,7 @@ import type { Message, Usage } from '../types.js';
 import type { Todo } from '../tools.js';
 import { dialogRows, type DialogState } from '../ink/components/dialog_card.js';
 import type { Picker } from '../ink/components/picker.js';
+import { planRows } from '../ink/components/plan_panel.js';
 import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
 import type { CompactionProgress } from '../compaction.js';
 import type { SubagentView } from './subagents.js';
@@ -26,6 +27,8 @@ export interface ScreenState {
   planMode: boolean;
   autoMode: boolean;
   todos: Todo[];
+  planStart?: number;
+  queue?: { steering: string[]; followUp: string[] };
   showThinking: boolean;
   showTools: boolean;
   streaming: string;
@@ -275,43 +278,29 @@ export function renderScreen(
     }
   }
   if (!state.dialog && state.todos.length) {
-    const current = Math.max(
-      0,
-      state.todos.findIndex((todo) => todo.status === 'in_progress'),
-    );
-    const top = Math.max(0, current - 2);
-    const window = state.todos.slice(top, top + 5);
-    const title = ` ${statusLight('running')} Plan ${state.todos.filter((todo) => todo.status === 'completed').length}/${state.todos.length} `;
-    bottom.push(
-      p.line +
-        '┌─' +
-        title +
-        '─'.repeat(Math.max(0, width - stringWidth(title) - 3)) +
-        '┐' +
-        p.reset,
-    );
-    window.forEach((todo, index) =>
+    bottom.push(...planRows(state.todos, width, state.planStart));
+  }
+  if (!state.dialog && state.queue) {
+    const queued = [
+      ...state.queue.steering.map((text) => `steering: ${text}`),
+      ...state.queue.followUp.map((text) => `follow-up: ${text}`),
+    ];
+    const maximum = Math.max(1, Math.floor(height / 4));
+    for (const text of queued.slice(0, maximum))
       bottom.push(
-        sgrJoin(p.think_bg, p.text) +
+        p.faint +
           pad(
-            '│ ' +
-              statusLight(
-                todo.status === 'completed'
-                  ? 'ok'
-                  : todo.status === 'in_progress'
-                    ? 'running'
-                    : 'none',
-              ) +
-              ' ' +
-              truncate(`${top + index + 1}  ${todo.content}`, width - 7),
-            width - 1,
+            truncate(' ' + terminalText(text).replace(/\s+/g, ' '), width),
+            width,
           ) +
-          p.line +
-          '│' +
           p.reset,
-      ),
-    );
-    bottom.push(p.line + '└' + '─'.repeat(width - 2) + '┘' + p.reset);
+      );
+    if (queued.length > maximum)
+      bottom.push(
+        p.faint +
+          ` +${queued.length - maximum} queued · alt+up edits all` +
+          p.reset,
+      );
   }
   if (state.dialog)
     bottom.push(...dialogRows(state.dialog, width, Math.max(5, height - 3)));

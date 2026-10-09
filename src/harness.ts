@@ -83,6 +83,9 @@ export class Harness {
   queue(message: string, mode: 'steer' | 'followUp' = 'steer'): void {
     (mode === 'steer' ? this.steering : this.followUps).push(message);
   }
+  get queuedMessages(): { steering: string[]; followUp: string[] } {
+    return { steering: [...this.steering], followUp: [...this.followUps] };
+  }
   clearQueue(): { steering: string[]; followUp: string[] } {
     const result = {
       steering: this.steering.splice(0),

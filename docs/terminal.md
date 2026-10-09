@@ -14,6 +14,10 @@ Up/Down browse earlier prompts and return to the unsent draft. Ctrl+R searches p
 
 Ctrl+J inserts a newline. Ctrl+G opens `$VISUAL`, then `$EDITOR`, or the platform default. The editor owns stdin while active. Returning restores raw input, mouse/paste handling and the full screen; edits replace the draft and are submitted with Enter.
 
+The plan box shows five tasks, follows the current item and displays its visible range. Scroll over that box to move one task per wheel notch; scrolling elsewhere moves the transcript. A changed plan or new turn follows the current task again. Cards temporarily hide the box without changing task statuses.
+
+Enter while busy queues steering for the next model step. Ctrl+Q queues a follow-up for the end of the turn, or sends it immediately while idle. Waiting messages appear above the input. Alt+Up takes every unsent steering/follow-up message back into the draft, ahead of its current contents.
+
 Press Down with an empty prompt to select a running foreground subagent, then Enter for its details. Left/Right change the detail view; Esc returns. Click a saved task row to inspect earlier children. `/jobs` and Ctrl+B manage background work; see [background jobs](background-jobs.md).
 
 Bindings can be overridden in `CIRCLE_HOME/keybindings.json`. `/hotkeys` shows the configured action names. Remaining interaction differences are recorded in [known issues](known-issues.md).

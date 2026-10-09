@@ -64,12 +64,15 @@ import {
 import { loadSkillBody } from '../skills.js';
 import { complete } from '../mentions.js';
 import { VERSION } from '../version.js';
+import { PlanPanel } from '../ink/components/plan_panel.js';
+import { stripAnsi } from '../ink/string_width.js';
 export { VERSION } from '../version.js';
 interface DialogPending {
   complete: (answer: string) => void;
   abort?: () => void;
 }
 export class SessionApp {
+  private plan = new PlanPanel();
   runtime?: AgentRuntime;
   readonly state: ScreenState;
   private input = new InputParser((event) => this.handle(event));
@@ -197,6 +200,9 @@ export class SessionApp {
     if (this.runtime) {
       this.state.messages = this.runtime.harness.messages;
       this.state.todos = this.runtime.todos;
+      this.plan.update(this.state.todos);
+      this.state.planStart = this.plan.start;
+      this.state.queue = this.runtime.harness.queuedMessages;
       this.state.model = this.runtime.harness.model.model;
       this.state.planMode = this.runtime.harness.planMode;
       this.state.autoMode = this.runtime.policy.yoloEnabled(
@@ -524,6 +530,7 @@ export class SessionApp {
         return;
       }
       if (event.kind === 'run_start') {
+        this.plan.follow();
         this.state.started = Date.now();
         this.state.hiddenTurns = 0;
         this.state.scroll = 0;
@@ -758,11 +765,30 @@ export class SessionApp {
             },
           );
       }
-      if (event.action === 'wheel')
-        this.state.scroll = Math.max(
-          0,
-          this.state.scroll + (event.button === 0 ? 3 : -3),
+      if (event.action === 'wheel') {
+        const top = this.frameRows.findIndex((row) =>
+          /^┌.*Plan \d+\//.test(stripAnsi(row)),
         );
+        const bottom =
+          top < 0
+            ? -1
+            : this.frameRows.findIndex(
+                (row, index) => index > top && stripAnsi(row).startsWith('└'),
+              );
+        if (
+          top >= 0 &&
+          event.y >= top &&
+          event.y <= bottom &&
+          !this.state.dialog
+        ) {
+          this.plan.scroll(event.button === 0 ? -1 : 1);
+          this.state.planStart = this.plan.start;
+        } else
+          this.state.scroll = Math.max(
+            0,
+            this.state.scroll + (event.button === 0 ? 3 : -3),
+          );
+      }
       this.repaint();
       return;
     }
@@ -1014,14 +1040,30 @@ export class SessionApp {
       void this.command('editor', '').catch((error) => this.fail(error));
     else if (key === 'ctrl+x')
       void this.command('copy', '').catch((error) => this.fail(error));
-    else if (
-      key === 'ctrl+q' &&
-      this.runtime?.harness.busy &&
+    else if (key === 'alt+up' && this.runtime) {
+      const queue = this.runtime.harness.clearQueue();
+      const messages = [...queue.steering, ...queue.followUp];
+      if (messages.length) {
+        this.setDraft(
+          [...messages, ...(this.state.draft ? [this.state.draft] : [])].join(
+            '\n\n',
+          ),
+        );
+        this.flash(
+          `${messages.length} queued message${messages.length === 1 ? '' : 's'} back in the box`,
+        );
+      }
+    } else if (
+      ['ctrl+q', 'alt+enter', 'alt+return'].includes(key) &&
       this.state.draft.trim()
     ) {
-      this.runtime.harness.queue(this.state.draft, 'followUp');
+      const message = this.state.draft.trim();
       this.setDraft('');
-      this.flash('Queued follow-up');
+      this.history.add(message);
+      if (this.runtime?.harness.busy) {
+        this.runtime.harness.queue(message, 'followUp');
+        this.flash('Queued follow-up');
+      } else void this.submit(message).catch((error) => this.fail(error));
     } else if (key === 'shift+enter' || key === 'ctrl+j') this.insert('\n');
     else if (key === 'enter') {
       const message = this.state.draft.trim();
