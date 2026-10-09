@@ -1,8 +1,0 @@
-- Fast content search tool that works with any codebase size
-- Searches file contents for a literal string, not a regular expression: "log.*Error" finds only those exact characters, so search for a plain word or phrase such as "Error" or "def median"
-- For a regular expression, run `rg -n 'pattern' path` with the execute tool instead
-- Filter files with the glob parameter (eg. "*.js", "*.{ts,tsx}")
-- Returns file paths and line numbers with matching lines
-- Use this tool when you need to find files containing specific patterns
-- Prefer `grep` / `glob` over shell `rg` unless you need flags these tools do not expose
-- When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the `task` explore subagent
