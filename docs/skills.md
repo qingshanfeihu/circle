@@ -40,7 +40,7 @@ You can also load one yourself:
 
 A skill loaded this way is added to the conversation without starting a turn; the model reads it with your next message and follows it "until the user says otherwise". Typing `/skill:` in the input box lists the skills too.
 
-Circle reads the skill folders when it starts. `/skill` reads them again each time, so a new skill can be loaded with it at once, but the list in the system prompt and the model's `skill` tool see it only after a restart. See [Known issues](known-issues.md#configuration-and-skills).
+Circle reads the skill folders again each time it builds the system prompt: when a session starts, on `/new`, `/resume`, `/reload`, a change of model or thinking depth, and `/plan`. The list in the prompt and the model's `skill` tool always come from the same reading. `/skill` reads them each time, so a skill added during a session can be loaded at once.
 
 ## Where skills live
 

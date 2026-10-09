@@ -33,6 +33,8 @@ A session from another folder is not moved. Picking one copies it into a new ses
 
 ## Reopen a session after a restart
 
+When you leave the full-screen interface, Circle prints the command that reopens the session, for example `To resume this session: circle --session circle-3f9a1c2e` (with the folder when you started Circle somewhere else), unless nothing was said in it.
+
 ```bash
 circle -c                      # the most recent session in this folder
 circle -r                      # pick one from the list

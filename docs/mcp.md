@@ -29,7 +29,7 @@ A server reached over the network:
 
 | Field | Meaning |
 |---|---|
-| `name` | Prefix for the server's tools: letters, digits, `_` and `-`, up to 32 characters. Falls back to `id`, then `mcp0`, `mcp1`, … Any other name stops the full-screen interface from starting; see [Known issues](known-issues.md#mcp-and-extensions). |
+| `name` | Prefix for the server's tools. Any name works: characters other than letters, digits, `_` and `-` become `_` in tool names, and a tool name over 64 characters is shortened with a short hash. Falls back to `id`, then `mcp0`, `mcp1`, … When two servers have the same name the later one is used, and `/mcp` lists the earlier one with the reason. |
 | `command`, `args`, `env` | Start the server as a program (stdio), in the workspace. |
 | `url`, `transport` | Connect to a server. `transport` is `sse` (the default), `streamable_http` or `websocket`; anything else is treated as `sse`. |
 
@@ -41,7 +41,7 @@ A program started for a server gets your environment without the variables whose
 
 Each tool is offered to the model as `<name>_<tool>`, for example `memory_create_entities`. Circle connects when the full-screen interface starts, and again on `/reload`, `/mcp reload` and `/extensions reload`. It waits up to 30 seconds for each server. A server that fails is listed by `/mcp` with the reason, and the other servers' tools still load.
 
-A tool call is limited to 30 seconds. `esc` sends the server a cancellation; what the server does with it is up to the server. Images and PDFs a tool returns go to the model as attachments.
+A tool call has no time limit, so a tool that waits for a login or a long job can take as long as it needs. `esc` sends the server a cancellation; what the server does with it is up to the server. Images and PDFs a tool returns go to the model as attachments.
 
 ## Commands
 

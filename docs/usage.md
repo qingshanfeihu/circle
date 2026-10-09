@@ -39,7 +39,7 @@ Press `esc` to stop a turn. Circle marks it `✖ Interrupted`. A shell command t
 
 You can type while Circle works. Press `enter` and the turn goes on; the model reads your message after its current step, before it decides what to do next. The message is listed above the input box as `steering: …` until the model reads it. It then appears in the conversation at the point where the model read it. If the model was about to finish, it reads the message first and goes on.
 
-If you stop the turn with `esc` or `ctrl+c`, the messages still waiting are dropped. Take them back first with `alt+↑` if you want to keep them.
+If you stop the turn with `esc` or `ctrl+c`, the messages still waiting are sent next, one turn each, steering first. Take them back with `alt+↑` before you stop it if you would rather change them.
 
 `ctrl+q` instead of `enter` queues a follow-up: the model does not see it during the turn, and it is sent as a new turn when the turn ends. Waiting messages are listed above the input box as `steering: …` or `follow-up: …`. `alt+↑` takes back every message that has not been read yet and puts them in the input box, so you can change them or drop them.
 

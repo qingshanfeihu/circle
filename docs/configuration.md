@@ -48,14 +48,14 @@ To have Circle write a starting `AGENTS.md` for a project, run `/init`. It reads
 
 ## System prompt
 
-Circle's system prompt starts with its own instructions, then the instruction files, the environment (folder, platform, date) and anything appended. Two files in a project change it, the way pi's do:
+Circle's system prompt starts with its own instructions, then the instruction files, the environment (folder, platform, date) and anything appended. Two files change it, the way pi's do, in a project's `.circle/` folder or in the data folder:
 
 | File | What it does |
 |---|---|
-| `.circle/SYSTEM.md` | Replaces Circle's own instructions and guidelines. The instruction files and the environment still follow. |
-| `.circle/APPEND_SYSTEM.md` | Is added at the end of the prompt. |
+| `SYSTEM.md` | Replaces Circle's own instructions and guidelines. The instruction files and the environment still follow. |
+| `APPEND_SYSTEM.md` | Is added at the end of the prompt. |
 
-They are read only in the project's `.circle/` folder; the data folder's are not read (see [Known issues](known-issues.md#configuration-and-skills)). On the command line, `--system-prompt` wins over `SYSTEM.md` and `--append-system-prompt` over `APPEND_SYSTEM.md`, for that run. See [CLI](cli.md#arguments-and-options).
+The project's file wins over the data folder's. On the command line, `--system-prompt` wins over both `SYSTEM.md` files and `--append-system-prompt` over both `APPEND_SYSTEM.md` files, for that run. An empty file, or an empty `--system-prompt ""`, leaves Circle's own. See [CLI](cli.md#arguments-and-options).
 
 Replacing the instructions also removes what they say about approvals, plans and tools, so the model may use its tools less well. Start from a copy of what you replace: Circle's own are in `src/prompts/session/` and `src/prompts/circle_guidelines.md` in its repository.
 
@@ -80,4 +80,4 @@ Circle reads the folders of other agents, so what you set up once works in sever
 
 ## Reload
 
-`/reload` re-reads `settings.json`, the project's settings, `keybindings.json` and the model credentials, reconnects MCP servers, reloads extensions, and rebuilds the model and the system prompt, which re-reads the instruction files. It does not re-read skills or `credential_files`. It is refused while a turn is running.
+`/reload` re-reads `settings.json`, the project's settings, `keybindings.json` and the model credentials, reconnects MCP servers, reloads extensions, and rebuilds the model and the system prompt, which re-reads the instruction files and the skills. It does not re-read `credential_files`. It is refused while a turn is running.

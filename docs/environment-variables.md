@@ -32,7 +32,8 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 | `CIRCLE_LLM_VERIFY_FINISH` | Same values. Turns off the check for a response that ends without a finish reason. | on |
 | `CIRCLE_MODEL_CTX` | The context window in tokens for every model (`1000000` or `1_000_000`): the footer's `ctx` and where the automatic compaction starts. `models` in `settings.json` sets one model's and wins. | from models.dev |
 | `CIRCLE_NO_MODELS_REFRESH` | Set to anything to stop the daily background fetch of models.dev. The snapshot shipped with Circle, or the last copy fetched, is used. See [Models](models.md#cost-and-context-in-the-footer). | fetch once a day |
-| `NODE_EXTRA_CA_CERTS` | A PEM file of extra certificate authorities, read by the Node.js Circle runs on, for all of Circle's HTTPS requests: the model, model lists, models.dev, `webfetch`, `websearch` and `circle update`. Set it when your network inspects HTTPS. Circle does not read `SSL_CERT_FILE` or `HTTPS_PROXY`. | the certificates that come with Node.js |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR` | A PEM file, or folders of PEM files, of certificate authorities to trust as well as Node.js's own, for all of Circle's HTTPS requests: the model, model lists, models.dev, `webfetch`, `websearch`, the update check and `circle update`. Set one when your network inspects HTTPS. `NODE_EXTRA_CA_CERTS` works too. A file that cannot be read is reported in one line when Circle starts. | the certificates that come with Node.js |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | The proxy for those requests, and the hosts that skip it. | no proxy |
 
 ## Agent guards
 

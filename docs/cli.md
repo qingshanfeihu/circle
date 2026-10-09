@@ -142,7 +142,7 @@ A copy that runs from a git checkout is not changed: `circle update` stops with 
 | `0` | Updated, already up to date, or `--check` finished. |
 | `1` | It could not: GitHub was not reachable, no release matches, the version is not a version like `1.0.0`, the installer failed, or this copy was not installed by the installer. |
 
-If GitHub is reached through a proxy that inspects HTTPS, give Circle its certificate with `NODE_EXTRA_CA_CERTS=/path/to/ca.pem`, and the installer with `CURL_CA_BUNDLE` (macOS, Linux); on Windows the Windows certificate store is used. See [Known issues](known-issues.md#install-and-release).
+If GitHub is reached through a proxy that inspects HTTPS, give Circle its certificate with `SSL_CERT_FILE=/path/to/ca.pem`, and the installer with `CURL_CA_BUNDLE` (macOS, Linux); on Windows the Windows certificate store is used. See [Known issues](known-issues.md#install-and-release).
 
 The Python versions' `circle update` (0.5.0 and older) cannot install this version. See [Installation](installation.md#replacing-the-python-circle).
 

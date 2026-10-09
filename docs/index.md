@@ -34,7 +34,7 @@ What you may notice afterwards:
 
 - MCP tools ask for approval and are refused in `read-only` mode. See [MCP servers](mcp.md#security).
 - `credential_files` adds to Circle's own list instead of replacing it, and file tools refuse those files too. See [Credential files](security.md#credential-files).
-- `SYSTEM.md` and `APPEND_SYSTEM.md` in the data folder are no longer read; the project's `.circle/` copies are. There is no log file.
+- There is no log file.
 - Sessions are kept in `circle.sqlite`. 0.5.0 cannot import this version's JSONL exports.
 - The rest is in [Known issues](known-issues.md).
 

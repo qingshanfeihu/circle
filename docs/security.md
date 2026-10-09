@@ -122,7 +122,7 @@ The model asks for a secret with the `question` tool, naming a variable such as 
 
 Circle makes two kinds of request of its own that have nothing to do with your model. Once a day, in the full-screen interface, a `HEAD` request to `github.com/<repo>/releases/latest` learns whether a newer release exists (see [The reminder](cli.md#the-reminder)); turn it off with `update_check` or `CIRCLE_NO_UPDATE_CHECK`. And once a day it fetches the model list of [models.dev](https://models.dev) for context windows and prices; turn it off with `CIRCLE_NO_MODELS_REFRESH`. Nothing about your files, prompts or settings is sent.
 
-`circle update` and the installers download a program and run it. They check its sha256 against a file published in the same release. That catches a damaged or truncated download; it does not help if the release itself were replaced, because the checksum comes from the same place. They use HTTPS and verify certificates. If your network breaks that, give them the certificate to trust (`CURL_CA_BUNDLE` for the installer, `NODE_EXTRA_CA_CERTS` for Circle); do not switch verification off.
+`circle update` and the installers download a program and run it. They check its sha256 against a file published in the same release. That catches a damaged or truncated download; it does not help if the release itself were replaced, because the checksum comes from the same place. They use HTTPS and verify certificates. If your network breaks that, give them the certificate to trust (`CURL_CA_BUNDLE` for the installer, `SSL_CERT_FILE` for Circle); do not switch verification off.
 
 ## What is not protected
 

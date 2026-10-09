@@ -6,7 +6,7 @@ Circle coordinates model requests, tool execution, approvals, context assembly a
 
 A message you send starts a turn. Circle builds a request from the system prompt, the conversation so far and the tool definitions, and sends it to your model endpoint. The model streams a reply that can contain text and tool calls.
 
-Circle runs each tool call, one after another, and adds the results to the conversation. If the model made tool calls, Circle sends another request. When the model answers without calling a tool, the turn ends and the footer shows what it cost.
+Circle runs the tool calls one after another, except that `task` calls next to each other run at the same time, and adds the results to the conversation in the order they were made. If the model made tool calls, Circle sends another request. When the model answers without calling a tool, the turn ends and the footer shows what it cost.
 
 Some tool calls wait for you. A command, a file change or a question from the model pauses the turn until you answer the card on screen, and then the turn goes on from there. Every message and result is saved as it happens, so a crash loses at most the step that was running.
 
@@ -32,7 +32,7 @@ The model sees the conversation history and a system prompt that Circle assemble
 2. Circle's guidelines and a note on how paths work.
 3. Your instruction files: `AGENTS.md` or `CLAUDE.md` from the workspace and its parent folders, then your personal ones. See [Configuration](configuration.md#instruction-files).
 4. A short description of the environment: working folder, platform, date, whether it is a git repository, model and protocol.
-5. Anything appended with `.circle/APPEND_SYSTEM.md` or `--append-system-prompt`.
+5. Anything appended with `APPEND_SYSTEM.md` (the project's `.circle/` one, else the data folder's) or `--append-system-prompt`.
 6. The names and descriptions of the [skills](skills.md), and of the extension tools.
 
 The full text of a skill is read only when it is needed. The tools themselves are sent with each request, not in the prompt.
@@ -48,7 +48,7 @@ When the conversation passes 85% of the model's context window (from models.dev 
 | `general-purpose` | The same tools as the main agent, without `task`, `compact_conversation` and the plan-mode tools, plus `wait_jobs`. Approvals apply to it exactly as to the main agent. |
 | `explore` | Read-only: list, read and search files, the web and language servers, and load skills. It never asks for approval. |
 
-`task` calls in one reply run one after another. While one runs, a strip below the input box shows it; `↓` selects it and `enter` opens its full record.
+`task` calls next to each other in one reply run at the same time. While they run, a strip below the input box shows it; `↓` selects it and `enter` opens its full record.
 
 With `background: true` a subagent runs as a [background job](background-jobs.md#background-subagents): the turn goes on, and its report reaches the model when it ends. Several can run at once. Its approvals show as cards of their own.
 
