@@ -1,8 +1,23 @@
 # Changelog
 
-All notable changes to Circle are listed here, newest first. Circle follows [Semantic Versioning](https://semver.org) once it reaches 1.0. Until then a minor version may change behaviour.
+All notable changes to Circle are listed here, newest first. Circle follows [Semantic Versioning](https://semver.org) from 1.0 on.
 
 ## Unreleased
+
+Circle 1.0 is a rewrite in TypeScript. It works as 0.5.0 did: the same screen, keys, commands, settings and data folder. What changes is underneath and in how it is installed.
+
+### Changed
+
+- **Circle runs on Node.js instead of Python.** The agent loop is Circle's own; LangChain, LangGraph and deepagents are gone. A release package carries its own Node.js, so nothing has to be installed first.
+- **Upgrading from 0.5.0 or older takes the one-command installer once.** It removes the Python version, whether the old installer or pip put it there, installs 1.0 in the same place, and keeps the data folder. If a Python circle is still running it stops without changing anything. The old `circle update` cannot make this step: it reports that the release has no file for your platform. See [Installation and updates](docs/installation.md#replacing-the-python-circle).
+- **Saved sessions move to `circle.sqlite`.** On the first start Circle imports the conversations in `sessions.sqlite` and `checkpoints.sqlite` without changing those files, and keeps a copy of what it read in `migration-backups/`.
+- **Extensions are JavaScript or TypeScript** (`extension.mjs`, `extension.js` or `extension.ts`); `extension.py` no longer loads. The API is the same in camelCase. See [Extensions](docs/extensions.md).
+- **Release files carry the version in their name**, `circle-<version>-<os>-<arch>.tar.gz` (`.zip` on Windows), and there are builds for Windows on ARM64.
+
+### Added
+
+- **`CIRCLE_CONTEXT_WINDOW`** sets the context window when neither models.dev nor `models` in `settings.json` knows the model.
+- **`@file` can name an image or a PDF**: it reaches the model as an attachment, as `read_file` results already did.
 
 ## 0.5.0 - 2026-10-08
 
