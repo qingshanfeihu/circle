@@ -263,7 +263,7 @@ test('approval keys: a allows the kind of call for the session, esc and an empty
   assert.equal(existsSync(join(s.root, 'out.txt')), false);
 });
 
-test('a background agent asks once the turn is over, its card is titled with the job, ctrl+c leaves it up, and the reason reaches that agent', async (t) => {
+test("a background agent's card is titled with the job, ctrl+c leaves it up, and the reason reaches that agent", async (t) => {
   // one model for the session and its subagent: each request is answered by whose it is
   const route = async (request: ModelRequest): Promise<ModelResponse> => {
     const user = request.messages.find(
@@ -618,4 +618,103 @@ test('approval previews: a patch names its files, an edit the file cannot confir
     approvalBody('webfetch', { url: 'https://example.com', limit: 3 }),
     'url="https://example.com"\nlimit=3',
   );
+});
+
+test('a background agent asks while the turn that started it is still running, as 0.5.0 did', async (t) => {
+  let app: SessionApp | undefined;
+  let shownDuringTurn = false;
+  let busyWhenShown = false;
+  const route = async (request: ModelRequest): Promise<ModelResponse> => {
+    const user = request.messages.find(
+      (message) => message.role === 'user' && !message.internal,
+    )!.content;
+    const replied = request.messages.some((message) => message.role === 'tool');
+    if (user === 'tidy up')
+      return {
+        message: replied
+          ? { id: crypto.randomUUID(), role: 'assistant', content: 'done' }
+          : {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                {
+                  id: 'child-write',
+                  name: 'write_file',
+                  args: { file_path: 'c.txt', content: 'C\n' },
+                },
+              ],
+            },
+        usage: emptyUsage(),
+      };
+    if (!replied)
+      return {
+        message: {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'task',
+              name: 'task',
+              args: { description: 'tidy up', background: true },
+            },
+          ],
+        },
+        usage: emptyUsage(),
+      };
+    // the turn is still running: the subagent's card must not wait for it to end
+    await until(() => Boolean(app?.state.dialog));
+    busyWhenShown = Boolean(app?.runtime?.harness.busy);
+    shownDuringTurn = true;
+    return {
+      message: {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'started',
+      },
+      usage: emptyUsage(),
+    };
+  };
+  const s = session(
+    t,
+    Array.from({ length: 6 }, () => route),
+  );
+  app = s.app;
+  const run = s.runtime.harness.run('start');
+  await until(() => shownDuringTurn);
+  assert.equal(busyWhenShown, true);
+  assert.match(s.app.state.dialog!.title, /^j\d+ general-purpose · /);
+  s.key('y');
+  assert.equal((await run).answer, 'started');
+  await until(() =>
+    s.runtime.jobs.list().every((job) => job.status !== 'running'),
+  );
+  assert.equal(readFileSync(join(s.root, 'c.txt'), 'utf8'), 'C\n');
+});
+
+test('a folded paste in the draft survives a card and reaches the model whole', async (t) => {
+  const s = session(t, [
+    calls('a1', {
+      id: 'w1',
+      name: 'write_file',
+      args: { file_path: 'x.txt', content: 'X\n' },
+    }),
+    answer('a2', 'written'),
+    answer('a3', 'read it'),
+  ]);
+  const pasted = Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n');
+  (s.app as any).handle({ type: 'paste', text: pasted });
+  assert.equal(s.app.state.draft, '[Pasted text #1 +11 lines]');
+  const run = s.runtime.harness.run('write it');
+  await until(() => Boolean(s.app.state.dialog), 3000);
+  assert.equal(s.app.state.draft, '');
+  s.key('y');
+  await run;
+  assert.equal(s.app.state.draft, '[Pasted text #1 +11 lines]');
+  s.key('enter');
+  await until(() => s.model.requests.length === 3);
+  const sent = s.model.requests[2]!.messages.at(-1)!;
+  assert.equal(sent.role, 'user');
+  assert.equal(sent.content, pasted);
 });

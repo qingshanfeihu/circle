@@ -121,14 +121,10 @@ export class SessionApp {
   private jobWakeAt = 0;
   private jobWakeCount = 0;
   private jobWakeSnoozed = false;
+  // As in 0.5.0, a background agent's card shows whether a turn runs or not: after the
+  // turn's own cards (the queue takes those first) and once typing pauses.
   private interactions = new InteractionQueue(
-    (background) =>
-      !this.externalEditor &&
-      !this.state.dialog &&
-      (!background ||
-        (!this.state.draft &&
-          !this.state.picker &&
-          !this.runtime?.harness.busy)),
+    () => !this.externalEditor && !this.state.dialog,
     () => Boolean(this.state.draft || this.state.picker),
   );
   private backgroundCard = false;

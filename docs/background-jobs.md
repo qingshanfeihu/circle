@@ -12,7 +12,7 @@ Output is stored outside the workspace under `projects/<project>/background_jobs
 
 ## Completion and shutdown
 
-Completion notices are appended to the owning conversation before its next model request. The TUI and RPC can resume an idle conversation with a notice. Interrupting a turn suppresses automatic wakeups until another message; stopped jobs do not wake the model. Background question and approval cards wait while the foreground turn or your input owns the interface.
+Completion notices are appended to the owning conversation before its next model request. The TUI and RPC can resume an idle conversation with a notice. Interrupting a turn suppresses automatic wakeups until another message; stopped jobs do not wake the model. A background agent's questions and approvals appear in their own cards, titled with its job, whether a turn runs or not: after the running turn's own cards, and once you have stopped typing for a second.
 
 Print mode waits for job results for `CIRCLE_JOB_WAIT` seconds (default 1800; `0` disables waiting). Line mode reads notices with the next message. Automatic wakeups stop after ten consecutive turns.
 
