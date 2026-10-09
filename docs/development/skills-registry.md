@@ -1,7 +1,8 @@
 # Register Circle in skills.sh / `npx skills`
 
-Circle already **consumes** the universal Agent Skills layout (`.agents/skills`,
-`~/.agents/skills`), same as Amp / Cursor / Codex / Cline. Until Circle is listed
+Circle already **consumes** the universal Agent Skills layout (`.agents/skills` in
+the folder and its parents up to the git root, and `~/.agents/skills`), same as Amp /
+Cursor / Codex / Cline. `src/skills.ts` lists every folder it reads. Until Circle is listed
 as its own agent in [vercel-labs/skills](https://github.com/vercel-labs/skills),
 install with any agent that writes that layout:
 
@@ -14,7 +15,8 @@ Any skill package works as the install target; the skill name is incidental.
 ## Proposed upstream agent entry
 
 There is **no** local agent registry under `~/.agents` — agents are hardcoded in
-`vercel-labs/skills`. To add Circle (same pattern as open PRs for other agents):
+`vercel-labs/skills`. To add Circle there (same pattern as open PRs for other agents;
+the paths below are in that repository, not in Circle's):
 
 1. Add `| 'circle'` to `AgentType` in `src/types.ts`
 2. Add to the `agents` map in `src/agents.ts`:
@@ -42,7 +44,7 @@ npx skills add <owner/repo> --skill <name> -a circle -y
 | Scope | Path |
 |-------|------|
 | Project | `./.agents/skills/` |
-| Global (`-g`) | `~/.circle/skills/` |
+| Global (`-g`) | `~/.circle/skills/` (Circle reads `skills/` in its data folder, so this holds while `CIRCLE_HOME` is the default) |
 
 `skillsDir === '.agents/skills'` makes Circle a universal agent (canonical project
 layout, no per-agent symlink). Circle also discovers `~/.agents/skills` and

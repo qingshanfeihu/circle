@@ -2,13 +2,9 @@
 
 2026-09-29 定稿。渲染层（块间节奏、类型底色、单行页脚、彩虹框）沿用 InfoTest 07 章 §11.25；本文补上它没有的一半：**什么信息、什么条件下、进哪个区、待多久、谁把它撤掉**。字形、颜色、措辞都是这张分区表的下游。
 
-方案 demo（走真实 ink 管线，十一页，每区一页，灯会闪、彩虹会流、滚轮可滚计划块）：
+本契约为 Python 版（0.5.0 及以前）定稿；1.0 的 TypeScript 版实现它，代码在 `src/tui/` 与 `src/ink/`。两者不一致之处列在 [第 8 节](#8-尚未落地的部分)，以契约为准。定稿时用的方案 demo 在 Python 版里：检出 `v0.5.0` 后运行 `python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]`（十一页，每区一页）。
 
-```
-python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
-```
-
-守门测试：`tests/test_tui_contract.py`（交互）、`tests/test_display_contract.py`（渲染）、`tests/test_theme_matching.py`、`tests/test_theme_watch.py`（深浅色）。
+守门测试：`tests/interaction.test.ts`、`tests/cards.test.ts`、`tests/composer.test.ts`（交互）；`tests/status-surfaces.test.ts`、`tests/status-pages.test.ts`、`tests/lamps.test.ts`、`tests/interface.test.ts`（渲染与深浅色）；`tests/render-colors.test.ts`（颜色只从 palette 取）。
 
 ## 1 七个区
 
@@ -20,7 +16,7 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | 常驻 | 正在成立的状态：页眉、页脚、模式词、忙碌词、在途条（子代理与后台任务） | 状态成立 | 状态消失即撤，不进历史 | 页眉在顶，页脚与在途条在底 |
 | 计划区 | 模型维护的活文档（write_todos） | 计划存在 | 对话框接管期间隐藏，答完恢复；`/new` 清空 | 对话框上方一个封闭块：方角、标题嵌上沿、默认 5 个完整行、窗口跟随当前项、滚轮翻看、下沿右角标 `2–6 / 14`、内部铺洋红 |
 | 对话框 | 阻塞回合、必须由你回答的问题：审批、提问、机密；后台子代理的审批与提问（标题以任务开头，`j3 general-purpose · Bash needs your permission`）；首次运行的 setup 与 trust（会话连接之前） | 中断到达，且你 1 秒内没在打字；后台的卡排在本回合的卡之后，有回合与否都会出现；setup、trust 在会话画面一出来时 | 答完框恢复，草稿还原；trust 答完会话原地连接 | 唯一的那个框换内容：标题行（青灯）、正文、空行、竖排选项 |
-| 弹窗 | 不阻塞回合的选择列表：`/approvals`，`circle.ink.components.picker.Picker` 画的 `/models`、`/effort`、`/resume`、`/tree`、`/fork`、`/login`、`/jobs`，以及打 `/`、`@` 时的补全列表（↑↓、tab 取、enter 取，命令还会执行，esc 关） | 命令或键触发（ctrl+l、esc esc） | 选完或 esc | 框上方，panel 底，无边框；打字过滤（每个词都要出现）、↑↓ 循环、enter、esc 先清搜索再关 |
+| 弹窗 | 不阻塞回合的选择列表：`/approvals`，`Picker`（`src/ink/components/picker.ts`）画的 `/models`、`/effort`、`/resume`、`/tree`、`/fork`、`/login`、`/jobs`，以及打 `/`、`@` 时的补全列表（↑↓、tab 取、enter 取，命令还会执行，esc 关） | 命令或键触发（ctrl+l、esc esc） | 选完或 esc | 框上方，panel 底，无边框；打字过滤（每个词都要出现）、↑↓ 循环、enter、esc 先清搜索再关 |
 | 页面 | 整屏接管的只读视图：子代理详情；后台任务页（任务输出的尾巴，跑着时随之刷新） | 你主动进入 | esc 回主视图 | 转录区被接管，顶栏一行（任务页两行：灯、编号与命令、状态与时长；输出文件的路径）；底部栈不动 |
 | 一闪 | 操作回执：已复制、排队、忙、用法、切换 ctrl+o / ctrl+t | 操作瞬间 | 1–2 秒；重试、压缩这类要等的可到数秒 | 页脚右侧（计量留在左侧，放不下时计量的尾巴让位），不进历史 |
 
@@ -28,10 +24,10 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 
 - **R1 唯一焦点框。** 屏幕上只有一个圆角框。对话框不是第二个框，是同一个框换内容。
 - **R2 彩虹说轮到谁。** 流动＝模型的回合，黄色静止＝你的回合，淡色静止＝空闲。等你时框停转、忙碌词撤下。唯一的例外是欢迎块里的 logo：静止的彩虹环（`docs/images/logo.svg` 用四分格块画成，6 行 12 列），它是 Circle 的标志，不表示轮到谁，颜色是 logo 自己的停点，浅色背景上也不压暗。
-- **R3 阻塞的问题一种卡。** 审批、提问、机密共用 `dialog_card.card_rows`。键一列（数字）、标签一列，当前项整行 `sel_bg`。助记键 `y` `a` `n` 可按但不显示；`esc` 永远是最保守的答案。卡片在时可打印字符一律吞掉。「本会话都允许」把范围写进标签，不再二次确认；只有一个程序的命令另有一项「本会话以这几个词开头的都允许」（`Allow "python3 -m pytest …" for this session`），排在「这条命令」之后，`a` 选的是更窄的那项。改文件的卡在路径下画将要改的 diff：对照文件现在的样子，带行号，加的绿、删的红（`added` / `removed` 语气），超过 40 行截断并写明还有多少。「拒绝并说明」把框的最后一行变成输入，原因随拒绝交给模型，空着回车是纯拒绝。
-- **R4 不阻塞的列表一种弹窗。** `dialog_card.popup_rows`。
+- **R3 阻塞的问题一种卡。** 审批、提问、机密共用 `cardRows`（`src/ink/components/dialog_card.ts`）。键一列（数字）、标签一列，当前项整行 `sel_bg`。助记键 `y` `a` `n` 可按但不显示；`esc` 永远是最保守的答案。卡片在时可打印字符一律吞掉。「本会话都允许」把范围写进标签，不再二次确认；只有一个程序的命令另有一项「本会话以这几个词开头的都允许」（`Allow "python3 -m pytest …" for this session`），排在「这条命令」之后，`a` 选的是更窄的那项。改文件的卡在路径下画将要改的 diff：对照文件现在的样子，带行号，加的绿、删的红（`added` / `removed` 语气），超过 40 行截断并写明还有多少。「拒绝并说明」把框的最后一行变成输入，原因随拒绝交给模型，空着回车是纯拒绝。
+- **R4 不阻塞的列表一种弹窗。** `Picker`（`src/ink/components/picker.ts`）与补全列表的 `popupRows`（`src/ink/components/popup.ts`）。
 - **R5 状态词只有两个，各占一角。** 忙碌词左上、模式词右下，都是单词：`read-only`（plan mode）、`auto`（yolo）。默认的逐项审批什么都不显示。`read-only` 与 `auto` 同时开时显示更严的 `read-only`。
-- **R6 通知三类，按「以后还要看吗」分。** 状态变了、之后还要看的（换模型、恢复会话、导出、压缩完成、审批结果、撤销规则、有新版本可用）进转录，永久淡色一行，代码里是 `_toast`。操作回执（已复制、排队、忙、用法、切换 ctrl+o / ctrl+t 展开）走页脚一闪，1–2 秒，不进历史，代码里是 `_flash`。失败进转录，红色 `✖` 一行，留着能读，代码里是 `_fail`。正在成立的走常驻，撤了就没。切换视图不在转录里留痕。
+- **R6 通知三类，按「以后还要看吗」分。** 状态变了、之后还要看的（换模型、恢复会话、导出、压缩完成、审批结果、撤销规则、有新版本可用）进转录，永久淡色一行，代码里是 `notice`。操作回执（已复制、排队、忙、用法、切换 ctrl+o / ctrl+t 展开）走页脚一闪，1–2 秒，不进历史，代码里是 `flash`。失败进转录，红色 `✖` 一行，留着能读，代码里是 `fail`（三者都在 `src/tui/session_app.ts`）。正在成立的走常驻，撤了就没。切换视图不在转录里留痕。
 
 ## 3 装置
 
@@ -50,8 +46,8 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 - 彩虹框的每个停点在当前背景上不到 3:1 就往黑色混，直到 3:1。深色背景原样。
 - 灯的黄、绿、红、青是终端主题自己的 16 色槽，不派生。黄灯闪的暗相在浅色上偏淡，这是闪烁本身要的效果。
 - `/themes auto|dark|light`（`settings.theme`，默认 `auto`，旧文件里的 `terminal` 读作 `auto`）。`auto` 跟终端走，而且是**活的**：终端在运行中从深色换到浅色（或反过来）时 Circle 自己跟上，不用重启。`dark`、`light` 给问不到或问错的终端用，不再听终端的；终端汇报的颜色与所选一致就保留，不一致才换内置的一对。切换立即生效。
-- **怎么知道终端变了**（`ink/theme_watch.py`）：开着 `auto` 时向终端发 DEC 2031，终端主动推 `CSI ? 997 ; 1|2 n`，收到就立刻重问；另外每 2 秒问一次前景、背景和四个色槽（OSC 10 / 11 / 4），答案作为输入回来，攒 0.15 秒后与上一次读数比较，不同才重绘并在页脚一闪 `Theme → dark|light`。从没答过的终端只问三次就不再问。外部编辑器占着屏幕时不问。私有模式的回复（`?2031;2$y` 之类）一律不当按键。
-- 守门：`tests/test_theme_matching.py`（各种背景上的对比度、彩虹停点、`/themes` 切换后整屏与直接以该主题启动完全一致）、`tests/test_theme_watch.py`（解析、轮询、跟随终端变化）。
+- **怎么知道终端变了**（`src/ink/theme_watch.ts`）：开着 `auto` 时向终端发 DEC 2031，终端主动推 `CSI ? 997 ; 1|2 n`，收到就立刻重问；另外每 2 秒问一次前景、背景和四个色槽（OSC 10 / 11 / 4），答案作为输入回来，攒 0.15 秒后与上一次读数比较，不同才重绘并在页脚一闪 `Theme → dark|light`。从没答过的终端只问三次就不再问。外部编辑器占着屏幕时不问。私有模式的回复（`?2031;2$y` 之类）一律不当按键。
+- 守门：`tests/interface.test.ts`（深浅两色上 panel 与各类型底色的对比度）、`tests/status-surfaces.test.ts`（跟随终端深浅切换并一闪、第一次回答不算切换、问不到时读 `COLORFGBG`）。
 
 ## 4 口吻
 
@@ -91,7 +87,7 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 | setup（连接方式、URL、key、查模型、选模型）与 trust（写明会加载文件夹里的什么，有扩展时黄色提醒它会执行代码） | 没设置过或 `--init`；文件夹没信任过 | 对话框，会话连接之前；欢迎块随答随填 |
 | `/approvals` 规则 | 无参数 | 弹窗 |
 | 模型、思考深度、会话、会话树、fork 的列表 | `/models` `/effort` `/resume` `/tree` `/fork` 无参数，ctrl+l，空框 esc esc | 弹窗 |
-| 登录方式，接着 URL、key（圆点）、模型，问法同 setup（`InitController`）；没做好的方式列出来、标 `not available yet`、选不动 | `/login` 无参数 | 弹窗；选完模型才保存，成了进转录淡色一行 |
+| 登录方式，接着 URL、key（圆点）、模型，问法同 setup（`SessionApp.initialize`）；没做好的方式列出来、标 `not available yet`、选不动 | `/login` 无参数 | 弹窗；选完模型才保存，成了进转录淡色一行 |
 | key 被端点拒（401 / 403） | 回合失败 | 转录，红色 `✖` 行尾加 `· /login to change the key` |
 | 等着被读的插话 `steering: …`、回合后才发的 `follow-up: …` | 回合进行中你按了 enter | 常驻，输入框上方，淡色一行一条；读到后进转录 |
 | 压缩进行中 `auto-compacting · ████░░░░ summarizing · 12s`（`/compact` 为 `compacting`；不写触发条件；自动的那种随回合被 esc 中止，行撤下、不落失败行） | 压缩开始到结束 | 常驻，输入框上方，排在插话之前；结束撤下，转录落一条淡色 `auto-compacted · …` 或 `compacted · …`（失败红色 `✖`），回合进行中则等回合结束、落在用量行之下 |
@@ -117,12 +113,15 @@ python docs/demo/tui_schemes_20260929/demo.py show [--lang zh]
 
 ## 8 尚未落地的部分
 
-以下在契约里，代码还没有：
+以下在契约里，TypeScript 版的代码还没有：
 
-- 重试与退避并入忙碌词（现在是页脚一闪）。
-- 机密录入（ctrl+s）改走对话框（现在占页脚状态行）。
+- 重试与退避并入忙碌词（现在是页脚一闪 `Retry 2/6 in 3.0s`）。
 - 计划全部完成后撤掉并在转录落一条通知（现在一直留到 `/new`）；计划块的 ↑↓ 翻看（现在只有滚轮）。
-- 耗时格式统一：忙碌词 `12.3s`，在途条与回合用量 `12s`，思考行两种都有。
-- 旧的行式控制器 `circle/tui/session.py`（`MainController`）没有跟着改，它没有生产调用方，只有测试和 `scripts/selftest_tui_demo.py` 在用。
+- 耗时格式统一：忙碌词 `12.3s`，在途条与回合用量 `12s`；思考行在转录里是 `6.3s`，在子代理页面里是 `2s`。
 - 后台任务行在在途条里不能被选中（↓ 只选子代理）；任务经 `/jobs` 打开。
-- 后台子代理的页面只有它的步骤文字（任务输出文件），不是本回合子代理那样的完整记录卡。
+- 后台子代理从 `/jobs` 打开的页面只有它的步骤文字（任务输出文件），不是本回合子代理那样的完整记录卡。
+- 后台任务页的顶栏没有灯：第一行是编号、状态与命令，第二行是输出文件、时长和 `esc back · ctrl+d stop`。
+- setup 的 URL 与 key 输入行预先填好已存的值，空 enter 是离开而不是保留；模型一步是输入模型 ID（正文里列出端点给的前五个），不是可搜索的列表，也没有 `use "…"`。`/login` 选了 API URL + KEY 之后走的就是这几张卡，不在弹窗里。
+- 列表（`Picker`）没有 pageup / pagedown。列表要问一行字（`/resume` 的新名字、`/tree` 的标签）或问一句（停止任务、删除会话）时用一张卡：列表先收起，答完再回来，不在列表里那一行输入；在标签卡上按 esc 会删掉已有的标签（见 [known issues](../known-issues.md)）。
+- `/approvals` 是普通列表：j k 和数字之外的字母进搜索，ctrl+c 交给会话而不关闭它。
+- key 被端点拒（401 / 403）时，红色 `✖` 行尾没有 `· /login to change the key`。

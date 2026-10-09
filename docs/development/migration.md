@@ -1,46 +1,23 @@
-# 兼容要求与迁移计划
+# The TypeScript port
 
-## 固定参考
+Up to 0.5.0 Circle was a Python program built on deepagents and LangGraph; that code is at the tag `v0.5.0`. 1.0 is a rewrite in TypeScript for Node.js 24 with its own agent loop. This page is a record of how the port was done and where its evidence is. For the code as it is now, read [Architecture](architecture.md).
 
-Circle 0.4.0，提交 `645ac4357fa4e7977c2812b133be8d65c277bf0b`。关键文件的字节哈希见 [baseline.json](baseline.json)。下列链接固定在该提交：
+## How it was done
 
-- [TUI 显示与交互契约](https://github.com/qingshanfeihu/circle/blob/645ac4357fa4e7977c2812b133be8d65c277bf0b/docs/development/tui-contract.md)
-- [界面说明](https://github.com/qingshanfeihu/circle/blob/645ac4357fa4e7977c2812b133be8d65c277bf0b/docs/interface.md)、[键位](https://github.com/qingshanfeihu/circle/blob/645ac4357fa4e7977c2812b133be8d65c277bf0b/docs/keybindings.md)
-- [CLI](https://github.com/qingshanfeihu/circle/blob/645ac4357fa4e7977c2812b133be8d65c277bf0b/docs/cli.md)、[会话](https://github.com/qingshanfeihu/circle/blob/645ac4357fa4e7977c2812b133be8d65c277bf0b/docs/sessions.md)
-- [配置](https://github.com/qingshanfeihu/circle/blob/645ac4357fa4e7977c2812b133be8d65c277bf0b/docs/configuration.md)、[架构](https://github.com/qingshanfeihu/circle/blob/645ac4357fa4e7977c2812b133be8d65c277bf0b/docs/development/architecture.md)
+1. **A fixed reference.** The rewrite started from 0.4.0, commit `645ac43`. The files that define its behaviour (the CLI, the harness, the session screen and theme, their contract tests, and the TUI contract, interface, keys, CLI, sessions and configuration pages) were recorded with their hashes in `baseline.json`. The work that became 0.5.0 (background jobs, the models.dev catalog, the compaction row; up to commit `472f5e3`) was recorded later as a second reference in `upstream-updates.json`.
+2. **A separate tree.** The TypeScript version was built in its own tree, `circle-next`: the runtime and terminal interface; MCP, extensions and LSP; guarded model requests and context; the import of Python sessions; secrets and questions; background jobs, the models.dev catalog and compaction progress; release packages and installers. Each of the 319 files of the reference was listed in `port-inventory.json` with its hash, a category, a target and a status.
+3. **The merge.** The Python implementation was removed from this repository (`d08fb0d`), the rewrite merged in (`f90e228`), and the program named `circle` and numbered 1.0.0 (`da790e3`). The installers learned to replace a Python circle and keep the data folder.
+4. **Back to 0.5.0's behaviour.** One area at a time, each on its own branch, the interface and commands were compared with `git show v0.5.0:…` and brought to what 0.5.0 did, with tests: mouse selection and the clipboard (`unify/selection`), the input box (`unify/composer`), the cards (`unify/cards`), the header, footer, strip, welcome and rows (`unify/status`), the slash commands (`unify/commands`), the CLI options and `grep` (`unify/cli`), the compaction row, subagent pages and job lines (`unify/status2`), proxies and MCP naming (`unify/fix-net`), and concurrent subagents and queues on `esc` (`unify/fix-turns`). The user documentation was then checked against the code.
 
-文档与实现不一致时，先记录可复现差异，再决定兼容行为；不能静默改变操作语义。
+## Where the evidence is
 
-## 必须保持的用户体验
+- **Behaviour:** the tests in `tests/`. Many name the 0.5.0 behaviour they pin; they drive a scripted model or a local gateway and check requests, stored history, files and processes.
+- **Sessions:** `tests/fixtures/legacy-baseline/` and `tests/migration.test.ts`. See [Session data migration](migration-data.md).
+- **Installing over a Python circle:** `tests/legacy-install.test.ts` and `npm run release:smoke`.
+- **What 0.5.0 users notice:** `## Unreleased` in `CHANGELOG.md`.
+- **What still differs:** [Known issues](../known-issues.md), and "not yet" in [The TUI contract](tui-contract.md#8-尚未落地的部分).
+- **The Python code:** the tag `v0.5.0`. AGENTS.md says how to read it.
 
-| 范围 | 验收要求 |
-|---|---|
-| 屏幕 | 保持欢迎块、转录、页眉、计划区、唯一输入/对话框、页脚、子代理条的布局和生命周期 |
-| 信号 | 保持彩虹框、状态灯、类型底色、忙碌词、`read-only`/`auto`，兼容自动深浅主题 |
-| 输入 | 保持多行草稿、中文宽度、粘贴、历史、补全、搜索和窗口尺寸变化行为 |
-| 操作 | 保持 Enter 插话、空框双 Esc 会话树、Ctrl+L 模型选择、Ctrl+O 工具展开、Ctrl+T 思考展开和用户键位配置 |
-| 对话 | 保持首次设置、信任、工具审批、问题和机密输入；卡片结束后恢复草稿 |
-| 命令 | 逐项核对原斜杠命令和 CLI 参数，包括 new/resume/tree/fork/clone、plan/yolo、compact/export/import |
-| 非交互 | 保持 line/print/JSON/RPC 的输出、排队、错误和退出码；结构变化须明确迁移 |
-| 配置 | 保持模型、网关、项目资源和信任操作；旧文件读取、会话导入、Python 扩展迁移单独验证 |
+## The inventories are historical
 
-保留操作不等于复制所有内部格式或历史缺陷。例如基线 `/undo` 只调整视图，`/tree` 改变模型的分支上下文；若要改变其中任何语义，须单独提出并获用户授权。
-
-## 实施顺序
-
-1. **冻结兼容基线。** 从现有测试和独立终端会话提取输入、事件、屏幕和副作用样例；记录已知缺陷。只读参考旧项目。
-2. **建立 TypeScript 工程。** 确定运行时、依赖与锁文件，加入格式化、静态检查、测试和 CI。暂不替换用户已有安装。
-3. **实现最小自有内核。** 以可控模型响应验证请求、流式工具调用、策略、审批、取消和队列；接通非交互入口。
-4. **实现会话与上下文。** 验证重启、树、分支、压缩、导入导出和旧数据迁移，避免导入时重放工具。
-5. **移植 TUI。** 按原界面契约接入事件；对照深/浅色、窄/宽屏、中文、多行和等待用户状态。
-6. **补齐集成并验收。** MCP、skills、命令、扩展、子代理与安装升级分别验证；完成后再声明可替换旧 Circle。
-
-以上均为待完成工作，不表示已有实现。
-
-## 验证要求
-
-每个迁移项包含可复现输入、预期行为、测试和实际验证结果。内核检查必须覆盖下一次真实模型请求、持久化历史、文件副作用、子进程终止和重启恢复；仅有正确界面文本不够。
-
-TUI 验收对照同一终端尺寸与主题下的参考输出，结合真实 PTY 按键流程与人工观察。针对审批、取消、排队和分支建立行为测试；覆盖旧测试关注的边界，而非只移植断言文本。
-
-真实模型、网关、操作系统、终端和扩展只按实际验证范围报告兼容性。未验证项保持待验收，不继承旧项目的测试通过或平台支持声明。
+`port-inventory.json`, `upstream-updates.json` and `baseline.json` are the working notes of the port. Their statuses (`pending`, `in-progress`, `reference-copied`) were written while the work was under way and were not kept up to date as it landed. They say nothing about the code now and are not proof that anything matches 0.5.0. `npm run port:status` still counts the inventory's entries by status.
