@@ -415,7 +415,7 @@ test('leaving prints the stopped jobs and then the command that reopens the sess
     ['write', '1 background job stopped\n'],
     [
       'write',
-      `To resume this session: circle --session ${s.runtime.session.id} '${workspace}'\n`,
+      `To resume this session: circle --session ${s.runtime.session.id} ${shellWord(workspace)}\n`,
     ],
   ]);
 });
@@ -454,8 +454,8 @@ test('the resume command names the folder only from elsewhere, quoted for the sh
     `To resume this session: circle --session ${runtime.session.id} ${workspace}`,
   );
   assert.equal(shellWord('/tmp/plain'), '/tmp/plain');
-  assert.equal(shellWord('/tmp/with space'), "'/tmp/with space'");
-  assert.equal(shellWord("it's"), `'it'"'"'s'`);
+  assert.equal(shellWord('/tmp/with space', 'linux'), "'/tmp/with space'");
+  assert.equal(shellWord("it's", 'linux'), `'it'"'"'s'`);
   assert.equal(
     shellWord('C:\\Program Files\\x\\', 'win32'),
     '"C:\\Program Files\\x\\\\"',
