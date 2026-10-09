@@ -2,6 +2,8 @@
 
 The runtime registers tools with JSON Schema arguments and declared effects. Built-in file and command tools include `ls`, `read_file`, `write_file`, `edit_file`, `apply_patch`, `glob`, `grep` and `execute`. File edits require a prior read; ambiguous replacements fail unless `replace_all` is used. Patches validate their operations before changing files.
 
+`read_file` uses a zero-based line offset and one-based displayed line numbers: `{ "file_path": "src/cli.ts", "offset": 20, "limit": 40 }` reads source lines 21–60. Omitted bounds read up to 2000 lines from the beginning; a non-positive limit requests no lines. Files and background logs are read as streams, with LF, CRLF and CR line endings accepted. An offset beyond the last line reports an error.
+
 Model-facing tools also include plans, skills, questions, subagents, context compaction and web fetching. Tool results are saved in the session before the next model request. A rejected or cancelled call receives an error result with the original call ID.
 
 `execute` and `task` accept `background: true`. `list_jobs` and `stop_job` manage the resulting jobs; subagents additionally have `wait_jobs`. See [background jobs](background-jobs.md) for output, timeout and completion behavior.

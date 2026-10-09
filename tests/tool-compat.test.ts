@@ -23,12 +23,12 @@ test('read-only call aliases, field spellings and one-element string lists are r
     {
       id: 'call',
       name: 'Read_File',
-      args: { filePath: ['a.txt'], offset: '1' },
+      args: { filePath: ['a.txt'], offset: '0' },
     },
     tools,
   );
   assert.equal(repaired.call.name, 'read_file');
-  assert.deepEqual(repaired.call.args, { file_path: 'a.txt', offset: 1 });
+  assert.deepEqual(repaired.call.args, { file_path: 'a.txt', offset: 0 });
   const result = await repaired.tool.run(repaired.call.args, {
     signal: new AbortController().signal,
     sessionId: 'test',

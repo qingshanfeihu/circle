@@ -15,6 +15,7 @@ import { loadToolPrompt } from './system_prompt.js';
 import { applyPatch } from './apply_patch.js';
 import { QUESTION_SCHEMA } from './questions.js';
 import { JobRegistry, jobLine, jobNotice } from './jobs.js';
+import { readTextWindow } from './file_read.js';
 export interface Todo {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
@@ -78,12 +79,21 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
     schema(
       {
         file_path: text('Path to read'),
-        offset: integer('First line, 1 indexed'),
-        limit: integer('Maximum lines'),
+        offset: {
+          type: 'integer',
+          default: 0,
+          description:
+            'Lines to skip, 0 indexed; negative values start at the first line',
+        },
+        limit: {
+          type: 'integer',
+          default: 2000,
+          description: 'Maximum lines; non-positive values request no lines',
+        },
       },
       ['file_path'],
     ),
-    async (args) => {
+    async (args, context) => {
       const path = sandbox.resolvePath(
         string(args, 'file_path', 'filePath', 'path'),
       );
@@ -92,18 +102,11 @@ export function buildTools(sandbox: Sandbox, hooks: ToolHooks = {}): Tool[] {
         return readdirSync(path, { withFileTypes: true })
           .map((entry) => entry.name + (entry.isDirectory() ? '/' : ''))
           .join('\n');
-      const content = readFileSync(path, 'utf8');
+      const offset = Math.max(0, Math.trunc(Number(args.offset ?? 0)));
+      const limit = Math.max(0, Math.trunc(Number(args.limit ?? 2000)));
+      const content = await readTextWindow(path, offset, limit, context.signal);
       read.add(path);
-      const offset = Math.max(1, Number(args.offset) || 1);
-      const limit = Math.max(1, Math.min(2000, Number(args.limit) || 2000));
-      const lines = content.split('\n');
-      return lines
-        .slice(offset - 1, offset - 1 + limit)
-        .map(
-          (line, index) =>
-            `${offset + index}: ${line.length > 2000 ? line.slice(0, 2000) + '…' : line}`,
-        )
-        .join('\n');
+      return content;
     },
   );
   add(
