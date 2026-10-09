@@ -256,7 +256,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       if (message.thinking)
         thinking(message.thinking, true, state.thinkingSeconds?.[message.id]);
       if (message.content.trim())
-        block('⏺', message.content, '', p.text, true, 'text');
+        block('●', message.content, '', p.text, true, 'text');
       // Calls run one after another: the first without a result is the one running (or
       // waiting on you), the ones after it have not started. Task calls next to each other
       // run together: each is running (or waiting) from its subagent until its result is in.
@@ -337,7 +337,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       state.liveThinkingSeconds,
     );
   if (state.streaming.trim())
-    block('⏺', state.streaming, '', p.text, true, 'text');
+    block('●', state.streaming, '', p.text, true, 'text');
   for (const note of state.notices)
     block(
       note.startsWith('✖') ? '✖' : ' ',

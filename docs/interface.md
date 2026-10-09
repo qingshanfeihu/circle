@@ -9,7 +9,7 @@ Circle's screen has a few parts, and each kind of information always goes to the
  ∴ Thought 6.3s · read the file first  ctrl+t
  ● Read(quicksort.py)
    ⎿ Read 31 lines · ctrl+o
- ⏺ It is a three-way partition. I'll annotate it and add tests.
+ ● It is a three-way partition. I'll annotate it and add tests.
  ● Edit(quicksort.py)
    ⎿ Edited /home/me/code/my-project/quicksort.py
  ● Write(tests/test_quicksort.py)
@@ -31,18 +31,18 @@ Circle's screen has a few parts, and each kind of information always goes to the
 
 ## The parts
 
-| Part | What it holds |
-|---|---|
-| **Header** | Version, model (with the thinking depth when it has one, such as `step-3.7-flash • high`), folder, and the git branch in brackets when the folder is in a repository, once the welcome has scrolled off the screen. While the welcome is on screen the header shows only, on the right, the one general shortcut hint. While setup or the trust question is asking, it is empty. |
-| **Welcome** | The first block of the conversation. See [The welcome](#the-welcome). |
-| **Conversation** | Everything that happened: your messages, Circle's answers, thinking, tool calls and their results, notices, and after each turn a line with its time and tokens. Answers are drawn from their Markdown: headings, emphasis, links, code, lists, quotations and tables. It scrolls and never loses anything. |
-| **Lists** | The lists that commands and keys open, such as `/models` or `/resume`, appear above the plan box and the input box. They close when you choose or press `esc`. A list that needs a line of text or a yes or no, such as a new name in `/resume`, asks on the line under its title. |
-| **Plan box** | Circle's own plan, when it has one: five steps at a time, following the current step, with the range at the bottom right (`2–6 / 8`) when there are more. The mouse wheel over it scrolls it. It is hidden while a card is up. It belongs to the session: `/new` starts without one, and a resumed session brings its own back. |
-| **Waiting messages** | Above the input box, while a turn runs: a compaction under way, with its progress bar (see [Compaction](sessions.md#compaction)); each message you sent that the model has not read yet, `steering: …`; and each that waits for the turn to end, `follow-up: …`. More than fit end in `+N queued · alt+up edits all`. See [Steer a running turn](usage.md#steer-a-running-turn). |
-| **Input box** | The one framed box on the screen. It is where you type, and where questions appear. Above it, while you type `/` or `@`, the completion list. |
-| **Search line** | Under the input box, only while you search your history (`ctrl+r`) or find text in the conversation (`ctrl+f`): what you typed and, for find, which match you are at, such as `2/5`. |
-| **Footer** | One line of numbers: tokens sent and received, estimated cost in US dollars, cache hit rate, how full the context is (yellow from 70%, red from 90%). A cost or context window Circle does not know reads `N/A`; see [Models](models.md#cost-and-context-in-the-footer). A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. Before a session is connected there is no footer. |
-| **Subagent strip** | Below the footer, only while subagents or [background jobs](background-jobs.md) run: a header such as `Agents · 2 · Jobs · 1`, a row per subagent (lamp, name, task, time and tokens), then a row per job with its lamp, id, command, the last line it printed, and how long it has run. At most four jobs are listed; the rest are counted as `… +N more jobs`. |
+| Part                 | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Header**           | Version, model (with the thinking depth when it has one, such as `step-3.7-flash • high`), folder, and the git branch in brackets when the folder is in a repository, once the welcome has scrolled off the screen. While the welcome is on screen the header shows only, on the right, the one general shortcut hint. While setup or the trust question is asking, it is empty.                                              |
+| **Welcome**          | The first block of the conversation. See [The welcome](#the-welcome).                                                                                                                                                                                                                                                                                                                                                         |
+| **Conversation**     | Everything that happened: your messages, Circle's answers, thinking, tool calls and their results, notices, and after each turn a line with its time and tokens. Answers are drawn from their Markdown: headings, emphasis, links, code, lists, quotations and tables. It scrolls and never loses anything.                                                                                                                   |
+| **Lists**            | The lists that commands and keys open, such as `/models` or `/resume`, appear above the plan box and the input box. They close when you choose or press `esc`. A list that needs a line of text or a yes or no, such as a new name in `/resume`, asks on the line under its title.                                                                                                                                            |
+| **Plan box**         | Circle's own plan, when it has one: five steps at a time, following the current step, with the range at the bottom right (`2–6 / 8`) when there are more. The mouse wheel over it scrolls it. It is hidden while a card is up. It belongs to the session: `/new` starts without one, and a resumed session brings its own back.                                                                                               |
+| **Waiting messages** | Above the input box, while a turn runs: a compaction under way, with its progress bar (see [Compaction](sessions.md#compaction)); each message you sent that the model has not read yet, `steering: …`; and each that waits for the turn to end, `follow-up: …`. More than fit end in `+N queued · alt+up edits all`. See [Steer a running turn](usage.md#steer-a-running-turn).                                              |
+| **Input box**        | The one framed box on the screen. It is where you type, and where questions appear. Above it, while you type `/` or `@`, the completion list.                                                                                                                                                                                                                                                                                 |
+| **Search line**      | Under the input box, only while you search your history (`ctrl+r`) or find text in the conversation (`ctrl+f`): what you typed and, for find, which match you are at, such as `2/5`.                                                                                                                                                                                                                                          |
+| **Footer**           | One line of numbers: tokens sent and received, estimated cost in US dollars, cache hit rate, how full the context is (yellow from 70%, red from 90%). A cost or context window Circle does not know reads `N/A`; see [Models](models.md#cost-and-context-in-the-footer). A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. Before a session is connected there is no footer. |
+| **Subagent strip**   | Below the footer, only while subagents or [background jobs](background-jobs.md) run: a header such as `Agents · 2 · Jobs · 1`, a row per subagent (lamp, name, task, time and tokens), then a row per job with its lamp, id, command, the last line it printed, and how long it has run. At most four jobs are listed; the rest are counted as `… +N more jobs`.                                                              |
 
 A few things appear briefly and are not kept: the confirmations in the footer, the completion list, and the lists of `/models`, `/effort`, `/resume`, `/tree`, `/fork`, `/jobs`, `/settings`, `/login` and `/approvals`. Some views take over the whole conversation area: a subagent's record and a background job's page.
 
@@ -82,11 +82,11 @@ The welcome is not part of the conversation's record: it is not saved and not ex
 
 The input box changes colour and behaviour depending on who has to act.
 
-| Frame | Meaning |
-|---|---|
-| Faint and still | Idle. Type. |
-| Rainbow, moving | The model is working. A label on the top edge shows the busy word, elapsed time and tokens: `Brewing… · 12.4s · ↓ 1.9k`. `CIRCLE_TUI_SHIMMER=0` keeps the frame still. |
-| Yellow and still | It is your turn. A card is showing and Circle is waiting for you. |
+| Frame            | Meaning                                                                                                                                                                |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Faint and still  | Idle. Type.                                                                                                                                                            |
+| Rainbow, moving  | The model is working. A label on the top edge shows the busy word, elapsed time and tokens: `Brewing… · 12.4s · ↓ 1.9k`. `CIRCLE_TUI_SHIMMER=0` keeps the frame still. |
+| Yellow and still | It is your turn. A card is showing and Circle is waiting for you.                                                                                                      |
 
 A card that only says what Circle is doing, such as `Looking for models…` during setup, keeps a faint frame.
 
@@ -96,13 +96,13 @@ At the bottom-right corner a single word shows the mode, but only when it is not
 
 Every row that has a state gets one round lamp `●`.
 
-| Lamp | Meaning |
-|---|---|
-| Yellow, blinking | Running |
-| Green | Finished |
-| Red | Failed |
-| Cyan, steady | Waiting for you |
-| None | Not running |
+| Lamp             | Meaning         |
+| ---------------- | --------------- |
+| Yellow, blinking | Running         |
+| Green            | Finished        |
+| Red              | Failed          |
+| Cyan, steady     | Waiting for you |
+| None             | Not running     |
 
 Lamps appear on tool calls, subagents, background jobs, the plan and its steps, the title of a card, the folder's rows in the welcome, and the band of a subagent's page or a job's page. A plan step or a call is lit only while a turn works on it: when nothing runs, a step in progress and a call that an interrupted turn left without a result stay unlit. Cyan, the "waiting for you" lamp, is the one to look for when nothing seems to be happening: something is waiting for your answer.
 
@@ -110,25 +110,25 @@ Lamps appear on tool calls, subagents, background jobs, the plan and its steps, 
 
 A tinted background says what kind of work a block is.
 
-| Tint | Kind |
-|---|---|
-| Blue | Reading: files, searches, the web, skills, the language server |
-| Green | Changing: files and commands, including Bash |
-| Magenta | Thinking, the plan, and questions the model asks you |
-| Cyan | Subagents |
+| Tint    | Kind                                                           |
+| ------- | -------------------------------------------------------------- |
+| Blue    | Reading: files, searches, the web, skills, the language server |
+| Green   | Changing: files and commands, including Bash                   |
+| Magenta | Thinking, the plan, and questions the model asks you           |
+| Cyan    | Subagents                                                      |
 
 Answers from the model are never tinted.
 
 ## Marks at the start of a line
 
-| Mark | Meaning |
-|---|---|
-| `›` (blue) | You, including a `!command` you ran |
-| `⏺` | The model speaking |
-| `∴` | Thinking |
-| `⎿` | The result of the row above it. Under a call that went on as a background job: `in background · j3`, `moved to background · j4`, or `left running · j5` for processes a command left running |
-| `◆` | A background job ended: ` ◆ j3 done · npm test · 12s`, green when it is done, red when it failed, dim when it was stopped. When it opens a turn, it stands where your message would |
-| `✖` | An error (red) or a stop (dim, `Interrupted`) |
+| Mark       | Meaning                                                                                                                                                                                      |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `›` (blue) | You, including a `!command` you ran                                                                                                                                                          |
+| `●`        | The model speaking                                                                                                                                                                           |
+| `∴`        | Thinking                                                                                                                                                                                     |
+| `⎿`        | The result of the row above it. Under a call that went on as a background job: `in background · j3`, `moved to background · j4`, or `left running · j5` for processes a command left running |
+| `◆`        | A background job ended: ` ◆ j3 done · npm test · 12s`, green when it is done, red when it failed, dim when it was stopped. When it opens a turn, it stands where your message would          |
+| `✖`        | An error (red) or a stop (dim, `Interrupted`)                                                                                                                                                |
 
 ## What is shown, and what is hidden
 
@@ -159,10 +159,10 @@ Two things adapt to how light the background is. Secondary text (the footer, the
 
 `/themes` chooses how Circle decides:
 
-| Command | Effect |
-|---|---|
-| `/themes` | Show the current setting. |
-| `/themes auto` | Follow the terminal, live. This is the default. |
+| Command                         | Effect                                                                                                               |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `/themes`                       | Show the current setting.                                                                                            |
+| `/themes auto`                  | Follow the terminal, live. This is the default.                                                                      |
 | `/themes dark`, `/themes light` | Assume that background and stop asking the terminal. Colours the terminal reported are kept when they already match. |
 
 The change applies at once and is saved in [settings](settings.md). `/themes terminal` still works and means `auto`.
