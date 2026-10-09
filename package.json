@@ -1,8 +1,8 @@
 {
-  "name": "circle-next",
-  "version": "0.1.0-dev",
+  "name": "circle",
+  "version": "1.0.0",
   "private": true,
-  "description": "Terminal coding agent with an independent TypeScript runtime",
+  "description": "A terminal coding agent for your own model endpoint",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
@@ -31,7 +31,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/qingshanfeihu/circle-next.git"
+    "url": "https://github.com/qingshanfeihu/circle.git"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

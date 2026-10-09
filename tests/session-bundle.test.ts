@@ -406,7 +406,7 @@ test('schema upgrade associates earlier native children once and keeps checkpoin
   });
   const raw = store.messages(parent.id);
   store.close();
-  const old = new DatabaseSync(join(root, 'circle-next.sqlite'));
+  const old = new DatabaseSync(join(root, 'circle.sqlite'));
   try {
     old.exec(
       'DROP INDEX sessions_parent; ALTER TABLE sessions DROP COLUMN parent_id; PRAGMA user_version=3;',
@@ -433,7 +433,7 @@ test('a database failure halfway through graph import rolls back every created r
   cleanup(t, () => target.close());
   const kept = target.create(root, 'kept');
   target.append(kept.id, [user('kept')]);
-  const fixture = new DatabaseSync(join(home, 'circle-next.sqlite'));
+  const fixture = new DatabaseSync(join(home, 'circle.sqlite'));
   try {
     fixture.exec(
       "CREATE TRIGGER reject_bundle BEFORE INSERT ON checkpoints WHEN json_extract(NEW.message,'$.id')='child-fail' BEGIN SELECT RAISE(ABORT,'forced import failure'); END;",

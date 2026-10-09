@@ -56,7 +56,7 @@ function fixture(base: string, version: string): string {
     'fixture guidelines',
   );
   const manifest: ReleaseManifest = {
-    schema: 'circle-next-release/v1',
+    schema: 'circle-release/v1',
     version,
     target: targetFor(),
     nodeVersion: process.versions.node,
@@ -115,7 +115,7 @@ test('upgrades preserve settings, credentials and session bytes; corrupted and i
   const bin = join(base, 'bin');
   const home = join(base, 'data');
   mkdirSync(home);
-  const data = ['settings.json', 'credentials.json', 'circle-next.sqlite'].map(
+  const data = ['settings.json', 'credentials.json', 'circle.sqlite'].map(
     (name) => {
       const path = join(home, name);
       writeFileSync(path, 'unchanged-' + name);

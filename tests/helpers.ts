@@ -36,7 +36,7 @@ function owned(t: TestContext): Resources {
   }
   return state;
 }
-export function scratch(t: TestContext, prefix = 'circle-next-test-'): string {
+export function scratch(t: TestContext, prefix = 'circle-test-'): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
   owned(t).roots.push(root);
   return root;

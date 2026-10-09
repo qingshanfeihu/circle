@@ -13,6 +13,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { VERSION } from '../src/version.js';
 import {
+  ARCHIVE_ROOT,
+  RELEASE_SCHEMA,
+  assetName,
   fileInventory,
   targetFor,
   validateRelease,
@@ -87,7 +90,7 @@ try {
     extracted,
     runtime.name.replace(/\.(?:zip|tar\.gz)$/, ''),
   );
-  const packageRoot = join(temporary, 'circle-next');
+  const packageRoot = join(temporary, ARCHIVE_ROOT);
   const app = join(packageRoot, 'app');
   const binary = join(packageRoot, 'runtime');
   mkdirSync(app, { recursive: true });
@@ -117,7 +120,7 @@ try {
   );
   rmSync(join(app, 'node_modules', '.bin'), { recursive: true, force: true });
   const release: ReleaseManifest = {
-    schema: 'circle-next-release/v1',
+    schema: RELEASE_SCHEMA,
     version: VERSION,
     target,
     nodeVersion: runtimes.version,
@@ -129,7 +132,7 @@ try {
     JSON.stringify(release, null, 2) + '\n',
   );
   validateRelease(packageRoot);
-  const name = `circle-next-${target}.${process.platform === 'win32' ? 'zip' : 'tar.gz'}`;
+  const name = assetName(VERSION, target);
   const packaged = join(output, name);
   rmSync(packaged, { force: true });
   if (process.platform === 'win32')
@@ -142,7 +145,7 @@ try {
       packageRoot,
       packaged,
     ]);
-  else run('tar', ['-czf', packaged, '-C', temporary, 'circle-next']);
+  else run('tar', ['-czf', packaged, '-C', temporary, ARCHIVE_ROOT]);
   const sha256 = createHash('sha256')
     .update(readFileSync(packaged))
     .digest('hex');

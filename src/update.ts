@@ -1,7 +1,11 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { activeVersion, validateRelease } from './install_layout.js';
+import {
+  INSTALL_SCHEMA,
+  activeVersion,
+  validateRelease,
+} from './install_layout.js';
 import { VERSION, validVersion, compareVersions } from './version.js';
 export async function updateInstalled(
   args: string[],
@@ -27,7 +31,7 @@ export async function updateInstalled(
     readFileSync(join(prefix, 'installation.json'), 'utf8'),
   ) as { schema: string; repo: string; binDir: string; prefix: string };
   if (
-    metadata.schema !== 'circle-next-install/v1' ||
+    metadata.schema !== INSTALL_SCHEMA ||
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(metadata.repo) ||
     resolve(metadata.prefix) !== resolve(prefix) ||
     typeof metadata.binDir !== 'string'

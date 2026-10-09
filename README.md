@@ -1,4 +1,4 @@
-# circle-next
+# Circle
 
 A terminal coding agent for your own model endpoint, written in TypeScript.
 

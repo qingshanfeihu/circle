@@ -39,7 +39,7 @@ jobs:
       - run: npm run release:smoke
       - uses: actions/upload-artifact@v7
         with:
-          name: circle-next-${{ matrix.target }}
+          name: circle-${{ matrix.target }}
           path: .tmp/release/*
           if-no-files-found: error
           retention-days: 3

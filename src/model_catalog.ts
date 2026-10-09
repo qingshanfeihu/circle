@@ -344,7 +344,7 @@ export class ModelCatalog {
       try {
         const response = await (this.options.request ?? fetch)(CATALOG_URL, {
           signal,
-          headers: { Accept: 'application/json', 'User-Agent': 'circle-next' },
+          headers: { Accept: 'application/json', 'User-Agent': 'circle' },
         });
         if (!response.ok) return false;
         // Stream a bounded body; corrupt or changed remote data never replaces a valid copy.

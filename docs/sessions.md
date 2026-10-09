@@ -1,6 +1,6 @@
 # Sessions and context
 
-Sessions live in `circle-next.sqlite` in the data folder. Every saved message receives an immutable checkpoint. A session's head selects its active branch; restarting and continuing uses that head, without replaying tools. An interrupted call missing a result is recorded as interrupted instead of being executed again.
+Sessions live in `circle.sqlite` in the data folder. Every saved message receives an immutable checkpoint. A session's head selects its active branch; restarting and continuing uses that head, without replaying tools. An interrupted call missing a result is recorded as interrupted instead of being executed again.
 
 `-c` resumes the latest conversation in the workspace. `/resume` selects a session, `/tree` selects an earlier point, `/fork` creates a session before a selected user message, and `/clone` copies the active branch. Going back changes conversation context, not files. `/undo` and `/redo` only alter the view.
 
@@ -26,7 +26,7 @@ Version 3 JSONL bundles contain every checkpoint branch, selected head, labels, 
 
 Wait for the current turn and background subagents to finish before exporting from the TUI. Existing version 1 and version 2 message exports remain readable. Interrupted child histories remain inspectable records; importing a bundle starts no model call, tool, job or child agent.
 
-Legacy indexed `sessions.sqlite` and `checkpoints.sqlite` files are read without modification. Logical conversations and nested child namespaces are imported into `circle-next.sqlite`, with private source archives and SHA-256 receipts. MessagePack and JSON are decoded as data; serialized Python constructors are never executed. Independent markers support adding child records to earlier migrations and prevent deleted records from reappearing. Unsupported data is reported per scope. See [migration details](development/migration-data.md).
+Legacy indexed `sessions.sqlite` and `checkpoints.sqlite` files are read without modification. Logical conversations and nested child namespaces are imported into `circle.sqlite`, with private source archives and SHA-256 receipts. MessagePack and JSON are decoded as data; serialized Python constructors are never executed. Independent markers support adding child records to earlier migrations and prevent deleted records from reappearing. Unsupported data is reported per scope. See [migration details](development/migration-data.md).
 
 ## Subagent details
 

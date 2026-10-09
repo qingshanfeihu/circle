@@ -15,8 +15,13 @@ import {
 import { join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { validVersion } from './version.js';
+export const DEFAULT_REPO = 'qingshanfeihu/circle';
+export const RELEASE_SCHEMA = 'circle-release/v1';
+export const INSTALL_SCHEMA = 'circle-install/v1';
+// The folder at the top of every release archive.
+export const ARCHIVE_ROOT = 'circle';
 export interface ReleaseManifest {
-  schema: 'circle-next-release/v1';
+  schema: typeof RELEASE_SCHEMA;
   version: string;
   target: string;
   nodeVersion: string;
@@ -33,6 +38,11 @@ export function targetFor(
   )
     throw new Error(`unsupported platform: ${platform}/${arch}`);
   return `${platform === 'win32' ? 'windows' : platform}-${arch}`;
+}
+// The version is part of the name so that no release asset matches the names the Python
+// releases (0.5.0 and older) used: their `circle update` reports a missing asset instead.
+export function assetName(version: string, target = targetFor()): string {
+  return `circle-${version}-${target}.${target.startsWith('windows-') ? 'zip' : 'tar.gz'}`;
 }
 export function fileInventory(root: string): ReleaseManifest['files'] {
   const files: ReleaseManifest['files'] = {};
@@ -68,7 +78,7 @@ export function validateRelease(
     readFileSync(join(root, 'release.json'), 'utf8'),
   ) as ReleaseManifest;
   if (
-    value.schema !== 'circle-next-release/v1' ||
+    value.schema !== RELEASE_SCHEMA ||
     !validVersion(value.version) ||
     value.target !== expectedTarget ||
     !/^24\.\d+\.\d+$/.test(value.nodeVersion) ||
@@ -124,7 +134,7 @@ export function activateRelease(
   root: string,
   prefix: string,
   binDir: string,
-  repo = 'qingshanfeihu/circle-next',
+  repo = DEFAULT_REPO,
 ): ReleaseManifest {
   root = realpathSync(root);
   prefix = resolve(prefix);
@@ -191,8 +201,7 @@ export function activateRelease(
   }
   atomicText(
     join(prefix, 'installation.json'),
-    JSON.stringify({ schema: 'circle-next-install/v1', repo, binDir, prefix }) +
-      '\n',
+    JSON.stringify({ schema: INSTALL_SCHEMA, repo, binDir, prefix }) + '\n',
   );
   atomicText(join(prefix, 'current.ref'), manifest.version + '\n');
   return manifest;

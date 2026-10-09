@@ -58,7 +58,7 @@ export class CheckpointStore {
   private closed = false;
   constructor(home?: string) {
     this.db = new DatabaseSync(
-      home ? join(ensureHome(home), 'circle-next.sqlite') : ':memory:',
+      home ? join(ensureHome(home), 'circle.sqlite') : ':memory:',
     );
     this.db
       .exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;

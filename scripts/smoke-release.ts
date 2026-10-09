@@ -13,6 +13,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import {
+  ARCHIVE_ROOT,
+  assetName,
   fileInventory,
   targetFor,
   validateRelease,
@@ -29,7 +31,7 @@ import {
 const output = resolve(process.argv[2] || '.tmp/release');
 const target = targetFor();
 const windows = process.platform === 'win32';
-const asset = `circle-next-${target}.${windows ? 'zip' : 'tar.gz'}`;
+const asset = assetName(VERSION, target);
 const archive = join(output, asset);
 const bytes = readFileSync(archive);
 assert.equal(
@@ -89,7 +91,7 @@ function extract(source: string, destination: string): void {
 try {
   const relocated = join(temporary, 'relocated package');
   extract(archive, relocated);
-  const root = join(relocated, 'circle-next');
+  const root = join(relocated, ARCHIVE_ROOT);
   validateRelease(root);
   const node = join(root, 'runtime', windows ? 'node.exe' : 'node');
   const cli = join(root, 'app/dist/cli.js');
@@ -193,14 +195,12 @@ try {
     readFileSync(join(workspace, 'receipt.txt'), 'utf8'),
     'release smoke',
   );
-  const preserved = [
-    'settings.json',
-    'credentials.json',
-    'circle-next.sqlite',
-  ].map((name) => ({
-    path: join(home, name),
-    bytes: readFileSync(join(home, name)),
-  }));
+  const preserved = ['settings.json', 'credentials.json', 'circle.sqlite'].map(
+    (name) => ({
+      path: join(home, name),
+      bytes: readFileSync(join(home, name)),
+    }),
+  );
   const prefix = join(temporary, 'install space');
   const bin = join(temporary, 'bin space');
   const installEnv = {
@@ -229,7 +229,10 @@ try {
   assert.equal(activeVersion(prefix), VERSION);
   const second = join(temporary, 'second');
   cpSync(root, second, { recursive: true });
-  const upgraded = VERSION + '.1';
+  const upgraded = VERSION.replace(
+    /^(\d+)\.(\d+)\.(\d+)/,
+    (_, major, minor, patch) => `${major}.${minor}.${Number(patch) + 1}`,
+  );
   const packageJson = JSON.parse(
     readFileSync(join(second, 'app/package.json'), 'utf8'),
   );

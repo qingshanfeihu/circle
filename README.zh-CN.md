@@ -1,4 +1,4 @@
-# circle-next
+# Circle
 
 使用 TypeScript 编写的终端 AI coding agent，连接你自己的模型端点。
 

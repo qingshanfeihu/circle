@@ -115,7 +115,7 @@ export class McpManager {
         };
         status.push(state);
         const client = new Client({
-          name: 'circle-next',
+          name: 'circle',
           version: '0.1.0-dev',
         });
         let transport: Transport | undefined;

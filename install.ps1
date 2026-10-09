@@ -3,13 +3,12 @@
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
-    $repo = if ($env:CIRCLE_REPO) { $env:CIRCLE_REPO } else { 'qingshanfeihu/circle-next' }
+    $repo = if ($env:CIRCLE_REPO) { $env:CIRCLE_REPO } else { 'qingshanfeihu/circle' }
     if ($repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Invalid repository' }
-    $prefix = if ($env:CIRCLE_PREFIX) { $env:CIRCLE_PREFIX } else { Join-Path $env:LOCALAPPDATA 'circle-next' }
+    $prefix = if ($env:CIRCLE_PREFIX) { $env:CIRCLE_PREFIX } else { Join-Path $env:LOCALAPPDATA 'circle' }
     $binDir = if ($env:CIRCLE_BIN_DIR) { $env:CIRCLE_BIN_DIR } else { Join-Path $prefix 'bin' }
     $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
     $arch = switch ($architecture) { 'AMD64' { 'x64' } 'ARM64' { 'arm64' } default { throw "Unsupported architecture: $architecture" } }
-    $asset = "circle-next-windows-$arch.zip"
     $web = @{ UseBasicParsing = $true }
     if ($env:HTTPS_PROXY) { $web.Proxy = $env:HTTPS_PROXY }
     $version = $env:CIRCLE_VERSION
@@ -19,6 +18,7 @@
     }
     $version = $version -replace '^v', ''
     if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') { throw 'Invalid semantic version' }
+    $asset = "circle-$version-windows-$arch.zip"
     $temporary = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
     New-Item -ItemType Directory -Path $temporary | Out-Null
     try {
@@ -44,13 +44,13 @@
         try {
             foreach ($entry in $zip.Entries) {
                 $name = $entry.FullName.Replace('\', '/')
-                if ($name -notmatch '^circle-next(?:/|$)' -or $name -match '(^|/)\.\.(/|$)' -or $name.Contains(':')) { throw 'Unsafe archive entry' }
+                if ($name -notmatch '^circle(?:/|$)' -or $name -match '(^|/)\.\.(/|$)' -or $name.Contains(':')) { throw 'Unsafe archive entry' }
                 $kind = ($entry.ExternalAttributes -shr 16) -band 0xF000
                 if ($kind -ne 0 -and $kind -ne 0x8000 -and $kind -ne 0x4000) { throw 'Archive links and special files are not allowed' }
             }
         } finally { $zip.Dispose() }
         [IO.Compression.ZipFile]::ExtractToDirectory($archive, $temporary)
-        $root = Join-Path $temporary 'circle-next'
+        $root = Join-Path $temporary 'circle'
         $node = Join-Path $root 'runtime\node.exe'
         $manager = Join-Path $root 'app\dist\install_manager.js'
         if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or -not (Test-Path -LiteralPath $manager -PathType Leaf)) { throw 'Incomplete release' }
