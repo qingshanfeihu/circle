@@ -106,10 +106,15 @@ export class Harness {
   private save(message: Message): void {
     this.options.store.append(this.sessionId, [message]);
   }
-  async run(prompt?: string): Promise<{ answer: string; usage: Usage }> {
+  // `display` is what the conversation shows for the prompt when it differs from the text
+  // the model gets (`circle "question" @file`).
+  async run(
+    prompt?: string,
+    display?: string,
+  ): Promise<{ answer: string; usage: Usage }> {
     if (this.active) throw new Error('a turn is already running');
     this.controller = new AbortController();
-    this.active = this.runQueued(prompt, this.controller.signal);
+    this.active = this.runQueued(prompt, this.controller.signal, display);
     try {
       return await this.active;
     } finally {
@@ -120,6 +125,7 @@ export class Harness {
   private async runQueued(
     prompt: string | undefined,
     signal: AbortSignal,
+    display?: string,
   ): Promise<{ answer: string; usage: Usage }> {
     await this.options.beforeRun?.(signal);
     signal.throwIfAborted();
@@ -127,8 +133,10 @@ export class Harness {
     let answer = '';
     let next: string | undefined =
       prompt ?? this.steering.shift() ?? this.followUps.shift();
+    let shown = prompt === undefined ? undefined : display;
     do {
-      const result = await this.runTurn(next, signal);
+      const result = await this.runTurn(next, signal, shown);
+      shown = undefined;
       answer = result.answer;
       addUsage(total, result.usage);
       next = this.followUps.shift();
@@ -138,6 +146,7 @@ export class Harness {
   private async runTurn(
     prompt: string | undefined,
     signal: AbortSignal,
+    display?: string,
   ): Promise<{ answer: string; usage: Usage }> {
     const start = Date.now();
     const usage = emptyUsage();
@@ -152,13 +161,13 @@ export class Harness {
           signal,
           (path) => this.promptFileAllowed(path),
         )),
-        display: prompt,
+        display: display ?? prompt,
       });
     const session = this.options.store.get(this.sessionId)!;
     if (!session.title && prompt !== undefined)
       this.options.store.rename(
         this.sessionId,
-        prompt.split('\n')[0]!.slice(0, 100),
+        (display ?? prompt).split('\n')[0]!.slice(0, 100),
       );
     this.bus.emit('run_start', { payload: { message: prompt } });
     try {

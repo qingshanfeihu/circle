@@ -468,7 +468,10 @@ test('main tool limits retain the subagent tool set and subagent approvals belon
         {
           id: 'task',
           name: 'task',
-          args: { description: 'write in the child' },
+          args: {
+            description: 'write in the child',
+            subagent_type: 'general-purpose',
+          },
         },
       ]),
     },
@@ -527,7 +530,10 @@ test('a read-only switch while a child approval is pending blocks the already qu
         {
           id: 'task',
           name: 'task',
-          args: { description: 'write in the child' },
+          args: {
+            description: 'write in the child',
+            subagent_type: 'general-purpose',
+          },
         },
       ]),
     },

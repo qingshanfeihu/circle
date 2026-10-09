@@ -402,7 +402,11 @@ test('native background subagents return immediately, retain live read-only chec
             {
               id: 'task',
               name: 'task',
-              args: { description: 'research', background: true },
+              args: {
+                description: 'research',
+                subagent_type: 'general-purpose',
+                background: true,
+              },
             },
           ]);
     },
@@ -471,7 +475,11 @@ test('a background subagent ends every shell it owns before its report is marked
             {
               id: 'task',
               name: 'task',
-              args: { description: 'server research', background: true },
+              args: {
+                description: 'server research',
+                subagent_type: 'general-purpose',
+                background: true,
+              },
             },
           ]);
     },

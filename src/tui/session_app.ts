@@ -1188,7 +1188,7 @@ export class SessionApp {
       }
     }
   }
-  async submit(message: string): Promise<void> {
+  async submit(message: string, display?: string): Promise<void> {
     if (message === '?') {
       await this.command('hotkeys', '');
       return;
@@ -1219,7 +1219,7 @@ export class SessionApp {
       this.flash('Queued steering');
     } else {
       try {
-        await this.runtime.harness.run(message);
+        await this.runtime.harness.run(message, display);
       } catch {
         /* Run error is already displayed by the event bus. */
       }
@@ -1912,6 +1912,8 @@ export async function runTui(
     init?: boolean;
     pickSession?: boolean;
     prompts?: string[];
+    // What the conversation shows for each prompt, when it differs (`@file`)
+    shown?: string[];
   },
 ): Promise<number> {
   const app = new SessionApp(options.workspace, options.home, options.settings);
@@ -1922,7 +1924,11 @@ export async function runTui(
     await app.attach(options);
     void app.checkForUpdate();
     if (options.pickSession) await app.command('resume', '');
-    for (const prompt of options.prompts ?? []) void app.submit(prompt);
+    // The first message starts a turn; the others follow it, one turn each.
+    const [first, ...rest] = options.prompts ?? [];
+    if (first !== undefined)
+      void app.submit(first, options.shown?.[0] || undefined);
+    for (const prompt of rest) app.runtime?.harness.queue(prompt, 'followUp');
     return await app.wait();
   } finally {
     await app.close();
