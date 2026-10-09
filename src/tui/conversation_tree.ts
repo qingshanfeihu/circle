@@ -146,7 +146,7 @@ export function walk(tree: ConversationTree): [string, number][] {
   return out;
 }
 
-/** An entry's row in /tree: indented by branch, `├` where a branch starts, `›` yours, `⏺` an answer. */
+/** An entry's row in /tree: indented by branch, `├` where a branch starts, `›` yours, `●` an answer. */
 export function treeRow(
   tree: ConversationTree,
   key: string,
@@ -158,6 +158,6 @@ export function treeRow(
   const fork = Boolean(parent && parent.children.length > 1);
   const lead =
     '  '.repeat(Math.max(0, depth - (fork ? 1 : 0))) + (fork ? '├ ' : '');
-  const mark = entry.role === 'user' ? '›' : '⏺';
+  const mark = entry.role === 'user' ? '›' : '●';
   return `${lead}${mark} ${label ? `[${label}] ` : ''}${rowText(entry.text)}`;
 }

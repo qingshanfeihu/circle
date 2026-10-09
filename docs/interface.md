@@ -9,7 +9,7 @@ Circle's screen has a few parts, and each kind of information always goes to the
  ∴ Thought 6.3s · read the file first  ctrl+t
  ● Read(quicksort.py)
    ⎿ Read 31 lines · ctrl+o
- ⏺ It is a three-way partition. I'll annotate it and add tests.
+ ● It is a three-way partition. I'll annotate it and add tests.
  ● Edit(quicksort.py)
    ⎿ Edited /home/me/code/my-project/quicksort.py
  ● Write(tests/test_quicksort.py)
@@ -124,7 +124,7 @@ Thinking is not tinted. The folded line is italic blue, the terminal's own blue,
 | Mark | Meaning |
 |---|---|
 | `›` (blue) | You, including a `!command` you ran |
-| `⏺` | The model speaking |
+| `●` | The model speaking |
 | `∴` | Thinking |
 | `⎿` | The result of the row above it. Under a call that went on as a background job: `in background · j3`, `moved to background · j4`, or `left running · j5` for processes a command left running |
 | `◆` | A background job ended: ` ◆ j3 done · npm test · 12s`, green when it is done, red when it failed, dim when it was stopped. When it opens a turn, it stands where your message would |

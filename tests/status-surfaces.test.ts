@@ -705,7 +705,7 @@ test('a real turn renders short tool rows, a folded read, a folded thought with 
     assert.ok(rows[thought]!.includes(p.reason.slice(2, -1)));
     assert.ok(!rows[thought]!.includes(p.think_bg.slice(2, -1)));
     assert.ok(!rows[thought]!.includes('\x1b[48'));
-    assert.match(plain[thought + 1]!, /^ ⏺ Read it\./);
+    assert.match(plain[thought + 1]!, /^ ● Read it\./);
     assert.match(plain[thought + 2]!.trimEnd(), /^ {3}\d+s · ↑ 3\.3k · ↓ 370$/);
     assert.ok(rows[thought + 2]!.includes(p.dim));
     coloursFrom(p, rows.join('\n'));
@@ -986,7 +986,7 @@ test('an attached session shows the busy verb while it works and the turn line a
   assert.match(label, new RegExp(`^╭──(${verbs})… · \\d+\\.\\ds · ↓ 0─`));
   ui.repaint();
   const plain = rendered.map(stripAnsi);
-  const answer = plain.findIndex((row) => row.startsWith(' ⏺ done'));
+  const answer = plain.findIndex((row) => row.startsWith(' ● done'));
   assert.ok(answer > 0, plain.join('\n'));
   assert.match(plain[answer + 1]!.trimEnd(), /^ {3}\d+s · ↑ 1\.5k · ↓ 42$/);
   assert.deepEqual(app.state.turnUsage?.final, {

@@ -687,13 +687,13 @@ test('/tree, /fork, /clone, /new, /continue and /resume move between branches an
   };
   await app.submit('/tree');
   assert.equal(app.state.picker!.title, 'Session tree');
-  await pick('⏺ answer two');
+  await pick('● answer two');
   assert.equal(app.state.flash, 'Already here');
   await app.submit('/tree');
   const picker = app.state.picker!;
   picker.focus = picker
     .matches()
-    .findIndex((item) => item.label === '⏺ answer two');
+    .findIndex((item) => item.label === '● answer two');
   await key('L');
   assert.equal(app.state.dialog, undefined);
   assert.ok(app.state.picker!.asking);
@@ -701,7 +701,7 @@ test('/tree, /fork, /clone, /new, /continue and /resume move between branches an
   await key('enter');
   assert.equal(
     app.state.picker!.items.find((item) => item.label.includes('['))!.label,
-    '⏺ [start] answer two',
+    '● [start] answer two',
   );
   assert.deepEqual(Object.values(runtime.store.labels(runtime.session.id)), [
     'start',

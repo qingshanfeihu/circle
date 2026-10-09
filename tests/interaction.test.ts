@@ -235,7 +235,7 @@ test('ctrl+c during a turn stops it, and a second press right after leaves', asy
   assert.equal(ui.ended, true);
 });
 
-test('/tree draws the branches as 0.5.0 did: yours ›, answers ⏺, ├ where a branch starts, here and · on the way', async (t) => {
+test('/tree draws the branches as 0.5.0 did: yours ›, answers ●, ├ where a branch starts, here and · on the way', async (t) => {
   const { app, ui, runtime, workspace } = await session(t, [
     {
       message: {
@@ -260,9 +260,9 @@ test('/tree draws the branches as 0.5.0 did: yours ›, answers ⏺, ├ where a
   // The tool call and its result are steps of the turn, not entries
   assert.deepEqual(labels(), [
     '› question one',
-    '⏺ answer one',
+    '● answer one',
     '› question two',
-    '⏺ answer two',
+    '● answer two',
   ]);
   // Back before "question two" and something else instead: a second branch
   const picker = app.state.picker!;
@@ -277,14 +277,14 @@ test('/tree draws the branches as 0.5.0 did: yours ›, answers ⏺, ├ where a
     items.map((item) => [item.label, item.meta]),
     [
       ['› question one', '·'],
-      ['⏺ answer one', '·'],
+      ['● answer one', '·'],
       ['├ › question two', ''],
-      ['  ⏺ answer two', ''],
+      ['  ● answer two', ''],
       ['├ › question changed', '·'],
-      ['  ⏺ answer changed', 'here'],
+      ['  ● answer changed', 'here'],
     ],
   );
-  assert.equal(items[app.state.picker!.focus]!.label, '  ⏺ answer changed');
+  assert.equal(items[app.state.picker!.focus]!.label, '  ● answer changed');
   assert.ok(items.at(-1)!.current);
   // ctrl+u: only your messages, drawn as they were
   ui.handle({ type: 'key', key: 'ctrl+u', char: '' });
@@ -592,7 +592,7 @@ test('esc on the /tree label line leaves the label as it was; enter on an empty 
   const list = app.state.picker!;
   list.focus = list
     .matches()
-    .findIndex((item) => item.label === '⏺ [start] answer one');
+    .findIndex((item) => item.label === '● [start] answer one');
   assert.ok(list.focus >= 0);
   // esc leaves the label as it was (it used to remove it)
   key('L');
@@ -631,7 +631,7 @@ test('esc on the /tree label line leaves the label as it was; enter on an empty 
   await until(
     () => !Object.keys(runtime.store.labels(runtime.session.id)).length,
   );
-  assert.ok(list.items.some((item) => item.label === '⏺ answer one'));
+  assert.ok(list.items.some((item) => item.label === '● answer one'));
 });
 
 test('/resume: esc on the new name or on the delete question leaves the session as it was', async (t) => {

@@ -169,6 +169,25 @@ export function draftLines(
   }
   return lines;
 }
+/**
+ * The cursor's cell in the `draftLines` for the same arguments: the row within those lines
+ * and the 0-based column within the line. Call after `draftLines`, which sets `draftTop`.
+ */
+export function draftCursor(
+  state: DraftState,
+  columns: number,
+  height: number,
+): { row: number; col: number } {
+  const chars = Array.from(state.draft);
+  const cursor = Math.max(0, Math.min(state.draftCursor, chars.length));
+  const rows = visualLines(chars, draftWidth(columns));
+  const row = cursorRow(rows, cursor);
+  const shown = Math.max(1, Math.min(rows.length, maxDraftRows(height)));
+  const top = Math.max(0, Math.min(state.draftTop ?? 0, rows.length - shown));
+  let col = 3;
+  for (let at = rows[row]![0]; at < cursor; at++) col += cellWidth(chars[at]!);
+  return { row: row - top, col };
+}
 /** The completion list's rows: a popup, six entries at a time around the marked one. */
 export function completionRows(
   completion: Completion,
