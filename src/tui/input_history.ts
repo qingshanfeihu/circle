@@ -82,6 +82,19 @@ export class InputHistory {
     this.cursor = undefined;
     return this.draft;
   }
+  /** ↑ has brought back an earlier message and ↓ has not returned to the draft yet. */
+  get browsing(): boolean {
+    return this.cursor !== undefined;
+  }
+  /** Is there an older message? An empty box scrolls the conversation when there is not. */
+  canGoUp(): boolean {
+    return (
+      this.values.length > 0 && (this.cursor === undefined || this.cursor > 0)
+    );
+  }
+  canGoDown(): boolean {
+    return this.cursor !== undefined && this.cursor < this.values.length - 1;
+  }
   beginSearch(current: string): string | undefined {
     this.draft = current;
     this.query = current;

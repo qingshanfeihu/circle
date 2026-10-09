@@ -59,6 +59,11 @@ export class Harness {
   private controller?: AbortController;
   private steering: string[] = [];
   private followUps: string[] = [];
+  /** How the input box showed a prompt the model reads in full: long pastes stay folded on screen. */
+  readonly shown = new Map<
+    string,
+    { display: string; pastes?: Record<string, string> }
+  >();
   private active?: Promise<{ answer: string; usage: Usage }>;
   constructor(readonly options: HarnessOptions) {
     this.sessionId = options.session.id;
@@ -91,11 +96,14 @@ export class Harness {
       steering: this.steering.splice(0),
       followUp: this.followUps.splice(0),
     };
+    for (const message of [...result.steering, ...result.followUp])
+      this.shown.delete(message);
     return result;
   }
   async cancel(): Promise<void> {
     this.followUps = [];
     this.steering = [];
+    this.shown.clear();
     this.controller?.abort(new Error('Interrupted'));
     try {
       await this.active;
@@ -105,6 +113,11 @@ export class Harness {
   }
   private save(message: Message): void {
     this.options.store.append(this.sessionId, [message]);
+  }
+  private shownAs(prompt: string): Pick<Message, 'display' | 'pastes'> {
+    const shown = this.shown.get(prompt);
+    this.shown.delete(prompt);
+    return shown ?? { display: prompt };
   }
   async run(prompt?: string): Promise<{ answer: string; usage: Usage }> {
     if (this.active) throw new Error('a turn is already running');
@@ -142,6 +155,7 @@ export class Harness {
     const start = Date.now();
     const usage = emptyUsage();
     let answer = '';
+    const shown = prompt === undefined ? undefined : this.shownAs(prompt);
     if (prompt !== undefined)
       this.save({
         id: randomUUID(),
@@ -152,13 +166,13 @@ export class Harness {
           signal,
           (path) => this.promptFileAllowed(path),
         )),
-        display: prompt,
+        ...shown,
       });
     const session = this.options.store.get(this.sessionId)!;
-    if (!session.title && prompt !== undefined)
+    if (!session.title && shown?.display !== undefined)
       this.options.store.rename(
         this.sessionId,
-        prompt.split('\n')[0]!.slice(0, 100),
+        shown.display.split('\n')[0]!.slice(0, 100),
       );
     this.bus.emit('run_start', { payload: { message: prompt } });
     try {
@@ -171,7 +185,7 @@ export class Harness {
             ...(await attachPrompt(message, session.workspace, signal, (path) =>
               this.promptFileAllowed(path),
             )),
-            display: message,
+            ...this.shownAs(message),
           });
           this.bus.emit('steer', { payload: { message } });
         }

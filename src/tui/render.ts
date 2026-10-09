@@ -14,12 +14,17 @@ import {
   markdownRows,
   terminalText,
 } from '../ink/components/markdown_renderer.js';
+import { completionRows, draftLines, type Completion } from './composer.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
   welcome: string[];
   draft: string;
   draftCursor: number;
+  draftTop?: number;
+  completion?: Completion;
+  /** Written by renderScreen: the conversation's rows in view, and how far up it scrolls. */
+  view?: { rows: number; maxScroll: number };
   model: string;
   workspace: string;
   version: string;
@@ -365,6 +370,8 @@ export function renderScreen(
       : state.busy
         ? ` Brewing… · ${elapsed}s `
         : '';
+    if (state.completion && !state.picker)
+      bottom.push(...completionRows(state.completion, width));
     const frame = (text: string): string => {
       if (!state.busy) return p.outline + text + p.reset;
       return (
@@ -386,17 +393,9 @@ export function renderScreen(
         label +
         p.reset +
         frame('─'.repeat(Math.max(0, width - stringWidth(label) - 3)) + '╮');
-    const draft = Array.from(state.draft);
-    draft.splice(state.draftCursor, 0, '▏');
-    const draftRows = wrap(draft.join(''), width - 4);
-    const maxRows = Math.max(1, Math.floor(height * 0.3));
-    for (const [index, line] of draftRows.slice(-maxRows).entries())
+    for (const line of draftLines(state, width, height))
       bottom.push(
-        frame('│') +
-          p.text +
-          pad((index === 0 ? ' › ' : '   ') + line, width - 2) +
-          p.reset +
-          frame('│'),
+        frame('│') + p.text + pad(line, width - 2) + p.reset + frame('│'),
       );
     const mode = state.planMode
       ? ' read-only '
@@ -493,6 +492,10 @@ export function renderScreen(
     ];
   }
   const available = Math.max(1, height - bottom.length - 1);
+  state.view = {
+    rows: available,
+    maxScroll: Math.max(0, transcript.length - available),
+  };
   state.find?.updateRows(transcript);
   const end =
     state.find?.row !== undefined
