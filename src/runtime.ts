@@ -740,13 +740,16 @@ export class AgentRuntime {
   setModel(model: string): void {
     if (this.busy) throw new Error('a turn is running');
     if (!model.trim()) throw new Error('model ID is required');
-    this.baseModel = new GatewayModel(
+    const effort = this.thinkingLevel;
+    const nextModel = new GatewayModel(
       this.options.settings,
       this.options.home,
       model,
       {},
       this.catalog,
     );
+    nextModel.effort = effort;
+    this.baseModel = nextModel;
     this.harness.model = this.extensions.model(this.baseModel);
     this.harness.system = buildSystemPrompt(
       this.options.workspace,
@@ -766,7 +769,7 @@ export class AgentRuntime {
     if (!(EFFORT_LEVELS as readonly string[]).includes(level))
       throw new Error('unknown thinking depth');
     if (this.baseModel instanceof GatewayModel) this.baseModel.effort = level;
-    else this.options.settings.default_thinking = level;
+    this.options.settings.default_thinking = level;
   }
   stats(): {
     messages: number;

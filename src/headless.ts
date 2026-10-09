@@ -2,12 +2,18 @@ import { createInterface } from 'node:readline';
 import type { AgentRuntime } from './runtime.js';
 import type { CircleEvent } from './events.js';
 import { setTimeout as delay } from 'node:timers/promises';
+import { rpcJob } from './rpc_codec.js';
 export function jsonEvent(
   event: CircleEvent,
 ): Record<string, unknown> | undefined {
   const data = event.payload;
   if (event.kind === 'compaction') return { type: 'compaction', ...data };
-  if (event.kind.startsWith('job_')) return { type: event.kind, ...data };
+  if (['job_started', 'job_updated', 'job_ended'].includes(event.kind))
+    return {
+      type: 'job',
+      event: event.kind.slice(4),
+      job: rpcJob(data.job as import('./jobs.js').Job),
+    };
   if (event.tags.subagent)
     return {
       type: 'subagent_event',

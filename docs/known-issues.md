@@ -2,7 +2,7 @@
 
 This development build has not completed full compatibility or release acceptance.
 
-- RPC message serialization and several terminal/account interactions need further compatibility checks. Usage is persisted with completed model messages.
+- RPC compatibility envelopes, job commands/events, model/thinking changes and input-close task cleanup have focused runtime checks and frozen serialization samples. Remaining streamed usage/notice details and several terminal/account interactions need further compatibility checks. Usage is persisted with completed model messages.
 - Several account interactions remain under development. Question panels and masked secret collection now have focused behavior and terminal validation.
 - Markdown presentation, find/history search and external-editor input ownership have scoped tests and real terminal validation. Configurable picker actions, plan scrolling, queue display, remaining shortcuts and more terminal/Unicode boundary cases still need parity work.
 - Background shell/subagent jobs, extension watches, cancellation, output, bare-sleep wakeups and persisted notices/reminders have scoped runtime tests. Remaining wake/card ordering cases and Windows adoption after a shell exits still need compatibility work.

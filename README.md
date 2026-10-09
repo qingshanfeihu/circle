@@ -31,6 +31,8 @@ node dist/cli.js --mode rpc ~/code/my-project
 
 Print and RPC mode require initialized settings and a trusted folder. Mutating tools require approval; headless callers use `--yolo` for ordinary writes and commands. Operations that always ask remain blocked in headless mode.
 
+See [RPC commands and events](docs/rpc.md) for the JSON line protocol, message formats and background-job shutdown behavior.
+
 ## Project layout
 
 - `src/`: CLI, independent agent runtime, tools, policy, sessions and terminal interface.
