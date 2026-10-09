@@ -18,6 +18,7 @@ import { completionRows, draftLines, type Completion } from './composer.js';
 import { loopFrame } from '../ink/components/loop_frame.js';
 import {
   busyLabel,
+  compactionRow,
   footerRow,
   headerRows,
   turnUsageRow,
@@ -25,13 +26,21 @@ import {
 } from './status_rows.js';
 import { agentRows, jobRows, stripHeader, AGENT_ROWS } from './strip_rows.js';
 import {
+  extensionRows,
   HIDDEN_TOOLS,
+  backgroundJob,
+  noticeRows,
   resultRows,
   thinkingRows,
-  tintedRow,
   toolRow,
-  toolTint,
 } from './tool_rows.js';
+import {
+  detailBand,
+  detailRows,
+  taskAgents,
+  taskSummaryRows,
+  type DetailBand,
+} from './agent_rows.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
@@ -75,6 +84,8 @@ export interface ScreenState {
   subagents?: SubagentView[];
   selectedAgent?: string;
   agentDetail?: SubagentView;
+  /** Set by renderScreen: the screen row of a subagent page's band and its buttons. */
+  pageButtons?: { row: number; spans: DetailBand['spans'] };
   find?: TranscriptFind;
   historySearch?: { query: string; match: boolean };
   renderToolResult?: (message: Message) => string[] | undefined;
@@ -202,6 +213,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
   );
   for (const shell of localShells.filter((shell) => !shell.anchor))
     shellRows(shell);
+  const agents = taskAgents(messages, state.subagents ?? []);
   for (const message of messages) {
     if (message.shell) {
       if (!localIds.has(message.id))
@@ -217,18 +229,11 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
         shellRows(shell);
       continue;
     }
-    if (message.internal === 'job_notice')
-      block(
-        '◆',
-        plainJobOutput(message.display ?? '').replace(/^◆ /gm, ''),
-        '',
-        / failed · /.test(message.display ?? '')
-          ? p.red
-          : / done · /.test(message.display ?? '')
-            ? p.green
-            : p.dim,
-      );
-    else if (message.role === 'user') user(message.display ?? message.content);
+    if (message.internal === 'job_notice') {
+      gap('notice');
+      rows.push(...noticeRows(message.display ?? '', width));
+    } else if (message.role === 'user')
+      user(message.display ?? message.content);
     else if (message.role === 'assistant') {
       if (message.thinking)
         thinking(message.thinking, true, state.thinkingSeconds?.[message.id]);
@@ -256,15 +261,19 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
         if (HIDDEN_TOOLS.has(call.name)) continue;
         gap('tool');
         rows.push(toolRow(call, result, { width, pending }));
-        if (!result) continue;
-        const custom = state.renderToolResult?.(result);
-        if (custom)
-          for (const row of custom)
-            rows.push(tintedRow([['', row]], toolTint(call.name), width));
-        else
+        // A subagent folded under its row; one in the background is a job instead.
+        const agent = agents.get(call.id);
+        if (agent && call.args.background !== true)
           rows.push(
-            ...resultRows(call, result, { width, expanded: state.showTools }),
+            ...taskSummaryRows(agent, { width, expanded: state.showTools }),
           );
+        if (!result) continue;
+        rows.push(
+          ...(extensionRows(state.renderToolResult?.(result), call, {
+            width,
+            expanded: state.showTools,
+          }) ?? resultRows(call, result, { width, expanded: state.showTools })),
+        );
       }
     } else if (message.role === 'tool') {
       // A result whose call is not in view (the turn was cut short of it).
@@ -375,6 +384,8 @@ export function renderScreen(
   if (!state.dialog && state.todos.length) {
     bottom.push(...planRows(state.todos, width, state.planStart));
   }
+  // Above the input box: the compaction under way, then the messages waiting to be read.
+  if (state.compaction) bottom.push(compactionRow(state.compaction, width));
   if (!state.dialog && state.queue) {
     const queued = [
       ...state.queue.steering.map((text) => `steering: ${text}`),
@@ -397,29 +408,30 @@ export function renderScreen(
           p.reset,
       );
   }
+  const mode = state.planMode ? 'read-only' : state.autoMode ? 'auto' : '';
+  const modeSgr = state.planMode ? p.green : p.yellow;
   if (state.dialog)
     bottom.push(
       ...dialogRows(
         state.dialog,
         width,
         Math.max(5, height - 4 - strip.length),
+        { word: mode, sgr: modeSgr },
       ),
     );
   else {
     // The frame says whose turn it is: the rainbow runs while the model works.
     const seconds = (Date.now() - state.started) / 1000;
-    const label = state.compaction
-      ? state.compaction.row(width)
-      : state.busy
-        ? busyLabel(state.busyVerb ?? 'Brewing', seconds, state.busyTokens ?? 0)
-        : '';
+    const label = state.busy
+      ? busyLabel(state.busyVerb ?? 'Brewing', seconds, state.busyTokens ?? 0)
+      : '';
     if (state.completion && !state.picker)
       bottom.push(...completionRows(state.completion, width));
     const frame = loopFrame(width, {
       elapsed: state.busy ? seconds : undefined,
       label,
-      mode: state.planMode ? 'read-only' : state.autoMode ? 'auto' : '',
-      modeSgr: state.planMode ? p.green : p.yellow,
+      mode,
+      modeSgr,
     });
     bottom.push(frame.top);
     for (const line of draftLines(state, width, height))
@@ -450,28 +462,38 @@ export function renderScreen(
       ),
     );
   bottom.push(...strip);
-  let transcript = transcriptRows(state, width);
+  let transcript: string[];
+  // A subagent's page: its band stays under the header, its record scrolls under the band.
+  let band: DetailBand | undefined;
   if (state.agentDetail) {
     const agent = state.agentDetail;
-    transcript = [
-      p.dim +
-        ` ${agent.name} · ${agent.state} · esc back · ←/→ previous/next` +
-        p.reset,
-      ...transcriptRows(
-        {
-          ...state,
-          messages: agent.messages,
-          agentDetail: agent,
-          welcome: [],
-          notices: [],
-          streaming: '',
-          thinking: '',
-          hiddenTurns: 0,
-        },
-        width,
-      ),
-    ];
-  }
+    const all = state.subagents ?? [];
+    band = detailBand(agent, {
+      index:
+        Math.max(
+          0,
+          all.findIndex((other) => other.id === agent.id),
+        ) + 1,
+      total: Math.max(1, all.length),
+      width,
+    });
+    // What its task call returned, unless the task went on in the background.
+    let result: string | undefined;
+    for (const [id, found] of taskAgents(state.messages, all))
+      if (found.id === agent.id)
+        result = state.messages.find(
+          (message) =>
+            message.role === 'tool' &&
+            message.tool_call_id === id &&
+            !backgroundJob(message),
+        )?.content;
+    transcript = detailRows(agent, {
+      width,
+      expanded: Boolean(state.thinkingExpanded),
+      thinkingSeconds: state.thinkingSeconds,
+      result,
+    });
+  } else transcript = transcriptRows(state, width);
   if (state.jobDetail) {
     const job = state.jobDetail;
     let output = '';
@@ -493,8 +515,11 @@ export function renderScreen(
       ),
     ];
   }
-  // two header rows above the transcript
-  const available = Math.max(1, height - bottom.length - 2);
+  // two header rows (and a page's band) above the transcript
+  const available = Math.max(
+    1,
+    height - bottom.length - 2 - (band?.rows.length ?? 0),
+  );
   state.view = {
     rows: available,
     maxScroll: Math.max(0, transcript.length - available),
@@ -532,6 +557,7 @@ export function renderScreen(
     },
     width,
   );
+  rows.push(...(band?.rows ?? []));
   const headerHeight = rows.length;
   rows.push(...transcript.slice(first, end));
   while (rows.length < height - bottom.length) rows.push('');
@@ -541,6 +567,10 @@ export function renderScreen(
     height: available,
     first,
     total: transcript.length,
+  };
+  state.pageButtons = band && {
+    row: headerHeight - band.rows.length - Math.max(0, rows.length - height),
+    spans: band.spans,
   };
   // A row never runs past the edge: on a very narrow screen even a status row is cut.
   return rows

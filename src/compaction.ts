@@ -53,10 +53,8 @@ export class CompactionProgress {
         0.85 * (this.summarized ? 1 : 1 - Math.exp(-this.chunks / 400)),
     );
   }
-  row(width: number): string {
-    const size = Math.min(12, Math.max(4, Math.floor(width / 8)));
-    const done = Math.round(size * this.fraction());
-    return `${this.label} · ${'█'.repeat(done)}${'░'.repeat(size - done)} ${this.stage} · ${Math.floor((Date.now() - this.started) / 1000)}s`;
+  elapsed(now = Date.now()): number {
+    return Math.max(0, (now - this.started) / 1000);
   }
 }
 const tokens = (n?: number): string =>

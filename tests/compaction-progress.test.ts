@@ -17,6 +17,8 @@ import { defaultSettings } from '../src/settings.js';
 import { ModelCatalog, slimCatalog } from '../src/model_catalog.js';
 import { emptyUsage, type ChatModel, type Message } from '../src/types.js';
 import { jsonEvent } from '../src/headless.js';
+import { compactionRow } from '../src/tui/status_rows.js';
+import { stripAnsi } from '../src/ink/string_width.js';
 import { scratch, cleanup } from './helpers.js';
 function history(): Message[] {
   return Array.from({ length: 10 }, (_, index) => ({
@@ -299,7 +301,10 @@ test('progress is monotonic within the summary and JSON events expose phases wit
   assert.ok(advanced > before);
   progress.apply({ sessionId: 's', phase: 'summarized', trigger: 'auto' });
   assert.equal(progress.fraction(), 1);
-  assert.match(progress.row(80), /auto-compacting.*summarized/);
+  assert.match(
+    stripAnsi(compactionRow(progress, 80)),
+    /auto-compacting · █{16} summarized/,
+  );
   const record = jsonEvent({
     kind: 'compaction',
     run_id: 'r',

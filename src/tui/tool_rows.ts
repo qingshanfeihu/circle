@@ -13,6 +13,7 @@ import {
 import type { Message, ToolCall } from '../types.js';
 import { toolArgSummary, toolShortName } from './display_lexicon.js';
 import { formatBusyElapsed } from './status_rows.js';
+import { plainJobOutput } from '../jobs.js';
 
 export const PREVIEW_LINES = 6;
 const COLLAPSED_WRAP_ROWS = 3;
@@ -70,7 +71,11 @@ export function tintedRow(
   );
 }
 
-function fitSummary(name: string, summary: string, width: number): string {
+export function fitSummary(
+  name: string,
+  summary: string,
+  width: number,
+): string {
   const available = Math.max(8, width - stringWidth(name) - 6);
   if (stringWidth(summary) <= available) return summary;
   if (
@@ -241,6 +246,8 @@ export function resultRows(
 ): string[] {
   const p = palette();
   const bg = toolTint(call.name);
+  const job = backgroundJob(result);
+  if (job) return jobResultRows(job, bg, options);
   const error = result.status === 'error';
   const recoverable = error && Boolean(result.recoverable);
   const output = terminalText(result.content);
@@ -304,6 +311,172 @@ export function resultRows(
       );
   });
   return rows;
+}
+
+// A call that went on as a background job, from what it returned: the job, how it got
+// there (started there, moved there, or a command that left processes running) and what
+// the command printed before. The sentence for the model is not shown. Sessions of the
+// Python releases carry the job in the message's `circle_job`.
+const JOB_SENTENCE =
+  /(?:^|\n)(In background|Command continues in background|Watching in background): (j\d+) · (\w+) · [^\n]*do not poll or sleep\.\s*$/;
+const LEGACY_JOB_NOTE = /\[The command[^[\]]*stop_job\.\]\s*$/;
+const LEGACY_EXIT =
+  /\n*\[Command (?:succeeded|failed) with exit code -?\d+\]\s*$/;
+export interface BackgroundJob {
+  id: string;
+  how: 'started' | 'moved' | 'adopted';
+  text: string;
+}
+export function backgroundJob(result: Message): BackgroundJob | undefined {
+  if (result.status === 'error') return undefined;
+  const match = result.content.match(JOB_SENTENCE);
+  if (match)
+    return {
+      id: match[2]!,
+      how:
+        match[1] !== 'Command continues in background'
+          ? 'started'
+          : match[3] === 'adopted'
+            ? 'adopted'
+            : 'moved',
+      text:
+        match[1] === 'Command continues in background'
+          ? result.content.slice(0, match.index).trim()
+          : '',
+    };
+  const extra = result.legacy_data?.data.additional_kwargs;
+  const legacy =
+    extra && typeof extra === 'object'
+      ? (extra as Record<string, unknown>).circle_job
+      : undefined;
+  if (
+    !legacy ||
+    typeof legacy !== 'object' ||
+    typeof (legacy as Record<string, unknown>).id !== 'string'
+  )
+    return undefined;
+  const { id, how } = legacy as Record<string, unknown>;
+  return {
+    id: id as string,
+    how: how === 'moved' ? 'moved' : how === 'adopted' ? 'adopted' : 'started',
+    text:
+      how === 'started'
+        ? ''
+        : result.content
+            .replace(LEGACY_EXIT, '')
+            .trimEnd()
+            .replace(LEGACY_JOB_NOTE, '')
+            .trim(),
+  };
+}
+
+// What the command printed before it went on (six lines, folded), then one faint line that
+// names the job: `in background · j3`, `moved to background · j4`, `left running · j5`.
+function jobResultRows(
+  job: BackgroundJob,
+  bg: string,
+  options: { width: number; expanded: boolean },
+): string[] {
+  const p = palette();
+  const rows: string[] = [];
+  const text = plainJobOutput(terminalText(job.text)).trimEnd();
+  if (text && text !== '<no output>') {
+    const lines = text.split('\n');
+    const shown = options.expanded ? lines : lines.slice(0, PREVIEW_LINES);
+    shown.forEach((line, index) => {
+      const [parts] = wrapChars(
+        line,
+        Math.max(20, options.width - 6),
+        options.expanded ? undefined : COLLAPSED_WRAP_ROWS,
+      );
+      parts.forEach((part, at) =>
+        rows.push(
+          tintedRow(
+            [
+              ['', index === 0 && at === 0 ? '   ⎿ ' : '     '],
+              [p.faint, part],
+            ],
+            bg,
+            options.width,
+          ),
+        ),
+      );
+    });
+    const hidden = lines.length - shown.length;
+    if (hidden)
+      rows.push(
+        tintedRow(
+          [
+            ['', '     '],
+            [p.faint, `… +${hidden} line${hidden === 1 ? '' : 's'} · ctrl+o`],
+          ],
+          bg,
+          options.width,
+        ),
+      );
+  }
+  const word =
+    job.how === 'moved'
+      ? 'moved to background'
+      : job.how === 'adopted'
+        ? 'left running'
+        : 'in background';
+  rows.push(
+    tintedRow(
+      [
+        ['', rows.length ? '     ' : '   ⎿ '],
+        [p.faint, `${word} · ${job.id}`],
+      ],
+      bg,
+      options.width,
+    ),
+  );
+  return rows;
+}
+
+// An extension's own lines for a result, folded like a built-in result: six of them and
+// `… +N lines · ctrl+o`, all of them once ctrl+o shows everything. No lines: undefined, and
+// the built-in rows are drawn instead (a renderer that failed returns none).
+export function extensionRows(
+  lines: string[] | undefined,
+  call: ToolCall,
+  options: { width: number; expanded: boolean },
+): string[] | undefined {
+  if (!lines?.length) return undefined;
+  const p = palette();
+  const bg = toolTint(call.name);
+  const shown = options.expanded ? lines : lines.slice(0, PREVIEW_LINES);
+  const rows = shown.map((line) => tintedRow([['', line]], bg, options.width));
+  const hidden = lines.length - shown.length;
+  if (hidden)
+    rows.push(
+      tintedRow(
+        [
+          ['', '     '],
+          [p.faint, `… +${hidden} line${hidden === 1 ? '' : 's'} · ctrl+o`],
+        ],
+        bg,
+        options.width,
+      ),
+    );
+  return rows;
+}
+
+// A finished job's notice, where it wakes the model: ` ◆ j3 done · npm test · 12s`, one row
+// per job. The glyph is green when it is done, red when it failed and dim when it was
+// stopped; the words are dim.
+export function noticeRows(display: string, width: number): string[] {
+  const p = palette();
+  return plainJobOutput(display)
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => {
+      const words = line.replace(/^◆\s*/, '');
+      const status = words.match(/^\S+ (\S+)/)?.[1];
+      const colour =
+        status === 'done' ? p.green : status === 'failed' ? p.red : p.dim;
+      return ` ${colour}◆${p.reset} ${p.dim}${truncate(words, Math.max(1, width - 3))}${p.reset}`;
+    });
 }
 
 // A leading `**Title**` paragraph of the reasoning is its title; the rest is the body.

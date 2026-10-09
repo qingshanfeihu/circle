@@ -1,6 +1,7 @@
 import { palette, statusLight, sgrJoin, type Palette } from '../theme.js';
 import { stringWidth, truncate } from '../string_width.js';
 import { terminalText } from './markdown_renderer.js';
+import { loopFrame } from './loop_frame.js';
 /** How a row of a card is coloured; resolved against the palette at every paint. */
 export type CardTone =
   'em' | 'text' | 'dim' | 'warn' | 'err' | 'added' | 'removed' | 'faint';
@@ -28,6 +29,9 @@ export interface DialogState {
   /** Rows under the menu: warnings, a typed answer. */
   notes?: CardLine[];
   tint?: CardTint;
+  /** The title's lamp: `wait` (your turn, the default) or `running` (Circle is busy: setup
+   * looking for models). A running card's frame is faint instead of yellow. */
+  lamp?: 'wait' | 'running';
 }
 /** What a card does with a key: `undefined` took it (or swallowed it), `pass` leaves it to the session. */
 export type CardResult<T> = { answer: T } | 'pass' | undefined;
@@ -133,7 +137,7 @@ export function cardRows(
   const p = palette();
   width = Math.max(10, width); // the frame's narrowest inside
   const tint = dialog.tint ? p[dialog.tint] : '';
-  const lamp = statusLight('wait');
+  const lamp = statusLight(dialog.lamp ?? 'wait');
   const lampCode = lamp.slice(0, lamp.indexOf('●'));
   const head = compose(
     width,
@@ -253,20 +257,27 @@ export function cardRows(
   }
   return [head, ...body, ...menu, ...notes, ...input];
 }
-/** The card in its frame: static and yellow, because it is your turn. */
+/**
+ * The card in its frame: still and yellow, because it is your turn; faint while the card
+ * only says what Circle is doing (its lamp is `running`). The mode word keeps its corner.
+ */
 export function dialogRows(
   dialog: DialogState,
   width: number,
   height: number,
+  mode: { word?: string; sgr?: string } = {},
 ): string[] {
   const p = palette();
   width = Math.max(12, width);
   const inner = cardRows(dialog, width - 2, Math.max(3, height - 2));
+  const frame = loopFrame(width, {
+    border: dialog.lamp === 'running' ? p.faint : p.yellow,
+    mode: mode.word,
+    modeSgr: mode.sgr,
+  });
   return [
-    p.yellow + '╭' + '─'.repeat(width - 2) + '╮' + p.reset,
-    ...inner.map(
-      (row) => p.yellow + '│' + p.reset + row + p.yellow + '│' + p.reset,
-    ),
-    p.yellow + '╰' + '─'.repeat(width - 2) + '╯' + p.reset,
+    frame.top,
+    ...inner.map((row) => frame.left + row + frame.right),
+    frame.bottom,
   ];
 }

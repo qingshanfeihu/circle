@@ -27,6 +27,8 @@ export interface WelcomeInput {
   // The session has loaded the folder's things.
   connected: boolean;
   trusted: boolean;
+  // Setup is asking (first run or `--init`): no model until one is saved, lamps unlit.
+  settingUp?: boolean;
 }
 
 export class WelcomeState {
@@ -73,11 +75,12 @@ export class WelcomeState {
   info(input: WelcomeInput, now = Date.now()): WelcomeInfo {
     const { settings, runtime } = input;
     this.refresh(input, now);
-    const state: LampState = !input.trusted
-      ? 'none'
-      : input.connected
-        ? 'ok'
-        : 'running';
+    const state: LampState =
+      !input.trusted || input.settingUp
+        ? 'none'
+        : input.connected
+          ? 'ok'
+          : 'running';
     const failed = input.connected
       ? (runtime?.extensions.extensions ?? [])
           .filter((ext) => ext.source === 'project' && ext.error)
@@ -93,7 +96,7 @@ export class WelcomeState {
       };
     });
     // Filled in as setup is answered: the model once the connection is saved.
-    const ready = Boolean(runtime) || isReady(settings);
+    const ready = !input.settingUp && (Boolean(runtime) || isReady(settings));
     let model = ready
       ? (runtime?.harness.model.model ?? settings.auth.model)
       : '';

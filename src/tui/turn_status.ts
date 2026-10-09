@@ -14,6 +14,7 @@ export class TurnStatus {
   readonly usage: Record<string, TurnUsage> = {};
   readonly thinking: Record<string, number> = {};
   private live?: number;
+  private agents = new Map<string, { from?: number; live?: number }>();
   private thinkingFrom?: number;
   private turn?: {
     started: number;
@@ -50,7 +51,10 @@ export class TurnStatus {
         turn.output += output;
       }
     }
-    if (subagent) return;
+    if (subagent) {
+      this.agentThought(String(event.tags.subagent), event, now);
+      return;
+    }
     if (event.kind === 'run_start') {
       this.verb = pickBusyVerb(this.random);
       this.tokens = 0;
@@ -82,6 +86,24 @@ export class TurnStatus {
           output: turn.output,
         };
       this.turn = undefined;
+    }
+  }
+
+  // A subagent's rounds think too: how long, by the id of the answer, for its page.
+  private agentThought(agent: string, event: CircleEvent, now: number): void {
+    if (event.kind === 'llm_start') this.agents.delete(agent);
+    else if (event.kind === 'llm_token') {
+      const round = this.agents.get(agent) ?? {};
+      if (event.payload.thinking) round.from ??= now;
+      else if (round.from !== undefined && round.live === undefined)
+        round.live = (now - round.from) / 1000;
+      this.agents.set(agent, round);
+    } else if (event.kind === 'llm_end') {
+      const round = this.agents.get(agent);
+      const message = event.payload.message as Message | undefined;
+      if (message?.id && round?.from !== undefined)
+        this.thinking[message.id] = round.live ?? (now - round.from) / 1000;
+      this.agents.delete(agent);
     }
   }
 
