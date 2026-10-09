@@ -9,9 +9,10 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 | Variable | Effect | Default |
 |---|---|---|
 | `CIRCLE_HOME` | Where Circle keeps settings, credentials, history and sessions. | `~/.circle` |
+| `CIRCLE_HISTORY_PATH` | The file your prompt history is kept in. | `history` in the data folder |
 | `CIRCLE_NO_TUI` | `1`, `true` or `yes` forces [line mode](cli.md#full-screen-and-line-mode). | unset |
-| `CIRCLE_NO_UPDATE_CHECK` | `1`, `true` or `yes` turns off the daily [update reminder](cli.md#the-reminder). | unset |
-| `VISUAL`, `EDITOR` | Used by `/editor`. Falls back to `nvim`, `vim`, `nano`, then `notepad` on Windows. | unset |
+| `CIRCLE_NO_UPDATE_CHECK` | `1`, `true`, `yes` or `on` turns off the daily [update reminder](cli.md#the-reminder). | unset |
+| `VISUAL`, `EDITOR` | Used by `ctrl+g` and `/editor`, in that order. May include arguments, such as `code --wait`. | `vi`, or `notepad` on Windows |
 
 ## Background jobs
 
@@ -24,24 +25,24 @@ The endpoint key is **not** read from the environment. Circle reads it only from
 
 | Variable | Effect | Default |
 |---|---|---|
-| `CIRCLE_REASONING_EFFORT` | Thinking depth: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. On the Anthropic protocol Circle asks for `xhigh` unless you set this. On the OpenAI protocol nothing is sent unless you set it. | see left |
+| `CIRCLE_REASONING_EFFORT` | Thinking depth: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Wins over `default_thinking`; `--thinking` sets it for one run. | Anthropic protocol: `xhigh`; OpenAI protocol: nothing sent |
 | `CIRCLE_LLM_TIMEOUT` | Request timeout in seconds. Minimum 5. | `45` |
-| `CIRCLE_LLM_STALL_TIMEOUT` | Cut a stream that sends only keep-alive chunks for this many seconds. | `180` |
+| `CIRCLE_LLM_STALL_TIMEOUT` | Cut a stream that has sent nothing but keep-alives for this many seconds. `0` turns it off. | `180` |
 | `CIRCLE_LLM_REPEAT_GUARD` | `0`, `false`, `off` or `no` turns off the repetition guard. | on |
 | `CIRCLE_LLM_VERIFY_FINISH` | Same values. Turns off the check for a response that ends without a finish reason. | on |
-| `CIRCLE_MODEL_CTX` | The context window in tokens for every model: the footer's `ctx` and where the automatic compaction starts. `models` in `settings.json` sets one model's and wins. | from models.dev |
+| `CIRCLE_MODEL_CTX` | The context window in tokens for every model (`1000000` or `1_000_000`): the footer's `ctx` and where the automatic compaction starts. `models` in `settings.json` sets one model's and wins. | from models.dev |
 | `CIRCLE_NO_MODELS_REFRESH` | Set to anything to stop the daily background fetch of models.dev. The snapshot shipped with Circle, or the last copy fetched, is used. See [Models](models.md#cost-and-context-in-the-footer). | fetch once a day |
-| `SSL_CERT_FILE` | A PEM file of certificate authorities for Circle's HTTPS requests: the model, model discovery, `webfetch`, `websearch` and `circle update`. Set it when your network inspects HTTPS. | model requests: the certificates bundled with Circle; the others: the system's, or the bundled ones where the system's cannot be found |
+| `NODE_EXTRA_CA_CERTS` | A PEM file of extra certificate authorities, read by the Node.js Circle runs on, for all of Circle's HTTPS requests: the model, model lists, models.dev, `webfetch`, `websearch` and `circle update`. Set it when your network inspects HTTPS. Circle does not read `SSL_CERT_FILE` or `HTTPS_PROXY`. | the certificates that come with Node.js |
 
 ## Agent guards
 
 | Variable | Effect | Default |
 |---|---|---|
 | `CIRCLE_LOOP_GUARD` | `0`, `false`, `no` or `off` turns off the loop guard. | on |
-| `CIRCLE_LOOP_DUP_THRESHOLD` | Same tool call repeated this many times triggers a reminder. | `3` |
+| `CIRCLE_LOOP_DUP_THRESHOLD` | The same tool call this many times among the last few triggers a reminder. | `3` |
 | `CIRCLE_LOOP_EMPTY_THRESHOLD` | This many rounds of tool calls in a row that all come back empty trigger a reminder. Calls made together in one reply count as one round. | `4` |
-| `CIRCLE_LOOP_SOFT_BUDGET` | Tool calls in one turn before a soft note. | `25` |
-| `CIRCLE_LOOP_WINDOW` | Minimum model replies between reminders. | `8` |
+| `CIRCLE_LOOP_SOFT_BUDGET` | Tool calls in one turn before a soft note that says to carry on. | `25` |
+| `CIRCLE_LOOP_WINDOW` | Minimum model replies between reminders, and how many recent calls are compared. | `8` |
 | `CIRCLE_PRUNE_TOOL_OUTPUTS` | `0`, `false`, `no` or `off` turns off pruning of old tool output. | on |
 | `CIRCLE_PRUNE_PROTECT_TOKENS` | How much recent output stays untouched by pruning. | `40000` |
 
@@ -52,32 +53,25 @@ While background jobs the model started are running, two calls that only wait fo
 | Variable | Effect | Default |
 |---|---|---|
 | `CIRCLE_TUI_SHIMMER` | `0` turns off the rainbow animation. | on |
-| `CIRCLE_TUI_SHIMMER_MS` | Animation frame time in milliseconds, 33 to 500. | `80` |
 | `COLORFGBG` | Light or dark fallback when the terminal does not answer the colour query. | unset |
-| `TMUX`, `STY` | Circle wraps its escape sequences for tmux and screen. | set by them |
-| `SSH_CONNECTION` | Selection copy uses OSC 52 instead of a local clipboard tool. | set by SSH |
+| `TMUX` | Selection copy also goes into tmux's buffer, and through tmux to the terminal. | set by tmux |
+| `SSH_CONNECTION` | Selection copy uses OSC 52 only, not a local clipboard tool. | set by SSH |
 
-## Variables Circle sets
+## What commands see
 
-At start, and after `/login`, `/models` and `/reload`, Circle exports these from your settings so the model SDKs can find them:
-
-- `OPENAI_BASE_URL` and `OPENAI_API_KEY` for the OpenAI protocol, or `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` for the Anthropic protocol
-- `CIRCLE_MODEL`
-
-`/logout` removes all five. Commands the model runs in the shell get a filtered copy of the environment: any variable whose name contains a word such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` is removed, so the API key does not reach them. `OPENAI_BASE_URL` and `CIRCLE_MODEL` do. When Circle was started from a shell with its own virtual environment active, `VIRTUAL_ENV` is removed too and that environment's folder is taken out of `PATH`, so the model's `python3` and `pip` are not Circle's; a virtual environment inside the workspace stays.
+Commands the model runs, your own `!` commands and MCP servers Circle starts get a filtered copy of the environment: any variable whose name contains a word such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` is removed. Circle never puts the API key it uses in the environment, so it does not reach them either. See [The shell environment](security.md#the-shell-environment).
 
 ## Installer and updates
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `CIRCLE_REPO` | `install.sh`, `install.ps1`, `circle update` | The GitHub repository to take releases from. Default `qingshanfeihu/circle`. |
-| `CIRCLE_VERSION` | `install.sh`, `install.ps1` | Install this version instead of the newest, for example `0.2.0`. |
+| `CIRCLE_REPO` | `install.sh`, `install.ps1`, the update reminder | The GitHub repository to take releases from. Default `qingshanfeihu/circle`. `circle update` uses the one recorded at install time. |
+| `CIRCLE_VERSION` | `install.sh`, `install.ps1` | Install this version instead of the newest, for example `1.0.0`. |
 | `CIRCLE_PREFIX` | `install.sh`, `install.ps1` | Where versions are kept. Default `~/.local/share/circle`, or `%LOCALAPPDATA%\circle` on Windows. |
-| `CIRCLE_BIN_DIR` | `install.sh` | Where the `circle` link goes. Default `~/.local/bin`. |
-| `CIRCLE_NO_PATH` | `install.ps1` | `1` leaves your `PATH` alone. |
-| `CIRCLE_FROM_SOURCE` | `install.sh` | `1` runs `pip install -e` on the checkout instead of downloading. |
+| `CIRCLE_BIN_DIR` | `install.sh`, `install.ps1` | Where the `circle` launcher goes. Default `~/.local/bin`, or `bin` under the prefix on Windows. |
+| `CIRCLE_NO_PATH` | `install.sh`, `install.ps1` | `1` leaves your `PATH` and shell startup file alone. |
+| `CIRCLE_ASSET_DIR` | `install.sh`, `install.ps1` | Take the archive and its `.sha256` from this folder instead of GitHub. For testing. |
 | `CURL_CA_BUNDLE` | `install.sh` (through curl) | A PEM file of certificate authorities, for a network that inspects HTTPS. |
-| `SSL_CERT_FILE` | `circle update`, and Circle itself | The same, for Circle's own requests. See [Model requests](#model-requests). |
-| `HTTPS_PROXY` | all three | A proxy for the download. |
+| `HTTPS_PROXY` | `install.sh` (through curl), `install.ps1` | A proxy for the download. |
 
-See [Quickstart](quickstart.md#1-install) and [Updating](cli.md#updating).
+The launcher sets `CIRCLE_INSTALL_PREFIX` for Circle, which is how `circle update` finds its installation. See [Installation and updates](installation.md).
