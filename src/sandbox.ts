@@ -135,7 +135,7 @@ export class Sandbox {
       const kill = (force: boolean): void => {
         if (!child.pid) return;
         if (process.platform === 'win32')
-          windowsKill = new Promise<void>((resolveKilled) =>
+          windowsKill ??= new Promise<void>((resolveKilled) =>
             execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], () =>
               resolveKilled(),
             ),

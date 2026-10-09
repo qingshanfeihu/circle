@@ -376,22 +376,29 @@ test('steering is consumed in the next request before follow-up starts', async (
   assert.equal(model.requests[1]!.messages.at(-1)!.content, 'steering');
   assert.equal(model.requests[2]!.messages.at(-1)!.content, 'follow-up');
 });
-test(
-  'cancel stops the actual shell process tree before a delayed child writes',
-  { skip: process.platform === 'win32' },
-  async (t) => {
-    const root = scratch(t);
-    const sandbox = new Sandbox(root);
-    const controller = new AbortController();
-    const script = `const {spawn}=require('node:child_process');require('node:fs').writeFileSync('started','yes');spawn(process.execPath,['-e',"setTimeout(()=>require('node:fs').writeFileSync('late','bad'),900)"],{stdio:'ignore'});setTimeout(()=>{},5000)`;
-    const command = `${JSON.stringify(process.execPath)} -e '${script.replaceAll("'", "'\\''")}'`;
-    const running = sandbox.execute(command, controller.signal);
-    for (let i = 0; i < 100 && !existsSync(join(root, 'started')); i++)
-      await delay(10);
-    assert.ok(existsSync(join(root, 'started')));
+test('cancel stops the actual shell process tree before a delayed child writes', async (t) => {
+  const root = scratch(t);
+  const sandbox = new Sandbox(root);
+  const controller = new AbortController();
+  writeFileSync(
+    join(root, 'grandchild.cjs'),
+    "const fs = require('node:fs'); fs.writeFileSync('started', 'yes'); setTimeout(() => fs.writeFileSync('late', 'bad'), 1500);",
+  );
+  writeFileSync(
+    join(root, 'parent.cjs'),
+    "require('node:child_process').spawn(process.execPath, ['grandchild.cjs'], {stdio: 'ignore'}); setTimeout(() => {}, 10000);",
+  );
+  const command = `"${process.execPath}" "${join(root, 'parent.cjs')}"`;
+  const running = sandbox.execute(command, controller.signal);
+  cleanup(t, async () => {
     controller.abort();
     await running;
-    await delay(1100);
-    assert.equal(existsSync(join(root, 'late')), false);
-  },
-);
+  });
+  for (let i = 0; i < 250 && !existsSync(join(root, 'started')); i++)
+    await delay(20);
+  assert.ok(existsSync(join(root, 'started')));
+  controller.abort();
+  await running;
+  await delay(1700);
+  assert.equal(existsSync(join(root, 'late')), false);
+});
