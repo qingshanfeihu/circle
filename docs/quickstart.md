@@ -43,7 +43,7 @@ circle
 
 The first time, Circle walks you through two steps. Both are asked in the input box at the bottom of the session screen, under the welcome block, so the screen you answer them on is the one you then work in.
 
-**Connect a model.** Paste the API base URL and the key (it shows as dots). Circle asks the endpoint for its models, then asks for the model id, showing a few of the listed ones. If it cannot list the endpoint's models, it asks whether the API is OpenAI-style or Anthropic-style, and you type the model id your provider documents. See [Choose a model](models.md).
+**Connect a model.** Paste the API base URL and the key (it shows as dots). Circle asks the endpoint for its models and lists them: type to search, and press `enter` on the one you want. If it cannot list the endpoint's models, it asks whether the API is OpenAI-style or Anthropic-style, and you type the model id your provider documents. See [Choose a model](models.md).
 
 **Trust the folder.** Circle asks before it works in a folder for the first time, and says what the folder can supply: instructions, skills, commands and extensions, and that extensions run code. Trusting records the folder in your settings; nothing is written into the folder. Choose **trust this folder** (or press `y`).
 

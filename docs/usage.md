@@ -60,7 +60,7 @@ When Circle plans with `write_todos`, a box above the input shows the steps: gre
 
 ## Subagents
 
-While `task` subagents run, a strip below the footer lists them. Press `↓` in an empty prompt to select one, `↑` `↓` to move, `enter` to open its record, `←` `→` to switch between subagents, `esc` to go back. You can also click a row.
+While `task` subagents run, a strip below the footer lists them. Press `↓` in an empty prompt to select one, `↑` `↓` to move, `enter` to open its record, `←` `→` to switch between subagents, `esc` to go back. You can also click a subagent's row in the strip.
 
 ## See more, or less
 
@@ -78,7 +78,7 @@ While `task` subagents run, a strip below the footer lists them. Press `↓` in 
 - **Select with the mouse.** Dragging selects and copies at once. Double-click selects a word, triple-click a line. Dragging past the top or bottom edge scrolls.
 - `/copy` (or `ctrl+x`) copies the last answer. It uses `pbcopy`, `wl-copy` or `xclip` (`clip` on Windows). If none works it writes the text to `exports/last-copy.txt` in the data folder.
 - `/export` writes the whole conversation as Markdown. `/share` writes a copy under `shares/` and copies its path. Nothing is uploaded.
-- `/editor` (or `ctrl+g`) opens the draft in `$VISUAL` or `$EDITOR`, else `vi` (`notepad` on Windows). The variable may carry arguments, such as `code --wait`. What you save comes back into the input box. It is not sent until you press `enter`.
+- `/editor` (or `ctrl+g`) opens the draft in `$VISUAL` or `$EDITOR`, else the first of `nvim`, `vim` and `nano` that is installed (then `notepad` on Windows). The variable may carry arguments, such as `code --wait`. What you save comes back into the input box. It is not sent until you press `enter`.
 
 ## Search your history
 

@@ -7,10 +7,18 @@ export interface ProbeResult {
   status: 'discovered' | 'empty' | 'failed';
   detail: string;
 }
+const BAD_URL =
+  'use an http(s) API base URL without credentials, query or fragment';
 export function normalizeBaseUrl(baseUrl: string, protocol: string): string {
   if (!['openai', 'anthropic'].includes(protocol))
     throw new Error('protocol must be openai or anthropic');
-  const url = new URL(baseUrl.trim());
+  let url: URL;
+  try {
+    url = new URL(baseUrl.trim());
+  } catch {
+    // Not a URL at all: the same words as a URL of the wrong kind, as 0.5.0 said it
+    throw new Error(BAD_URL);
+  }
   if (
     !['http:', 'https:'].includes(url.protocol) ||
     !url.hostname ||
@@ -20,13 +28,23 @@ export function normalizeBaseUrl(baseUrl: string, protocol: string): string {
     url.search ||
     url.hash
   )
-    throw new Error(
-      'use an http(s) API base URL without credentials, query or fragment',
-    );
+    throw new Error(BAD_URL);
   url.pathname = url.pathname.replace(/\/+$/, '');
   if (protocol === 'anthropic')
     url.pathname = url.pathname.replace(/\/v1$/, '');
   return url.toString().replace(/\/+$/, '');
+}
+// What setup says the endpoint answered (0.5.0's ProbeResult.summary).
+export function probeSummary(found: ProbeResult): string {
+  if (found.status === 'failed' || found.inferred)
+    return (
+      'model discovery failed' +
+      (found.inferred ? '; protocol is unverified' : '') +
+      (found.detail ? ` (${found.detail})` : '')
+    );
+  if (!found.models.length)
+    return `endpoint returned an empty model list (${found.protocol})`;
+  return `discovered ${found.models.length} models (${found.protocol})`;
 }
 export function inferProtocolHint(base: string): string | undefined {
   if (/anthropic/i.test(base)) return 'anthropic';

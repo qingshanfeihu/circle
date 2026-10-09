@@ -12,7 +12,11 @@ import { AgentRuntime } from '../src/runtime.js';
 import { SessionApp } from '../src/tui/session_app.js';
 import { resumeHint, shellWord } from '../src/tui/exit_lines.js';
 import { GatewayModel } from '../src/model.js';
-import { defaultSettings, loadSettings } from '../src/settings.js';
+import {
+  defaultSettings,
+  loadSettings,
+  saveCredentials,
+} from '../src/settings.js';
 import { defaultRunOptions } from '../src/run_options.js';
 import { ScriptedModel } from '../src/testing.js';
 import { dialogRows } from '../src/ink/components/dialog_card.js';
@@ -532,15 +536,18 @@ test('setup in the full-screen interface saves the URL that answered, and reques
     name: string,
     char = Array.from(name).length === 1 ? name : '',
   ) => ui.handle({ type: 'key', key: name, char });
-  const fill = async (body: RegExp, text: string): Promise<void> => {
-    await until(() => body.test(app.state.dialog?.body ?? ''));
-    app.state.dialog!.input = text;
+  const fill = async (title: string, text: string): Promise<void> => {
+    await until(() => app.state.dialog?.title === title);
+    for (const char of text) key(char);
     key('enter');
   };
   const done = app.initialize();
-  await fill(/API base URL/, base);
-  await fill(/API key/, 'test-key');
-  await fill(/^Model ID \(m-one\)$/, 'm-one');
+  await fill("What is the API's base URL?", base);
+  await fill('What is the API key?', 'test-key');
+  // The model step lists what the endpoint gave; enter takes the marked one
+  await until(() => app.state.dialog?.title === 'Which model?');
+  assert.deepEqual(app.state.dialog!.options, ['m-one']);
+  key('enter');
   await until(() => app.state.dialog?.title === 'trust');
   key('y');
   assert.equal(await done, true);
@@ -558,4 +565,61 @@ test('setup in the full-screen interface saves the URL that answered, and reques
   });
   assert.equal(reply.message.content, 'pong');
   assert.equal(seen.at(-1), 'POST /v1/chat/completions');
+});
+
+test('a key the endpoint turns down (401, 403) ends the red line with where to change it; other failures do not', async (t) => {
+  let status = 401;
+  const server = createServer(
+    async (request: IncomingMessage, response: ServerResponse) => {
+      for await (const _chunk of request);
+      response.writeHead(status, { 'Content-Type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          error: {
+            message: status === 400 ? 'bad request' : 'Incorrect API key',
+            type: 'invalid_request_error',
+          },
+        }),
+      );
+    },
+  );
+  await new Promise<void>((ready) =>
+    server.listen(0, '127.0.0.1', () => ready()),
+  );
+  cleanup(t, async () => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const home = scratch(t);
+  const workspace = scratch(t);
+  const settings = defaultSettings();
+  settings.initialized = true;
+  settings.auth.base_url = `http://127.0.0.1:${address.port}/v1`;
+  settings.auth.model = 'm-one';
+  saveCredentials({ api_key: 'wrong-key' }, home);
+  const app = new SessionApp(workspace, home, settings);
+  const ui = app as any;
+  ui.screen.render = () => {};
+  // The runtime talks to the endpoint as a session does: no scripted model
+  await app.attach({ workspace, home, settings, headless: true });
+  cleanup(t, async () => {
+    ui.off?.();
+    ui.offSignals?.();
+    if (ui.flashTimer) clearTimeout(ui.flashTimer);
+    ui.input.close();
+    await app.runtime?.close();
+  });
+  for (const [code, hint] of [
+    [401, true],
+    [403, true],
+    [400, false],
+  ] as const) {
+    status = code;
+    await app.submit(`try ${code}`);
+    const line = app.state.notices.at(-1)!;
+    assert.match(line, /^✖ /);
+    assert.equal(line.endsWith(' · /login to change the key'), hint, line);
+  }
 });

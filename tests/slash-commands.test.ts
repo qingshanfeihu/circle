@@ -7,8 +7,11 @@ import {
   readdirSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { stripAnsi } from '../src/ink/string_width.js';
 import { SessionApp } from '../src/tui/session_app.js';
 import { parseSlash, closeMatch } from '../src/tui/slash_commands.js';
 import { ScriptedModel } from '../src/testing.js';
@@ -339,7 +342,7 @@ test('/init sends the initialize template with the focus; a custom command repla
   );
 });
 
-test('/jobs lists running jobs first; ctrl+d stops one after asking or removes one that ended', async (t) => {
+test('/jobs lists running jobs first; ctrl+d stops one after asking in the list or removes one that ended', async (t) => {
   const { app, runtime, key, workspace } = await session(t);
   const script = (name: string, code: string): string => {
     writeFileSync(join(workspace, name), code);
@@ -362,8 +365,24 @@ test('/jobs lists running jobs first; ctrl+d stops one after asking or removes o
   );
   assert.match(picker.items[0]!.meta!, /^running · \d+s · other session$/);
   assert.match(picker.items[1]!.meta!, /^done · \d+s$/);
+  // The question is asked in the list, as 0.5.0 did; esc keeps the job running.
   await key('ctrl+d');
-  assert.equal(app.state.dialog?.title, `stop ${running.id}`);
+  assert.equal(app.state.dialog, undefined);
+  assert.equal(app.state.picker, picker);
+  assert.ok(picker.asking);
+  assert.ok(
+    picker
+      .rows(400)
+      .some((row) =>
+        row.includes(
+          `Stop ${running.id} ${running.title.slice(0, 40)}?  enter confirms · esc cancels`,
+        ),
+      ),
+  );
+  await key('escape');
+  assert.ok(!picker.asking);
+  assert.equal(runtime.jobs.get(running.id)?.status, 'running');
+  await key('ctrl+d');
   await key('enter');
   await until(() => runtime.jobs.get(running.id)?.status === 'stopped');
   assert.equal((app as any).ended, false);
@@ -676,8 +695,9 @@ test('/tree, /fork, /clone, /new, /continue and /resume move between branches an
     .matches()
     .findIndex((item) => item.label === '⏺ answer two');
   await key('L');
-  assert.equal(app.state.dialog?.title, 'label');
-  app.state.dialog!.input = 'start';
+  assert.equal(app.state.dialog, undefined);
+  assert.ok(app.state.picker!.asking);
+  for (const char of 'start') await key(char, char);
   await key('enter');
   assert.equal(
     app.state.picker!.items.find((item) => item.label.includes('['))!.label,
@@ -748,13 +768,16 @@ test('/tree, /fork, /clone, /new, /continue and /resume move between branches an
   assert.equal(app.state.flash, 'The session you are in cannot be deleted');
   focus(cloned);
   await key('ctrl+r');
-  assert.equal(app.state.dialog?.title, 'rename');
-  app.state.dialog!.input = '  the   clone ';
+  assert.equal(app.state.dialog, undefined);
+  assert.ok(app.state.picker!.asking);
+  await key('ctrl+u');
+  for (const char of '  the   clone ') await key(char, char);
   await key('enter');
   assert.equal(runtime.store.get(cloned)!.title, 'the clone');
   focus(cloned);
   await key('ctrl+d');
-  assert.equal(app.state.dialog?.title, 'delete');
+  assert.equal(app.state.dialog, undefined);
+  assert.ok(app.state.picker!.asking);
   await key('enter');
   assert.equal(runtime.store.get(cloned), undefined);
   assert.ok(app.state.picker!.items.every((item) => item.key !== cloned));
@@ -795,12 +818,63 @@ test('/compact, /mcp, /extensions, /trust and /reload report as 0.5.0 did', asyn
   assert.equal(runtime.harness.model.model, 'saved-model');
 });
 
-test('/login lists the ways in; OAuth is listed but cannot be chosen', async (t) => {
+test("/login asks for the URL and the key on its list, lists the endpoint's models, and signs in only once a model is chosen", async (t) => {
+  // An endpoint that lists its models only under /v1, as setup finds it
+  const seen: string[] = [];
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request);
+    seen.push(
+      `${request.method} ${request.url} ${request.headers.authorization ?? ''}`,
+    );
+    if (request.method === 'GET' && request.url === '/v1/models') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(
+        JSON.stringify({ data: [{ id: 'alpha-one' }, { id: 'beta-two' }] }),
+      );
+    } else if (
+      request.method === 'POST' &&
+      request.url === '/v1/chat/completions'
+    ) {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.end(
+        'data: ' +
+          JSON.stringify({
+            choices: [
+              { index: 0, delta: { content: 'pong' }, finish_reason: 'stop' },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1 },
+          }) +
+          '\n\ndata: [DONE]\n\n',
+      );
+    } else {
+      response.writeHead(404, { 'Content-Type': 'application/json' });
+      response.end('{"error":"not here"}');
+    }
+  });
+  await new Promise<void>((ready) =>
+    server.listen(0, '127.0.0.1', () => ready()),
+  );
+  cleanup(t, async () => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  const port = (server.address() as AddressInfo).port;
+  const base = `http://127.0.0.1:${port}`;
+  const home = scratch(t);
   const settings = defaultSettings();
   settings.initialized = true;
   settings.auth.base_url = 'https://gateway.example/v1/';
   settings.auth.model = 'saved-model';
-  const { app, key, home } = await session(t, [], { settings });
+  saveSettings(settings, home);
+  saveCredentials({ api_key: 'old-key' }, home);
+  const before = readFileSync(join(home, 'settings.json'), 'utf8');
+  const { app, ui, runtime, key } = await session(t, [], {
+    home,
+    settings: structuredClone(settings),
+  });
+  const typed = async (text: string): Promise<void> => {
+    for (const char of text) await key(char, char);
+  };
   await app.submit('/login');
   const picker = app.state.picker!;
   assert.equal(picker.title, 'Sign in');
@@ -815,17 +889,86 @@ test('/login lists the ways in; OAuth is listed but cannot be chosen', async (t)
       ['OAuth sign-in', 'not available yet'],
     ],
   );
+  // OAuth is listed but cannot be chosen
   picker.focus = 1;
   await key('enter');
   assert.equal(
     app.state.flash,
     'OAuth sign-in is not available yet · use API URL + KEY',
   );
-  assert.equal(app.state.picker?.title, 'Sign in');
+  assert.equal(app.state.picker, picker);
+  assert.ok(!picker.asking);
+  // The URL on the list's own line, the saved one filled in; esc goes back to the ways in
+  const line = (): string => stripAnsi(app.state.picker!.rows(120)[1]!).trim();
+  picker.focus = 0;
   await key('enter');
-  assert.equal(app.state.dialog?.body, 'API base URL');
-  assert.equal(app.state.dialog?.input, 'https://gateway.example/v1/');
-  await key('escape');
   assert.equal(app.state.dialog, undefined);
-  assert.ok(!existsSync(join(home, 'settings.json')));
+  assert.equal(
+    line(),
+    'base url: https://gateway.example/v1/▏  enter continues · esc goes back',
+  );
+  await key('escape');
+  assert.equal(app.state.picker, picker);
+  assert.ok(!picker.asking);
+  await key('enter');
+  await key('ctrl+u');
+  await typed('nonsense');
+  await key('enter');
+  // Not a URL: the title says why and the line asks again with what was typed
+  assert.equal(
+    picker.title,
+    'Sign in · use an http(s) API base URL without credentials, query or fragment',
+  );
+  assert.equal(line(), 'base url: nonsense▏  enter continues · esc goes back');
+  await key('ctrl+u');
+  ui.handle({ type: 'paste', text: base });
+  await key('enter');
+  // The key as dots; an empty enter would keep the saved one
+  assert.equal(
+    line(),
+    'api key (enter keeps the saved one): ▏  enter continues · esc goes back',
+  );
+  ui.handle({ type: 'paste', text: 'new-key' });
+  assert.equal(
+    line(),
+    'api key (enter keeps the saved one): •••••••▏  enter continues · esc goes back',
+  );
+  await key('enter');
+  // The endpoint's models, searchable; enter on a search nothing matches uses what was typed
+  await until(() => app.state.picker?.items.length === 2);
+  const models = app.state.picker!;
+  assert.equal(models.options.hint, 'discovered 2 models (openai)');
+  assert.deepEqual(
+    models.items.map((item) => item.label),
+    ['alpha-one', 'beta-two'],
+  );
+  assert.equal(readFileSync(join(home, 'settings.json'), 'utf8'), before);
+  await typed('gamma');
+  assert.equal(models.matches().length, 0);
+  assert.ok(
+    models
+      .rows(120)
+      .some((row) =>
+        stripAnsi(row).includes('No model matches · enter uses what you typed'),
+      ),
+  );
+  await key('enter');
+  await until(() => app.state.notices.at(-1)?.startsWith('Signed in') === true);
+  assert.equal(app.state.picker, undefined);
+  assert.equal(
+    app.state.notices.at(-1),
+    `Signed in to 127.0.0.1:${port}/v1 · model gamma`,
+  );
+  // Saved: the URL that answered, the model and the new key
+  const saved = loadSettings(home);
+  assert.equal(saved.auth.base_url, `${base}/v1`);
+  assert.equal(saved.auth.model, 'gamma');
+  assert.equal(loadCredentials(home).api_key, 'new-key');
+  // and the next turn goes there, with the new key
+  await app.submit('ping');
+  assert.ok(
+    seen.includes('POST /v1/chat/completions Bearer new-key'),
+    seen.join('\n'),
+  );
+  assert.equal(runtime.harness.model.model, 'gamma');
 });

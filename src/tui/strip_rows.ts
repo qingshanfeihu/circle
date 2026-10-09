@@ -4,7 +4,13 @@
 // ends one column short of the edge (ported from agent_strip.py and job_rows.py).
 import { lampSgr, palette, sgrJoin, type LampState } from '../ink/theme.js';
 import { stringWidth } from '../ink/string_width.js';
-import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
+import {
+  elapsed,
+  outcomeWords,
+  outputTail,
+  plainJobOutput,
+  type Job,
+} from '../jobs.js';
 import { formatElapsed, formatTokens } from './status_rows.js';
 import type { SubagentView } from './subagents.js';
 
@@ -226,4 +232,45 @@ export function jobRows(
         p.reset,
     );
   return rows;
+}
+
+// The job page's band (0.5.0's render_job_band), on the panel background: its lamp, id and
+// command, its state and time; under them the file its output goes to.
+export function jobBand(job: Job, width: number, now = Date.now()): string[] {
+  const p = palette();
+  const w = Math.max(20, width);
+  const running = job.status === 'running';
+  const waiting = running && job.detail === 'waiting for you';
+  const lamp: LampState = waiting
+    ? 'wait'
+    : running
+      ? 'running'
+      : job.status === 'done'
+        ? 'ok'
+        : job.status === 'failed'
+          ? 'error'
+          : 'none';
+  const state = waiting ? 'waiting' : running ? 'running' : outcomeWords(job);
+  const meta = `${state} · ${elapsed(job)}`;
+  const where = job.virtualPath || job.outputPath || '';
+  const light = lampSgr(lamp, now);
+  const name = `${job.id} ${plainJobOutput(job.title).replace(/\s+/g, ' ')}`;
+  const first =
+    sgrJoin(p.panel_bg) +
+    ' ' +
+    sgrJoin(p.panel_bg, light) +
+    (light ? '●' : ' ') +
+    sgrJoin(p.panel_bg, p.em) +
+    ' ' +
+    padTo(name, w - 3 - stringWidth(meta) - 2 - 1) +
+    '  ' +
+    sgrJoin(p.panel_bg, p.dim) +
+    meta +
+    ' ' +
+    p.reset;
+  if (!where) return [first];
+  return [
+    first,
+    sgrJoin(p.panel_bg, p.faint) + padTo('   ' + where, w) + p.reset,
+  ];
 }

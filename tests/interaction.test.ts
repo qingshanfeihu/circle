@@ -10,6 +10,16 @@ import { ScreenRenderer } from '../src/ink/screen.js';
 import { editorCommand } from '../src/tui/external_editor.js';
 import { ScriptedModel } from '../src/testing.js';
 import { defaultSettings } from '../src/settings.js';
+import { Picker } from '../src/ink/components/picker.js';
+import { stringWidth, stripAnsi } from '../src/ink/string_width.js';
+import {
+  buildPalette,
+  DEFAULT_DARK,
+  DEFAULT_LIGHT,
+  palette,
+  setPalette,
+  sgrJoin,
+} from '../src/ink/theme.js';
 import {
   emptyUsage,
   type Message,
@@ -567,4 +577,167 @@ test('a session from 0.5.0 keeps its pastes: /fork and /tree put them back and t
   await until(() => model.requests.length === 1 && !runtime.busy);
   assert.equal(model.requests[0]!.messages.at(-1)!.content, `${paste} explain`);
   assert.deepEqual(runtime.harness.messages.at(-2)!.pastes, { '2': paste });
+});
+
+test('esc on the /tree label line leaves the label as it was; enter on an empty one removes it', async (t) => {
+  const original = palette();
+  t.after(() => setPalette(original));
+  const { app, runtime, key, type } = await session(t, [answer('answer one')]);
+  await app.submit('question one');
+  const reply = runtime.harness.messages.find(
+    (message) => message.role === 'assistant',
+  )!;
+  runtime.store.setLabel(runtime.session.id, reply.id, 'start');
+  await app.submit('/tree');
+  const list = app.state.picker!;
+  list.focus = list
+    .matches()
+    .findIndex((item) => item.label === '⏺ [start] answer one');
+  assert.ok(list.focus >= 0);
+  // esc leaves the label as it was (it used to remove it)
+  key('L');
+  await until(() => list.asking || app.state.dialog !== undefined);
+  type(' here');
+  key('escape');
+  await delay(20);
+  assert.deepEqual(runtime.store.labels(runtime.session.id), {
+    [reply.id]: 'start',
+  });
+  // Asked in the list, on its own line, the current label filled in: not a card
+  key('L');
+  await until(() => list.asking);
+  assert.equal(app.state.dialog, undefined);
+  assert.equal(app.state.picker, list);
+  for (const colours of [
+    buildPalette(...DEFAULT_DARK),
+    buildPalette(...DEFAULT_LIGHT),
+  ]) {
+    setPalette(colours);
+    const rows = list.rows(80);
+    assert.equal(
+      stripAnsi(rows[1]!).trimEnd(),
+      '   Label (empty removes it): start▏  enter saves · esc cancels',
+    );
+    assert.ok(rows[1]!.startsWith(sgrJoin(colours.panel_bg, colours.dim)));
+    for (const row of rows.slice(0, -1)) assert.equal(stringWidth(row), 80);
+  }
+  key('escape');
+  assert.ok(!list.asking);
+  assert.equal(app.state.picker, list);
+  key('L');
+  await until(() => list.asking);
+  key('ctrl+u');
+  key('enter');
+  await until(
+    () => !Object.keys(runtime.store.labels(runtime.session.id)).length,
+  );
+  assert.ok(list.items.some((item) => item.label === '⏺ answer one'));
+});
+
+test('/resume: esc on the new name or on the delete question leaves the session as it was', async (t) => {
+  const { app, runtime, key, type, workspace } = await session(t, [
+    answer('answer one'),
+  ]);
+  await app.submit('question one');
+  const other = runtime.session.id;
+  await app.submit('/new');
+  await app.submit('/resume');
+  const list = app.state.picker!;
+  list.focus = list.matches().findIndex((item) => item.key === other);
+  key('ctrl+r');
+  await until(() => list.asking);
+  assert.equal(
+    stripAnsi(list.rows(80)[1]!).trimEnd(),
+    '   New name: question one▏  enter saves · esc cancels',
+  );
+  type(' renamed');
+  key('escape');
+  assert.equal(runtime.store.get(other)!.title, 'question one');
+  key('ctrl+d');
+  await until(() => list.asking);
+  assert.equal(
+    stripAnsi(list.rows(80)[1]!).trimEnd(),
+    '   Delete “question one” and its messages?  enter confirms · esc cancels',
+  );
+  key('escape');
+  assert.ok(!list.asking);
+  assert.ok(runtime.store.get(other));
+  assert.ok(runtime.store.list(workspace).some((item) => item.id === other));
+});
+
+test('lists jump a page with pageup and pagedown, as 0.5.0 did, without scrolling the conversation', async (t) => {
+  const items = Array.from({ length: 30 }, (_, i) => ({
+    key: String(i),
+    label: `row ${i}`,
+  }));
+  const list = new Picker(
+    'Rows',
+    items,
+    () => {},
+    () => {},
+  );
+  list.rows(80, 10);
+  const steps: number[] = [];
+  for (const name of ['pagedown', 'pagedown', 'pagedown', 'pagedown']) {
+    list.handle(name, '');
+    steps.push(list.focus);
+  }
+  for (const name of ['pageup', 'pageup', 'pageup', 'pageup']) {
+    list.handle(name, '');
+    steps.push(list.focus);
+  }
+  // A page is what the list shows; it stops at the ends instead of wrapping
+  assert.deepEqual(steps, [10, 20, 29, 29, 19, 9, 0, 0]);
+  const { app, key } = await session(t);
+  await app.submit('/effort');
+  const effort = app.state.picker!;
+  key('pagedown');
+  assert.equal(effort.focus, effort.items.length - 1);
+  key('pageup');
+  assert.equal(effort.focus, 0);
+  assert.equal(app.state.scroll, 0);
+});
+
+test('/approvals: j k and tab move, a digit picks, other keys go to the input box, and ctrl+c closes it first', async (t) => {
+  const { app, ui, runtime, key, type } = await session(t);
+  const store = runtime.policy.store;
+  const id = runtime.session.id;
+  store.record(id, 'always', 'execute', 'npm *', 'npm …');
+  store.record(id, 'always', 'execute', 'git *', 'git …');
+  await app.submit('/approvals');
+  const list = app.state.picker!;
+  // Nothing to search: no search line
+  assert.ok(
+    !list.rows(80).some((row) => stripAnsi(row).includes('type to search')),
+  );
+  const moves: number[] = [];
+  for (const name of ['j', 'j', 'k', 'tab']) {
+    key(name, name);
+    await delay(5);
+    moves.push(list.focus);
+  }
+  assert.deepEqual(moves, [1, 2, 1, 2]);
+  // Other letters are not a search: they go to the input box, and the list stays
+  type('hi');
+  assert.equal(list.query, '');
+  assert.equal(app.state.draft, 'hi');
+  assert.equal(app.state.picker, list);
+  key('backspace');
+  key('backspace');
+  assert.equal(app.state.draft, '');
+  // ctrl+c closes it, then does what it does in the input box
+  key('ctrl+c');
+  assert.equal(app.state.picker, undefined);
+  assert.equal(app.state.flash, 'Press ctrl+c again to exit');
+  assert.equal(ui.ended, false);
+  // A digit picks its row at once
+  await app.submit('/approvals');
+  key('2', '2');
+  await until(() => store.rules(id).length === 1);
+  assert.equal(app.state.picker, undefined);
+  assert.equal(store.rules(id)[0]!.pattern, 'npm *');
+  assert.match(app.state.notices.at(-1)!, /^Revoked · execute · git …/);
+  await app.submit('/approvals');
+  key('escape');
+  assert.equal(app.state.picker, undefined);
 });

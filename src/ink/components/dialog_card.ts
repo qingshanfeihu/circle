@@ -8,6 +8,9 @@ export type CardTone =
 export interface CardLine {
   text: string;
   tone?: CardTone;
+  /** A status row of parts in their own tones (`for ` dim, a URL as text): one row, cut
+   * with "…" when it does not fit, never wrapped. `text` is then not drawn. */
+  segments?: [string, CardTone][];
 }
 /** The type tint of a card's title and body: the colour of the tool that asks. */
 export type CardTint = 'read_bg' | 'write_bg' | 'think_bg' | 'agent_bg';
@@ -18,6 +21,8 @@ export interface DialogState {
   focus: number;
   input?: string;
   masked?: boolean;
+  /** Dim in the empty input row: what an empty enter does (`enter keeps …`). */
+  placeholder?: string;
   /** Body rows in their own tones; drawn instead of `body` when given. */
   lines?: CardLine[];
   /** Per option: the key column ('' = its number). */
@@ -28,6 +33,11 @@ export interface DialogState {
   marks?: (boolean | undefined)[];
   /** Rows under the menu: warnings, a typed answer. */
   notes?: CardLine[];
+  /** The options as a searched list (setup's models): no key column, each note in a column
+   * of its own, a long label cut rather than wrapped. */
+  keyless?: boolean;
+  /** A dim row under the options, such as `(3/24)`. */
+  position?: string;
   tint?: CardTint;
   /** The title's lamp: `wait` (your turn, the default) or `running` (Circle is busy: setup
    * looking for models). A running card's frame is faint instead of yellow. */
@@ -153,7 +163,23 @@ export function cardRows(
     dialog.lines ??
     dialog.body.split('\n').map((text) => ({ text, tone: 'text' as const }));
   let body: string[] = [];
-  for (const line of lines)
+  for (const line of lines) {
+    if (line.segments) {
+      body.push(
+        compose(
+          width,
+          [
+            ['   ', ''],
+            ...line.segments.map(([text, name]): [string, string] => [
+              terminalText(text).replace(/\n/g, ' '),
+              tone(p, name),
+            ]),
+          ],
+          tint,
+        ),
+      );
+      continue;
+    }
     for (const part of wrapWords(terminalText(line.text), width - 4))
       body.push(
         compose(
@@ -165,13 +191,15 @@ export function cardRows(
           tint,
         ),
       );
+  }
   const menu: string[] = [];
   if (dialog.options.length) menu.push(compose(width, []));
+  if (dialog.keyless) menu.push(...keylessRows(dialog, width));
   const keys = dialog.options.map(
     (_, index) => dialog.optionKeys?.[index] || String(index + 1),
   );
   const keyWidth = Math.max(1, ...keys.map((key) => stringWidth(key)));
-  dialog.options.forEach((option, index) => {
+  (dialog.keyless ? [] : dialog.options).forEach((option, index) => {
     const ticked = dialog.marks?.[index];
     const mark = ticked === undefined ? '' : ticked ? '[x] ' : '[ ] ';
     const label = terminalText(option).replace(/\n/g, ' ');
@@ -212,6 +240,13 @@ export function cardRows(
       );
     });
   });
+  if (dialog.position && dialog.options.length)
+    menu.push(
+      compose(width, [
+        ['   ', ''],
+        [dialog.position, p.dim],
+      ]),
+    );
   const notes: string[] = [];
   for (const line of dialog.notes ?? [])
     for (const part of wrapWords(terminalText(line.text), width - 4))
@@ -228,13 +263,15 @@ export function cardRows(
     const value = dialog.masked
       ? '•'.repeat(graphemes(dialog.input).length)
       : terminalText(dialog.input).replace(/\n/g, ' ');
-    if (!dialog.options.length) menu.push(compose(width, []));
+    // the input row under the body or a searched list, one blank row apart
+    if (!dialog.options.length || dialog.keyless) menu.push(compose(width, []));
     input.push(
       compose(width, [
         [' ', ''],
         ['›', p.blue],
         [' ', ''],
         [truncate(value + '▏', width - 4, true), p.text],
+        [value ? '' : terminalText(dialog.placeholder ?? ''), p.dim],
       ]),
     );
   }
@@ -256,6 +293,40 @@ export function cardRows(
     }
   }
   return [head, ...body, ...menu, ...notes, ...input];
+}
+/**
+ * The options as a list inside the card (setup's models): the label at the text column, the
+ * note in a column of its own, the focused row painted whole. Long labels are cut.
+ */
+function keylessRows(dialog: DialogState, width: number): string[] {
+  const p = palette();
+  const notes = dialog.options.map((_, index) =>
+    terminalText(dialog.optionNotes?.[index] ?? '').replace(/\n/g, ' '),
+  );
+  const room = Math.max(
+    8,
+    width - 6 - Math.max(0, ...notes.map((note) => stringWidth(note))),
+  );
+  const labels = dialog.options.map((option) => {
+    const label = terminalText(option).replace(/\n/g, ' ');
+    return stringWidth(label) > room ? truncate(label, room) : label;
+  });
+  const nameWidth =
+    Math.max(0, ...labels.map((label) => stringWidth(label))) + 3;
+  return labels.map((label, index) => {
+    const gap = ' '.repeat(Math.max(0, nameWidth - stringWidth(label)));
+    return index === dialog.focus
+      ? compose(
+          width,
+          [[`   ${label}${gap}${notes[index]}`, sgrJoin(p.sel_bg, p.em)]],
+          p.sel_bg,
+        )
+      : compose(width, [
+          ['   ', ''],
+          [label + gap, p.text],
+          [notes[index]!, p.dim],
+        ]);
+  });
 }
 /**
  * The card in its frame: still and yellow, because it is your turn; faint while the card

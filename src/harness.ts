@@ -14,6 +14,7 @@ import { CheckpointStore, type Session } from './checkpoint_store.js';
 import { attachPrompt } from './mentions.js';
 import { prepareToolCall, RecoverableToolError } from './tool_call_compat.js';
 import { redact } from './redact.js';
+import { httpStatus } from './model_guard.js';
 import { validateAttachments } from './media.js';
 export type ApprovalDecision =
   | 'approve'
@@ -290,6 +291,8 @@ export class Harness {
             failure instanceof Error ? failure.message : String(failure),
           ),
           interrupted: signal.aborted,
+          // 401 or 403: the endpoint turned the key down
+          status: signal.aborted ? undefined : httpStatus(failure),
         },
         usage: { ...usage },
         elapsed_ms: Date.now() - start,

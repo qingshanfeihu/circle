@@ -66,8 +66,6 @@ export interface CommandHost {
     options?: PickerOptions,
   ): void;
   closePicker(): void;
-  askChoice(title: string, body: string, options: string[]): Promise<string>;
-  askText(title: string, body: string, initial?: string): Promise<string>;
   // The box's text, with the long pastes its placeholders stand for.
   setDraft(text: string, pastes?: Record<string, string>): void;
   // A finished job does not start a turn of its own until you send something.
@@ -459,7 +457,9 @@ function approvalsList(host: CommandHost): void {
     const shown = picker?.matches().length ?? 0;
     if (picker && shown) picker.focus = (picker.focus + step + shown) % shown;
   };
-  const keys: PickerOptions['keys'] = { j: move(1), k: move(-1) };
+  // As 0.5.0's approvals page: j k (and tab) move, a digit picks; nothing searches, so the
+  // other keys go on to the input box.
+  const keys: PickerOptions['keys'] = { j: move(1), k: move(-1), tab: move(1) };
   items.slice(0, 9).forEach((item, index) => {
     keys[String(index + 1)] = () => {
       host.closePicker();
@@ -482,6 +482,7 @@ function approvalsList(host: CommandHost): void {
       .filter(Boolean)
       .join(' · '),
     keys,
+    search: false,
   });
 }
 
@@ -986,18 +987,20 @@ function jobs(host: CommandHost, args: string): void {
       search: `${job.kind} ${job.source ?? ''}`,
     }));
   };
-  const stop = async (item: PickerItem | undefined): Promise<void> => {
+  // A running job is stopped after a question asked in the list; esc keeps it running.
+  const stop = (item: PickerItem | undefined): void => {
     const job = item ? runtime.jobs.get(item.key) : undefined;
-    if (!job) return;
-    if (job.status === 'running') {
-      const answer = await host.askChoice(
-        `stop ${job.id}`,
-        `Stop ${job.id} ${job.title.slice(0, 40)}?`,
-        ['stop job', 'keep running'],
-      );
-      if (answer === 'stop job') await runtime.jobs.stop(job.id, 'user');
-    } else runtime.jobs.remove(job.id);
-    host.state.picker?.setItems(rows());
+    const list = host.state.picker;
+    if (!job || !list) return;
+    if (job.status !== 'running') {
+      runtime.jobs.remove(job.id);
+      list.setItems(rows());
+      return;
+    }
+    list.confirm(`Stop ${job.id} ${job.title.slice(0, 40)}?`, async () => {
+      await runtime.jobs.stop(job.id, 'user');
+      list.setItems(rows());
+    });
   };
   host.picker(
     'Background jobs',
@@ -1183,34 +1186,36 @@ function sessionList(host: CommandHost, everywhere: boolean, query = ''): void {
       focusKey: runtime.session.id,
       keys: {
         tab: () => sessionList(host, !everywhere, host.state.picker?.query),
-        'ctrl+r': async (item) => {
+        // Both ask in the list; esc there leaves the session as it was.
+        'ctrl+r': (item) => {
           if (!item) return;
-          const text = await host.askText(
-            'rename',
+          host.state.picker?.ask(
             'New name',
             item.label === '(untitled)' ? '' : item.label,
+            (text) => {
+              const title = text.trim().replace(/\s+/g, ' ').slice(0, 80);
+              if (!title) return;
+              runtime.store.rename(item.key, title);
+              again();
+            },
           );
-          const title = text.trim().replace(/\s+/g, ' ').slice(0, 80);
-          if (title) runtime.store.rename(item.key, title);
-          again();
         },
-        'ctrl+d': async (item) => {
+        'ctrl+d': (item) => {
           if (!item) return;
           if (item.key === runtime.session.id) {
             host.flash('The session you are in cannot be deleted');
             return;
           }
           const label = item.label.slice(0, 40);
-          const answer = await host.askChoice(
-            'delete',
+          host.state.picker?.confirm(
             `Delete “${label}” and its messages?`,
-            ['delete', 'keep'],
+            () => {
+              runtime.store.delete(item.key);
+              if (host.previousSession === item.key) host.previousSession = '';
+              again();
+              host.flash(`Deleted ${label}`);
+            },
           );
-          if (answer !== 'delete') return;
-          runtime.store.delete(item.key);
-          if (host.previousSession === item.key) host.previousSession = '';
-          again();
-          host.flash(`Deleted ${label}`);
         },
       },
     },
@@ -1334,17 +1339,20 @@ async function tree(
         mine = !mine;
         host.state.picker?.setItems(rows());
       },
-      L: async (item) => {
+      // Asked in the list: enter sets it (empty removes it), esc leaves it as it was.
+      L: (item) => {
         const message = item && branches.entries.get(item.key)?.message;
-        if (!message) return;
-        const text = await host.askText(
-          'label',
+        const list = host.state.picker;
+        if (!message || !list) return;
+        list.ask(
           'Label (empty removes it)',
           marks[message.id] ?? '',
+          (text) => {
+            runtime.store.setLabel(runtime.session.id, message.id, text);
+            marks = runtime.store.labels(runtime.session.id);
+            list.setItems(rows());
+          },
         );
-        runtime.store.setLabel(runtime.session.id, message.id, text);
-        marks = runtime.store.labels(runtime.session.id);
-        host.state.picker?.setItems(rows());
       },
     },
   });

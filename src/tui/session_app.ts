@@ -32,8 +32,8 @@ import {
   isFolderTrusted,
   withConnection,
 } from '../settings.js';
-import { defaultAuth } from '../settings.js';
-import { normalizeBaseUrl, resolveEndpoint } from '../probe.js';
+import { resolveEndpoint } from '../probe.js';
+import { SetupCard, SetupFlow } from './setup_flow.js';
 import { InputParser, type InputEvent } from '../ink/parse_keypress.js';
 import { ThemeWatch } from '../ink/theme_watch.js';
 import { palette } from '../ink/theme.js';
@@ -124,6 +124,8 @@ export class SessionApp {
   private previousSession = '';
   private lastEscape = 0;
   private lastCtrlC = 0;
+  // /login while its lists are open: the answers so far.
+  private loginFlow?: SetupFlow;
   // The /jobs list while it is open, with its rows: it follows the jobs as they change.
   private jobsList?: { list: Picker; rows: () => PickerItem[] };
   // After /undo or /redo, the answer whose request the footer's ctx no longer describes.
@@ -479,62 +481,18 @@ export class SessionApp {
   async initialize(force = false): Promise<boolean> {
     if (force || !this.settings.initialized) {
       this.settingUp = !this.runtime;
-      const url = await this.askText(
-        'connect',
-        'API base URL',
-        this.settings.auth.base_url,
-      );
-      if (this.ended || !url) return false;
-      const old = loadCredentials(this.home);
-      const key = await this.askText(
-        'connect',
-        'API key',
-        old[this.settings.auth.api_key_ref] || old.api_key || '',
-        true,
-      );
-      if (this.ended || !key) return false;
-      // The card says what Circle is doing while the endpoint lists its models.
-      this.state.dialog = {
-        title: 'Looking for models…',
-        body: `asking ${url}`,
-        options: [],
-        focus: 0,
-        lamp: 'running',
+      // One card, a step at a time; it says what Circle is doing while the endpoint lists
+      // its models, and is drawn again when it has answered.
+      const flow = new SetupFlow(this.home);
+      const card = new SetupCard(flow);
+      card.changed = () => {
+        if (this.card !== card) return;
+        this.state.dialog = card.state();
+        this.repaint();
       };
-      this.repaint();
-      let result: Awaited<ReturnType<typeof resolveEndpoint>>;
-      try {
-        result = await resolveEndpoint(url, key);
-      } finally {
-        this.state.dialog = undefined;
-      }
-      const protocol = result.inferred
-        ? await this.askChoice('protocol', 'Choose the API protocol', [
-            'openai',
-            'anthropic',
-          ])
-        : result.protocol;
-      if (this.ended || !protocol) return false;
-      const model = await this.askText(
-        'model',
-        result.models.length
-          ? 'Model ID (' + result.models.slice(0, 5).join(', ') + ')'
-          : 'Model ID',
-        this.settings.auth.model,
-      );
-      if (this.ended || !model) return false;
-      // The URL that answered (`<url>/v1` when only that lists models), as line-mode setup
-      // and 0.5.0 save it; the typed one when nothing answered.
-      const auth = {
-        ...defaultAuth(),
-        protocol,
-        base_url: normalizeBaseUrl(result.base_url || url, protocol),
-        model,
-      };
-      const settings = withConnection(auth, this.home);
-      saveCredentials({ api_key: key }, this.home);
-      saveSettings(settings, this.home);
-      this.settings = settings;
+      const answer = await this.showCard(card);
+      if (this.ended || answer !== 'done') return false;
+      this.saveConnection(flow);
       this.settingUp = false;
     }
     if (!isFolderTrusted(this.settings, this.workspace)) {
@@ -547,6 +505,14 @@ export class SessionApp {
       this.trustWorkspace();
     }
     return !this.ended;
+  }
+  // The URL that answered (`<url>/v1` when only that lists models), as line-mode setup and
+  // 0.5.0 save it; the typed one when nothing answered.
+  private saveConnection(flow: SetupFlow): void {
+    const settings = withConnection(flow.auth(), this.home);
+    saveCredentials({ api_key: flow.apiKey }, this.home);
+    saveSettings(settings, this.home);
+    this.settings = settings;
   }
   private trustWorkspace(): void {
     this.settings = trustFolder(this.settings, this.workspace);
@@ -660,7 +626,14 @@ export class SessionApp {
         ) as (keyof typeof this.state.usage)[])
           this.state.usage[key] += event.usage?.[key] ?? 0;
       } else if (event.kind === 'run_error')
-        this.state.notices.push('✖ ' + String(event.payload.message));
+        // A key the endpoint turned down (401, 403) says where to change it, as in 0.5.0.
+        this.state.notices.push(
+          '✖ ' +
+            String(event.payload.message) +
+            ([401, 403].includes(Number(event.payload.status))
+              ? ' · /login to change the key'
+              : ''),
+        );
       else if (event.kind === 'info' && event.payload.model_notice) {
         const notice = event.payload.model_notice as {
           event: string;
@@ -833,18 +806,6 @@ export class SessionApp {
   ): Promise<string> {
     return this.dialog({ title, body, options, focus: 0 }, signal);
   }
-  private askText(
-    title: string,
-    body: string,
-    initial = '',
-    masked = false,
-    signal?: AbortSignal,
-  ): Promise<string> {
-    return this.dialog(
-      { title, body, options: [], focus: 0, input: initial, masked },
-      signal,
-    );
-  }
   // A card takes the frame: the draft (text and cursor) is set aside and comes back when
   // the card ends, whatever it was answered with; a list would compete for keys, so it closes.
   private dialog<T = string>(
@@ -854,8 +815,7 @@ export class SessionApp {
     if (this.pending)
       return Promise.reject(new Error('another question is waiting'));
     if (signal?.aborted) return Promise.reject(signal.reason);
-    // A question asked from a list (stop this job? a label?) hides the list while it is up
-    // and gives it back after; the model's own cards close a list (showCard).
+    // An open list is hidden while the card is up and given back after.
     const list = this.state.picker;
     this.state.picker = undefined;
     this.parked.park(this.state);
@@ -910,6 +870,7 @@ export class SessionApp {
     if (event.type === 'color' || event.type === 'scheme') return;
     if (event.type === 'mouse') {
       if (this.pageButton(event)) return;
+      if (this.stripClick(event)) return;
       if (this.selectionMouse(event)) return;
       if (
         event.action === 'press' &&
@@ -998,6 +959,9 @@ export class SessionApp {
         this.state.dialog = this.card.state();
       } else if (this.state.dialog?.input !== undefined)
         this.state.dialog.input += event.text;
+      else if (this.state.picker && this.state.picker.options.search !== false)
+        // where typing goes: the search, or the line the list asks for (a key, as dots)
+        this.state.picker.paste(event.text);
       else if (!this.state.dialog) {
         this.composer.paste(event.text);
         this.composer.update();
@@ -1187,12 +1151,10 @@ export class SessionApp {
       this.repaint();
       return;
     }
-    if (
-      this.state.picker &&
-      key !== 'ctrl+c' &&
-      (key !== 'ctrl+d' || this.state.picker.options.keys?.['ctrl+d'])
-    ) {
-      this.state.picker.handle(key, char);
+    // Every key goes to an open list; it leaves ctrl+c and ctrl+d to the session unless it
+    // asks for something or uses them, and a list without a search leaves the keys it does
+    // not use.
+    if (this.state.picker?.handle(key, char)) {
       this.repaint();
       return;
     }
@@ -1387,8 +1349,9 @@ export class SessionApp {
   private refreshJobsList(): void {
     const open = this.jobsList;
     if (!open) return;
-    if (this.state.picker === open.list) open.list.setItems(open.rows());
-    else if (!this.state.dialog) this.jobsList = undefined;
+    if (this.state.picker === open.list) {
+      if (!open.list.asking) open.list.setItems(open.rows());
+    } else if (!this.state.dialog) this.jobsList = undefined;
   }
   /** Send the draft: the model reads the long pastes, the screen and the history keep it as shown. */
   private send(kind: 'steer' | 'followUp'): void {
@@ -1494,24 +1457,30 @@ export class SessionApp {
       this.repaint();
     }
   }
+  // A list above the frame. Choosing a row (or, with `freeText`, enter on what was typed)
+  // closes it first; its own keys and the answers to what it asks keep it open. `closed`
+  // runs when esc closes it.
   private picker(
     title: string,
     items: PickerItem[],
     choose: (item: PickerItem) => Promise<void> | void,
     options: PickerOptions = {},
-  ): void {
-    this.state.picker = new Picker(
+    closed?: () => void,
+  ): Picker {
+    const shut = (): void => {
+      if (this.state.picker === list) this.state.picker = undefined;
+    };
+    const freeText = options.freeText;
+    const list: Picker = new Picker(
       title,
       items,
       (item) => {
-        this.state.picker = undefined;
-        Promise.resolve(choose(item)).then(
-          () => this.repaint(),
-          (error) => this.fail(error),
-        );
+        shut();
+        list.settle(() => choose(item));
       },
       () => {
-        this.state.picker = undefined;
+        shut();
+        closed?.();
         this.repaint();
       },
       {
@@ -1519,19 +1488,28 @@ export class SessionApp {
         keys: Object.fromEntries(
           Object.entries(options.keys ?? {}).map(([key, action]) => [
             key,
-            (item: PickerItem | undefined) => {
-              Promise.resolve()
-                .then(() => action(item))
-                .then(
-                  () => this.repaint(),
-                  (error) => this.fail(error),
-                );
-            },
+            (item: PickerItem | undefined) => list.settle(() => action(item)),
           ]),
         ),
+        freeText:
+          freeText &&
+          ((text) => {
+            shut();
+            return freeText(text);
+          }),
       },
     );
+    list.settle = (work) => {
+      Promise.resolve()
+        .then(work)
+        .then(
+          () => this.repaint(),
+          (error) => this.fail(error),
+        );
+    };
+    this.state.picker = list;
     this.repaint();
+    return list;
   }
   // What the commands in slash_handlers.ts use of the session.
   private commandHost(): CommandHost {
@@ -1564,14 +1542,13 @@ export class SessionApp {
       flash: (text, ttl) => this.flash(text, ttl),
       fail: (error) => this.fail(error),
       repaint: () => this.repaint(),
-      picker: (title, items, choose, options) =>
-        this.picker(title, items, choose, options),
+      picker: (title, items, choose, options) => {
+        this.picker(title, items, choose, options);
+      },
       closePicker: () => {
         this.state.picker = undefined;
         this.repaint();
       },
-      askChoice: (title, body, options) => this.askChoice(title, body, options),
-      askText: (title, body, initial) => this.askText(title, body, initial),
       setDraft: (text, pastes) => this.composer.restore(text, pastes),
       snoozeJobs: () => {
         this.jobWakeSnoozed = true;
@@ -1762,49 +1739,7 @@ export class SessionApp {
         );
         return;
       }
-      // The ways in, then setup's questions. Nothing is saved before a model is given.
-      const auth = this.settings.auth;
-      const methods = (): void =>
-        this.picker(
-          'Sign in',
-          [
-            {
-              key: 'api_key',
-              label: 'API URL + KEY',
-              current: auth.mode === 'api_key',
-            },
-            {
-              key: 'oauth',
-              label: 'OAuth sign-in',
-              current: auth.mode === 'oauth',
-              meta: 'not available yet',
-            },
-          ],
-          async (item) => {
-            if (item.key === 'oauth') {
-              methods();
-              this.flash(
-                'OAuth sign-in is not available yet · use API URL + KEY',
-                3000,
-              );
-              return;
-            }
-            if (!(await this.initialize(true))) return;
-            this.applyRunSettings(runtime.options.modelOverride);
-            runtime.options.settings = this.settings;
-            runtime.setModel(this.settings.auth.model);
-            this.notice(
-              `Signed in to ${endpointName(this.settings.auth.base_url)} · model ${this.settings.auth.model}`,
-            );
-          },
-          {
-            hint: !this.settings.initialized
-              ? 'not signed in'
-              : `now ${auth.mode === 'oauth' ? `oauth · ${auth.oauth_provider}` : `api key · ${endpointName(auth.base_url)}`} · ${auth.model}`,
-            focusKey: auth.mode === 'oauth' ? 'oauth' : 'api_key',
-          },
-        );
-      methods();
+      this.login();
       return;
     }
     if (name === 'reload') {
@@ -1830,6 +1765,160 @@ export class SessionApp {
     }
     this.flash(`Unknown command /${name} · try /help`);
   }
+  // /login: how Circle reaches the model, then setup's questions asked in the list, the URL
+  // and the key (as dots) on its search line (0.5.0's _open_login_picker). Nothing is saved
+  // before a model is chosen; esc on a question goes back to the ways in, esc there leaves.
+  private login(): void {
+    const runtime = this.runtime!;
+    const flow = new SetupFlow(this.home);
+    this.loginFlow = flow;
+    const title = (): string =>
+      'Sign in' + (flow.error ? ` · ${flow.error}` : '');
+    const leave = (): void => {
+      if (this.loginFlow === flow) this.loginFlow = undefined;
+    };
+    const steps = 'enter continues · esc goes back';
+    const askUrl = (list: Picker, text: string): void => {
+      list.title = title();
+      list.ask(
+        'base url',
+        text,
+        (typed) => {
+          flow.submitUrl(typed);
+          // not a URL: say why and ask again
+          if (flow.step === 'url') askUrl(list, typed);
+          else askKey(list);
+        },
+        { keys: steps },
+      );
+    };
+    const askKey = (list: Picker): void => {
+      list.title = title();
+      list.ask(
+        'api key' + (flow.hasSavedKey ? ' (enter keeps the saved one)' : ''),
+        '',
+        (typed) => {
+          flow.submitKey(typed);
+          if (flow.step === 'key') askKey(list);
+          else next();
+        },
+        { mask: true, keys: steps },
+      );
+    };
+    const methods = (): void => {
+      const auth = this.settings.auth;
+      const list = this.picker(
+        title(),
+        [
+          {
+            key: 'api_key',
+            label: 'API URL + KEY',
+            current: auth.mode === 'api_key',
+          },
+          {
+            key: 'oauth',
+            label: 'OAuth sign-in',
+            current: auth.mode === 'oauth',
+            meta: 'not available yet',
+          },
+        ],
+        () => {},
+        {
+          hint: !this.settings.initialized
+            ? 'not signed in'
+            : `now ${auth.mode === 'oauth' ? `oauth · ${auth.oauth_provider}` : `api key · ${endpointName(auth.base_url)}`} · ${auth.model}`,
+          focusKey: auth.mode === 'oauth' ? 'oauth' : 'api_key',
+          keys: {
+            // The list stays: the questions are asked on its search line
+            enter: (item) => {
+              if (!item) return;
+              if (item.key === 'oauth') {
+                this.flash(
+                  'OAuth sign-in is not available yet · use API URL + KEY',
+                  3000,
+                );
+                return;
+              }
+              flow.restart();
+              askUrl(list, flow.savedUrl);
+            },
+          },
+        },
+        leave,
+      );
+    };
+    // The list for the step the answers have reached; at the end, sign in with them.
+    const next = (): void => {
+      if (this.loginFlow !== flow) return; // left with esc while the endpoint was asked
+      if (flow.step === 'done') {
+        this.loginFlow = undefined;
+        this.saveConnection(flow);
+        this.applyRunSettings(runtime.options.modelOverride);
+        runtime.options.settings = this.settings;
+        runtime.setModel(this.settings.auth.model);
+        this.notice(
+          `Signed in to ${endpointName(this.settings.auth.base_url)} · model ${this.settings.auth.model}`,
+        );
+      } else if (flow.step === 'probing') {
+        this.picker(
+          title(),
+          [],
+          () => {},
+          { empty: `asking ${endpointName(flow.baseUrl)} for its models…` },
+          leave,
+        );
+        void flow.runProbe().then(
+          () => next(),
+          (error) => this.fail(error),
+        );
+      } else if (flow.step === 'protocol')
+        this.picker(
+          title(),
+          [
+            { key: 'openai', label: 'OpenAI-style API' },
+            { key: 'anthropic', label: 'Anthropic-style API' },
+          ],
+          (item) => {
+            flow.chooseProtocol(item.key === 'anthropic' ? 1 : 0);
+            next();
+          },
+          {
+            hint: `${flow.status} · which kind of API is it?`,
+            focusKey: flow.focus ? 'anthropic' : 'openai',
+          },
+          leave,
+        );
+      else if (flow.step === 'model') {
+        const current = this.settings.auth.model;
+        this.picker(
+          title(),
+          flow.models.map((model) => ({
+            key: model,
+            label: model,
+            current: model === current,
+          })),
+          (item) => {
+            flow.use(item.key);
+            next();
+          },
+          {
+            hint: flow.status,
+            focusKey: current,
+            // An id the endpoint did not list, not checked
+            freeText: (text) => {
+              flow.use(text);
+              next();
+            },
+            empty: flow.models.length
+              ? 'No model matches · enter uses what you typed'
+              : 'Type the model id your endpoint uses',
+          },
+          leave,
+        );
+      } else methods();
+    };
+    methods();
+  }
   /** pbcopy, wl-copy or xclip (clip on Windows); false when none took the text. */
   private async copy(text: string): Promise<boolean> {
     return this.clipboard.copyNative(text);
@@ -1854,6 +1943,18 @@ export class SessionApp {
       (this.state.subagents ?? []).map((agent) => agent.id),
       '',
     );
+    this.state.scroll = 0;
+    this.repaint();
+    return true;
+  }
+  /** A press on a subagent's row in the strip opens its page, as in 0.5.0. */
+  private stripClick(event: Extract<InputEvent, { type: 'mouse' }>): boolean {
+    const strip = this.state.stripAgents;
+    if (!strip || event.action !== 'press' || event.button !== 0) return false;
+    const id = strip.ids[event.y - strip.row];
+    if (!id) return false;
+    this.agents.detail = id;
+    this.agents.selected = id;
     this.state.scroll = 0;
     this.repaint();
     return true;

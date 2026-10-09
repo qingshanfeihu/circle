@@ -22,6 +22,7 @@ import { AgentRuntime } from '../src/runtime.js';
 import { defaultSettings, saveSettings, trustFolder } from '../src/settings.js';
 import { ScriptedModel } from '../src/testing.js';
 import { emptyUsage, type Message, type ModelResponse } from '../src/types.js';
+import type { Job } from '../src/jobs.js';
 import { cleanup, scratch } from './helpers.js';
 
 const PALETTES: [string, Palette][] = [
@@ -649,8 +650,12 @@ test('with --init the welcome shows no model and unlit lamps until a new one is 
   };
   const p = buildPalette(...DEFAULT_DARK);
   setPalette(p);
+  const type = (text: string): void => {
+    for (const char of text) ui.handle({ type: 'key', key: char, char });
+  };
+  const enter = (): void => ui.handle({ type: 'key', key: 'enter', char: '' });
   const setup = app.initialize(true);
-  await until(() => app.state.dialog?.body === 'API base URL');
+  await until(() => app.state.dialog?.title === "What is the API's base URL?");
   let plain = frame().map(stripAnsi);
   assert.ok(
     plain.some((row) => row.includes('not connected yet')),
@@ -659,9 +664,11 @@ test('with --init the welcome shows no model and unlit lamps until a new one is 
   assert.ok(!plain.some((row) => row.includes('old-model')));
   const rules = frame().find((row) => stripAnsi(row).includes('AGENTS.md'))!;
   assert.ok(!rules.includes('●'), 'the lamp is unlit while setup asks');
-  ui.pending.complete(url);
-  await until(() => app.state.dialog?.body === 'API key');
-  ui.pending.complete('secret-key');
+  type(url);
+  enter();
+  await until(() => app.state.dialog?.title === 'What is the API key?');
+  type('secret-key');
+  enter();
   await until(() => app.state.dialog?.lamp === 'running');
   let rows = frame();
   plain = rows.map(stripAnsi);
@@ -674,8 +681,8 @@ test('with --init the welcome shows no model and unlit lamps until a new one is 
   );
   assert.ok(!plain.some((row) => row.includes('old-model')));
   release();
-  await until(() => app.state.dialog?.title === 'model');
-  ui.pending.complete('new-model');
+  await until(() => app.state.dialog?.title === 'Which model?');
+  enter();
   assert.equal(await setup, true);
   rows = frame();
   plain = rows.map(stripAnsi);
@@ -684,4 +691,103 @@ test('with --init the welcome shows no model and unlit lamps until a new one is 
     plain.join('\n'),
   );
   assert.equal(app.settings.auth.model, 'new-model');
+});
+
+test("a job's page has 0.5.0's band: lamp, id and command, state and time, and the file its output goes to", (t) => {
+  const root = scratch(t);
+  const output = join(root, 'j3.log');
+  writeFileSync(output, 'line one\nline two\n');
+  const job: Job = {
+    id: 'j3',
+    kind: 'shell',
+    title: 'npm test',
+    status: 'running',
+    reason: '',
+    started: Date.now() - 12_000,
+    outputPath: output,
+    virtualPath: '/jobs/j3.log',
+    sessionId: 's',
+  };
+  const ended: Job = {
+    ...job,
+    status: 'failed',
+    reason: 'exit',
+    exitCode: 1,
+    ended: job.started + 4_000,
+  };
+  for (const [, p] of PALETTES) {
+    setPalette(p);
+    let rows = renderScreen({ ...screen(), jobDetail: job }, 80, 24);
+    let plain = rows.map(stripAnsi);
+    // Under the header: the band on the panel, then the output
+    assert.match(plain[2]!, /^ ● j3 npm test +running · 12s $/);
+    assert.equal(plain[3]!.trimEnd(), '   /jobs/j3.log');
+    assert.ok(rows[2]!.includes(sgrJoin(p.panel_bg, p.em) + ' j3 npm test'));
+    assert.ok(rows[2]!.includes(p.yellow.slice(2, -1) + 'm●'));
+    assert.ok(rows[3]!.startsWith(sgrJoin(p.panel_bg, p.faint)));
+    assert.deepEqual(
+      plain.slice(4, 6).map((row) => row.trimEnd()),
+      ['line one', 'line two'],
+    );
+    assert.ok(!plain.some((row) => row.includes('esc back')));
+    for (const row of rows) assert.equal(stringWidth(row), 80);
+    coloursFrom(p, rows.join('\n'));
+    rows = renderScreen({ ...screen(), jobDetail: ended }, 80, 24);
+    plain = rows.map(stripAnsi);
+    assert.match(plain[2]!, /^ ● j3 npm test +failed · exit 1 · 4s $/);
+    assert.ok(rows[2]!.includes(sgrJoin(p.panel_bg, p.red) + '●'));
+    coloursFrom(p, rows.join('\n'));
+  }
+});
+
+test('a press on a subagent row in the strip opens its page, as in 0.5.0', async (t) => {
+  let check = (): void => {};
+  const model = new ScriptedModel([
+    reply('p1', '', [
+      {
+        id: 'task-1',
+        name: 'task',
+        args: { description: 'look around', subagent_type: 'general-purpose' },
+      },
+    ]),
+    async () => {
+      check();
+      return reply('c1', 'Nothing here.');
+    },
+    reply('p2', 'Done.'),
+  ]);
+  const { app, ui, frame } = await attached(t, model);
+  let row = '';
+  let opened: string | undefined;
+  let header: string | undefined;
+  check = () => {
+    const plain = frame().map(stripAnsi);
+    const strip = app.state.stripAgents!;
+    row = plain[strip.row]!;
+    // the strip's header is not a row to open
+    ui.handle({
+      type: 'mouse',
+      action: 'press',
+      button: 0,
+      x: 4,
+      y: strip.row - 1,
+    });
+    header = app.state.agentDetail?.id;
+    ui.handle({
+      type: 'mouse',
+      action: 'press',
+      button: 0,
+      x: 4,
+      y: strip.row,
+    });
+    opened = app.state.agentDetail?.id;
+  };
+  await app.submit('look');
+  assert.match(
+    row,
+    /^ ● general-purpose·\w+ +look around +\d+s · \d+ tokens $/,
+  );
+  assert.equal(header, undefined);
+  assert.equal(opened, app.state.subagents![0]!.id);
+  assert.equal(app.state.agentDetail?.id, opened);
 });

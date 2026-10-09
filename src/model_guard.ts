@@ -80,6 +80,20 @@ function statusOf(error: unknown): number | undefined {
   const value = item.status ?? item.status_code;
   return typeof value === 'number' ? value : undefined;
 }
+/** The HTTP status an error carries, or the first one in its causes. */
+export function httpStatus(error: unknown): number | undefined {
+  const seen = new Set<unknown>();
+  for (
+    let current = error;
+    current && !seen.has(current);
+    current = record(current).cause
+  ) {
+    seen.add(current);
+    const status = statusOf(current);
+    if (status !== undefined) return status;
+  }
+  return undefined;
+}
 function bodies(error: unknown): Record<string, unknown>[] {
   const item = record(error);
   const result: Record<string, unknown>[] = [item];

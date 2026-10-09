@@ -8,9 +8,11 @@ The first time you run `circle`, setup asks three questions:
 
 1. The API base URL. For an OpenAI-style endpoint, give the path with its version, such as `https://gateway.example/v1`. For an Anthropic-style endpoint, give the gateway root.
 2. The key. It shows as dots.
-3. The model id.
+3. The model.
 
-Between the key and the model, Circle asks the endpoint for its model list, with a two-and-a-half-second timeout per request. OpenAI discovery tries `<base>/models` with a bearer token, then `<base>/v1/models` if the base has no version suffix. Anthropic discovery uses `<base>/v1/models` with `x-api-key`, without doubling an existing `/v1`. A URL containing `anthropic` makes Anthropic the first protocol tried; otherwise OpenAI is first. When the endpoint lists its models, the model question shows up to five of them as examples. When it cannot be asked, Circle asks whether the API is `openai` or `anthropic`, and you type the model id your provider documents. A typed id is not checked, and no model list is ever made up.
+When Circle was set up before, an empty `enter` keeps the saved URL or key.
+
+Between the key and the model, Circle asks the endpoint for its model list, with a two-and-a-half-second timeout per request. OpenAI discovery tries `<base>/models` with a bearer token, then `<base>/v1/models` if the base has no version suffix. Anthropic discovery uses `<base>/v1/models` with `x-api-key`, without doubling an existing `/v1`. A URL containing `anthropic` makes Anthropic the first protocol tried; otherwise OpenAI is first. The URL that answered is the one saved. When the endpoint lists its models, the model question is that list: type to search it, and a model it does not list can still be used, from the row `use "…"`. When it cannot be asked, Circle asks whether the API is OpenAI-style or Anthropic-style, and you type the model id your provider documents. A typed id is not checked, and no model list is ever made up.
 
 Without the full-screen interface (`-p` or `--line` in a terminal before Circle is set up), the same questions are asked line by line, and the listed models are numbered to pick from.
 
@@ -35,7 +37,7 @@ A model cannot be switched while a turn runs. The footer shows cost and context 
 
 ## Change the endpoint or the key
 
-Type `/login` in a session and choose **API URL + KEY**. It asks the same questions as setup, with the saved URL and key filled in to keep or edit. The session switches to the new model at once, and the connection is saved as with setup. `esc` leaves `/login`; nothing is saved before a model is given.
+Type `/login` in a session and choose **API URL + KEY**. It asks the same questions as setup, on the list's own line, with the saved URL filled in to keep or edit and an empty `enter` keeping the saved key. The session switches to the new model at once, and the connection is saved as with setup. `esc` leaves `/login`; nothing is saved before a model is given.
 
 Outside a session, `circle --init` runs the same setup. Both keep your other settings. See [CLI](cli.md#setting-up-again).
 

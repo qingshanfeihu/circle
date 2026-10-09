@@ -4,11 +4,7 @@
 // keeps only the answers.
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
-import {
-  normalizeBaseUrl,
-  resolveEndpoint,
-  type ProbeResult,
-} from './probe.js';
+import { normalizeBaseUrl, probeSummary, resolveEndpoint } from './probe.js';
 import {
   defaultAuth,
   defaultSettings,
@@ -89,17 +85,6 @@ export function terminalPrompter(
       reader.close();
     },
   };
-}
-function summary(found: ProbeResult): string {
-  if (found.status === 'failed' || found.inferred)
-    return (
-      'model discovery failed' +
-      (found.inferred ? '; protocol is unverified' : '') +
-      (found.detail ? ` (${found.detail})` : '')
-    );
-  if (!found.models.length)
-    return `endpoint returned an empty model list (${found.protocol})`;
-  return `discovered ${found.models.length} models (${found.protocol})`;
 }
 async function pick(
   io: LinePrompter,
@@ -193,7 +178,7 @@ export async function runLineInit(
     }
     io.say('Asking the endpoint for its models…');
     const found = await resolveEndpoint(base, key);
-    io.say(summary(found));
+    io.say(probeSummary(found));
     const protocol =
       found.inferred || found.status === 'failed'
         ? await pick(io, 'Which kind of API is it?', ['openai', 'anthropic'])

@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AgentRuntime } from '../src/runtime.js';
 import { SessionApp } from '../src/tui/session_app.js';
-import { defaultSettings } from '../src/settings.js';
+import {
+  defaultSettings,
+  loadCredentials,
+  loadSettings,
+  saveCredentials,
+  saveSettings,
+  trustFolder,
+} from '../src/settings.js';
 import { defaultPolicy } from '../src/approvals.js';
 import { ScriptedModel } from '../src/testing.js';
 import { createRequest, pollAnswer } from '../src/secret_prompt.js';
@@ -725,4 +735,212 @@ test('a folded paste in the draft survives a card and reaches the model whole', 
   const sent = s.model.requests[2]!.messages.at(-1)!;
   assert.equal(sent.role, 'user');
   assert.equal(sent.content, pasted);
+});
+
+// Setup in the frame, with an endpoint of the test's own: the frames it drew and its keys.
+async function setupScreen(
+  t: Parameters<typeof scratch>[0],
+  answer: (url: string, key: string) => [number, unknown],
+) {
+  const seen: string[] = [];
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request);
+    seen.push(`${request.url} ${request.headers.authorization ?? ''}`);
+    const [status, body] = answer(
+      request.url ?? '',
+      String(request.headers.authorization ?? ''),
+    );
+    response.writeHead(status, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(body));
+  });
+  await new Promise<void>((ready) =>
+    server.listen(0, '127.0.0.1', () => ready()),
+  );
+  cleanup(t, async () => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const home = scratch(t);
+  const root = scratch(t);
+  const original = palette();
+  t.after(() => setPalette(original));
+  const start = (): {
+    app: SessionApp;
+    done: Promise<boolean>;
+    key: (name: string) => void;
+    type: (text: string) => void;
+    card: (width?: number) => string[];
+  } => {
+    const app = new SessionApp(
+      root,
+      home,
+      trustFolder(defaultSettings(), root),
+    );
+    const ui = app as any;
+    ui.screen.render = () => {};
+    cleanup(t, () => {
+      if (ui.flashTimer) clearTimeout(ui.flashTimer);
+      ui.input.close();
+    });
+    const key = (name: string): void =>
+      ui.handle({
+        type: 'key',
+        key: name,
+        char: Array.from(name).length === 1 ? name : '',
+      });
+    return {
+      app,
+      done: app.initialize(true),
+      key,
+      type: (text) => {
+        for (const char of text) key(char);
+      },
+      card: (width = 80) => dialogRows(app.state.dialog!, width, 40),
+    };
+  };
+  return { base, home, root, seen, start };
+}
+
+test('setup keeps the saved URL and key on an empty enter and lists the models to search, with use "…" for one not listed', async (t) => {
+  const models = Array.from({ length: 10 }, (_, i) => `model-0${i}`);
+  const { base, home, root, seen, start } = await setupScreen(t, (url) =>
+    url === '/v1/models'
+      ? [200, { data: models.map((id) => ({ id })) }]
+      : [404, { error: 'not here' }],
+  );
+  const saved = defaultSettings();
+  saved.initialized = true;
+  saved.auth.base_url = base;
+  saved.auth.model = 'old-model';
+  // the folder trusted already: setup is the only question
+  saveSettings(trustFolder(saved, root), home);
+  saveCredentials({ api_key: 'saved-key' }, home);
+  const { app, done, key, type, card } = start();
+  for (const colours of [
+    buildPalette(...DEFAULT_DARK),
+    buildPalette(...DEFAULT_LIGHT),
+  ]) {
+    setPalette(colours);
+    await until(() => app.state.dialog !== undefined);
+    const rows = card();
+    const plain = rows.map((row) => stripAnsi(row).slice(1, -1).trimEnd());
+    assert.equal(plain[1], " ● What is the API's base URL?");
+    assert.equal(
+      plain[2],
+      '   An OpenAI-style or Anthropic-style API, such as https://api.openai.com/v1',
+    );
+    // Empty, with what an empty enter does in the input row, dim
+    assert.equal(plain.at(-2), ` › ▏enter keeps ${base}`);
+    assert.ok(rows.at(-2)!.includes(colours.dim + `enter keeps ${base}`));
+    for (const row of rows) assert.equal(stringWidth(row), 80);
+  }
+  key('enter');
+  assert.equal(app.state.dialog?.title, 'What is the API key?');
+  let plain = card(200).map((row) => stripAnsi(row).slice(1, -1).trimEnd());
+  assert.equal(plain[2], `   for ${base}`);
+  assert.equal(
+    plain[3],
+    `   Saved in ${join(home, 'credentials.json').replace(homedir(), '~')}, readable only by you.`,
+  );
+  assert.equal(plain.at(-2), ' › ▏enter keeps the saved key');
+  type('ab');
+  assert.equal(stripAnsi(card().at(-2)!).slice(1, -1).trimEnd(), ' › ••▏');
+  key('backspace');
+  key('backspace');
+  key('enter');
+  // The saved key went to the endpoint, which lists its models under /v1 only
+  await until(() => app.state.dialog?.title === 'Which model?');
+  assert.ok(seen.includes('/v1/models Bearer saved-key'), seen.join('\n'));
+  plain = card().map((row) => stripAnsi(row).slice(1, -1).trimEnd());
+  assert.equal(plain[2], '   10 models at 127.0.0.1');
+  // A list without a key column: eight rows, where the mark is, then the search
+  assert.deepEqual(
+    plain.slice(4, 12),
+    models.slice(0, 8).map((m) => `   ${m}`),
+  );
+  assert.equal(plain[12], '   (1/10)');
+  assert.equal(plain.at(-2), ' › ▏type to search');
+  assert.ok(card()[4]!.includes(palette().sel_bg.slice(2, -1)));
+  assert.ok(!card()[5]!.includes(palette().sel_bg.slice(2, -1)));
+  key('down');
+  key('up');
+  key('up');
+  assert.match(stripAnsi(card().join('\n')), /\(10\/10\)/);
+  // Typing searches; an id the endpoint does not list is one more row
+  type('07');
+  plain = card().map((row) => stripAnsi(row).slice(1, -1).trimEnd());
+  assert.deepEqual(plain.slice(4, 6), [
+    '   model-07',
+    '   use "07"   not listed',
+  ]);
+  key('ctrl+u');
+  type('custom-x');
+  assert.deepEqual(app.state.dialog!.options, ['use "custom-x"']);
+  // Nothing is saved before a model is chosen
+  assert.equal(loadSettings(home).auth.model, 'old-model');
+  key('enter');
+  assert.equal(await done, true);
+  const settings = loadSettings(home);
+  assert.equal(settings.auth.base_url, `${base}/v1`);
+  assert.equal(settings.auth.model, 'custom-x');
+  assert.equal(settings.auth.protocol, 'openai');
+  assert.equal(loadCredentials(home).api_key, 'saved-key');
+  assert.equal(app.settings.auth.model, 'custom-x');
+});
+
+test('setup says what is wrong and asks again; an endpoint that cannot list its models gets the kind of API and a typed id; esc leaves', async (t) => {
+  const { base, home, start } = await setupScreen(t, () => [
+    401,
+    { error: 'no' },
+  ]);
+  const { app, done, key, type, card } = start();
+  const body = (): string[] =>
+    card(200).map((row) => stripAnsi(row).slice(1, -1).trimEnd());
+  await until(() => app.state.dialog !== undefined);
+  // Nothing saved: nothing to keep
+  assert.equal(body().at(-2), ' › ▏');
+  key('enter');
+  assert.equal(body()[2], '   ✖ Enter a URL');
+  assert.ok(card()[2]!.includes(palette().yellow + '✖ '));
+  type('nonsense');
+  key('enter');
+  assert.equal(app.state.dialog?.title, "What is the API's base URL?");
+  assert.equal(
+    body()[2],
+    '   ✖ Use an http(s) API base URL without credentials, query or fragment',
+  );
+  assert.equal(body().at(-2), ' › ▏');
+  type(base + '/');
+  key('enter');
+  assert.equal(body()[2], `   for ${base}`);
+  key('enter');
+  assert.equal(body()[2], '   ✖ Enter a key');
+  type('wrong-key');
+  key('enter');
+  await until(() => app.state.dialog?.title === 'Which kind of API is it?');
+  assert.deepEqual(body().slice(2, 4), [
+    '   ✖ Model discovery failed; protocol is unverified (http 401)',
+    '   Pick the kind, then type the model id.',
+  ]);
+  assert.deepEqual(app.state.dialog!.options, [
+    'OpenAI-style API',
+    'Anthropic-style API',
+  ]);
+  key('2');
+  assert.equal(app.state.dialog?.title, 'Which model?');
+  assert.equal(
+    body()[2],
+    '   Manual configuration (anthropic); model is unverified. Type the model id your endpoint uses.',
+  );
+  assert.equal(body().at(-2), ' › ▏model id');
+  key('enter');
+  assert.equal(body()[2], '   ✖ Enter a model id: the endpoint listed none');
+  type('claude-x');
+  assert.deepEqual(app.state.dialog!.options, ['use "claude-x"']);
+  key('escape');
+  assert.equal(await done, false);
+  assert.equal(app.state.dialog, undefined);
+  assert.ok(!existsSync(join(home, 'settings.json')));
+  assert.ok(!existsSync(join(home, 'credentials.json')));
 });

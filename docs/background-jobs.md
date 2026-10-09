@@ -14,7 +14,7 @@ A command or a subagent can keep running while you and the model go on: a dev se
 
 - **Below the input box**, one row per running job, under the strip's header (`Jobs · 2`): its id and command, the last line it printed (or a subagent's current step, or `waiting for you`), and how long it has run.
 - **Its output** goes to `/background_jobs/<run>/run-<n>.log`, which the model reads with `read_file`. It is kept in the [data folder](configuration.md#where-circle-keeps-things) (`projects/<folder>-<id>/background_jobs/`), not in your project, and the model cannot change it. Standard output and standard error are kept together, in the order they were written. Each run of Circle has its own folder; it is removed when Circle next starts in that project, once that run has ended and a day has passed.
-- **`/jobs`** (`/tasks`) lists the jobs, running ones first. `enter` opens a job's page with its output, refreshed while it runs; `esc` goes back. `ctrl+d` stops a running job after asking, or removes one that has ended from the list.
+- **`/jobs`** (`/tasks`) lists the jobs, running ones first. `enter` opens a job's page: a band with its lamp, id and command, state and time, and the file its output goes to, then its output, refreshed while it runs; `esc` goes back. `ctrl+d` stops a running job after asking, or removes one that has ended from the list.
 - **The model** has `list_jobs` and `stop_job`. A subagent also has `wait_jobs`, because only the main agent can be woken by a notice.
 
 Limits: 16 commands and watches at once (processes left running by a command are never refused), 4 background subagents at once, and 1 GiB of output per job; a job that writes more is stopped (`CIRCLE_JOB_OUTPUT_LIMIT_MB`). A background command's `timeout` can be up to a day.

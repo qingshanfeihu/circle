@@ -85,7 +85,17 @@ Questions from the model:
 | `ctrl+o`, `ctrl+t` | Show or fold a long question. |
 | `esc` | Cancel the questions. When you had already chosen or typed something, the first press warns you and the second cancels. |
 
-Other cards, such as setup, the trust question, or `stop j3` from `/jobs`: `↑` `↓` move, a digit or `enter` chooses, `y` takes the first option and `n` the last, and `esc` or `ctrl+c` take the last (`quit`, `keep running`, `cancel`). Where the card asks for text, type it and press `enter`; `esc` answers with nothing, which cancels.
+Setup, at the first start and with `circle --init`:
+
+| Key | Action |
+|---|---|
+| typing, `backspace`, `ctrl+u` | The URL or the key (shown as dots), in the input row. A paste goes there too. |
+| `enter` | Go on. With nothing typed, keep the saved URL or key, as the input row says (`enter keeps …`). |
+| `↑` `↓`, `1` `2`, `enter` | Choose the kind of API, when the endpoint could not tell. |
+| typing, `↑` `↓`, `enter` | In the model list: search it, move, and take the marked model, or `use "…"` for an id the endpoint does not list. |
+| `esc`, `ctrl+c`, `ctrl+d` | Leave setup without saving. Circle exits. |
+
+Other cards, such as the trust question or `stop j3` on a job's page: `↑` `↓` move, a digit or `enter` chooses, `y` takes the first option and `n` the last, and `esc` or `ctrl+c` take the last (`quit`, `keep running`, `cancel`).
 
 ## Completion list
 
@@ -108,13 +118,21 @@ Any other key goes to the input box and narrows the list.
 |---|---|
 | typing | Search. Every word you type must appear in the row. |
 | `backspace` | Delete a character of the search. |
+| `ctrl+u` | Clear the search. |
 | `↑` `↓`, `ctrl+p` `ctrl+n` | Move. The list wraps around. |
+| `pageup`, `pagedown` | Move by as many rows as the list shows. These stop at the first and last row. |
 | `enter` | Choose the marked row. |
 | `esc` | Clear the search, or close the list. |
 
+A paste goes where typing goes, into the search or the line the list asks for, never into the input box.
+
 `ctrl+c` is not the list's: it does what it does in the input box, and the list stays open. `ctrl+d` exits from an empty input box unless the list uses it.
 
-Some lists add keys, shown under their title: `ctrl+s` in `/models` and `/effort` also saves the choice as the default; `tab` in `/models` adds the model to the ones `ctrl+p` goes through or takes it out; `tab`, `ctrl+r` and `ctrl+d` in `/resume` switch folders, rename and delete; `L` and `ctrl+u` in `/tree` label a message and show only yours; `ctrl+d` in `/jobs` stops a job (after asking) or removes one that has ended; `k` `j` and the digits in `/approvals` move and pick a row, so they do not search there.
+When a list needs a line of text or a yes or no, such as a new name in `/resume` or `Stop j3 npm test?` in `/jobs`, it asks on the line under its title, in place of the search. Type the text (`backspace`, `ctrl+u` and a paste work) and press `enter`, or press `enter` to confirm. `esc` or `ctrl+c` cancel and change nothing; the list stays open.
+
+Some lists add keys, shown under their title: `ctrl+s` in `/models` and `/effort` also saves the choice as the default; `tab` in `/models` adds the model to the ones `ctrl+p` goes through or takes it out; `tab`, `ctrl+r` and `ctrl+d` in `/resume` switch folders, rename and delete; `L` and `ctrl+u` in `/tree` label a message and show only yours; `ctrl+d` in `/jobs` stops a job (after asking) or removes one that has ended.
+
+`/approvals` has no search. `↑` `↓`, `k` `j` and `tab` move, a digit picks its row at once, `enter` picks the marked one and `esc` closes it. Other keys, and a paste, go to the input box. `ctrl+c` closes the list and then does what it does in the input box.
 
 ## Search
 
@@ -157,7 +175,7 @@ While subagents run, `↓` in an empty input box selects the strip below the foo
 
 In a subagent's record: `esc` or `backspace` go back, `←` `→` move to the previous or next subagent, and `pageup` `pagedown` `home` `end` scroll. The band at its top has `main`, `prev` and `next` to click. Typing a letter leaves the record and starts a message.
 
-On a job's page (from `/jobs`): `esc` goes back to the list, `ctrl+d` stops the job (after asking) or removes one that has ended, and the mouse wheel scrolls. Other keys do nothing there, except `ctrl+c` and `ctrl+z`.
+On a job's page (from `/jobs`): `esc` goes back to the list, `ctrl+d` stops the job (after a card asks) or removes one that has ended, and the mouse wheel scrolls. Other keys do nothing there, except `ctrl+c` and `ctrl+z`.
 
 ## Mouse
 
@@ -169,6 +187,7 @@ On a job's page (from `/jobs`): `esc` goes back to the list, `ctrl+d` stops the 
 | Double-click | Select a word. |
 | Triple-click | Select a line. |
 | Click an `Agent(…)` row | Open that subagent's record; with several subagents, a list to choose from. |
+| Click a subagent's row in the strip | Open that subagent's record. |
 | `ctrl+c` with a selection | Copy it again. |
 | `esc` with a selection | Clear the selection. |
 

@@ -36,7 +36,7 @@ Circle's screen has a few parts, and each kind of information always goes to the
 | **Header** | Version, model (with the thinking depth when it has one, such as `step-3.7-flash • high`), folder, and the git branch in brackets when the folder is in a repository, once the welcome has scrolled off the screen. While the welcome is on screen the header shows only, on the right, the one general shortcut hint. While setup or the trust question is asking, it is empty. |
 | **Welcome** | The first block of the conversation. See [The welcome](#the-welcome). |
 | **Conversation** | Everything that happened: your messages, Circle's answers, thinking, tool calls and their results, notices, and after each turn a line with its time and tokens. Answers are drawn from their Markdown: headings, emphasis, links, code, lists, quotations and tables. It scrolls and never loses anything. |
-| **Lists** | The lists that commands and keys open, such as `/models` or `/resume`, appear above the plan box and the input box. They close when you choose or press `esc`. |
+| **Lists** | The lists that commands and keys open, such as `/models` or `/resume`, appear above the plan box and the input box. They close when you choose or press `esc`. A list that needs a line of text or a yes or no, such as a new name in `/resume`, asks on the line under its title. |
 | **Plan box** | Circle's own plan, when it has one: five steps at a time, following the current step, with the range at the bottom right (`2–6 / 8`) when there are more. The mouse wheel over it scrolls it. It is hidden while a card is up. It belongs to the session: `/new` starts without one, and a resumed session brings its own back. |
 | **Waiting messages** | Above the input box, while a turn runs: a compaction under way, with its progress bar (see [Compaction](sessions.md#compaction)); each message you sent that the model has not read yet, `steering: …`; and each that waits for the turn to end, `follow-up: …`. More than fit end in `+N queued · alt+up edits all`. See [Steer a running turn](usage.md#steer-a-running-turn). |
 | **Input box** | The one framed box on the screen. It is where you type, and where questions appear. Above it, while you type `/` or `@`, the completion list. |
@@ -104,7 +104,7 @@ Every row that has a state gets one round lamp `●`.
 | Cyan, steady | Waiting for you |
 | None | Not running |
 
-Lamps appear on tool calls, subagents, background jobs, the plan and its steps, the title of a card, the folder's rows in the welcome, and the band of a subagent's page. A plan step or a call is lit only while a turn works on it: when nothing runs, a step in progress and a call that an interrupted turn left without a result stay unlit. Cyan, the "waiting for you" lamp, is the one to look for when nothing seems to be happening: something is waiting for your answer.
+Lamps appear on tool calls, subagents, background jobs, the plan and its steps, the title of a card, the folder's rows in the welcome, and the band of a subagent's page or a job's page. A plan step or a call is lit only while a turn works on it: when nothing runs, a step in progress and a call that an interrupted turn left without a result stay unlit. Cyan, the "waiting for you" lamp, is the one to look for when nothing seems to be happening: something is waiting for your answer.
 
 ## Tints
 
@@ -139,13 +139,15 @@ Circle folds what is long or rarely needed, and always says how to open it:
 - A file read shows `Read 31 lines · ctrl+o`.
 - A running subagent shows its last calls under its row, and `… +N earlier · ctrl+o` for the others.
 
-Elsewhere, keys are named only where you entered something with keys of its own: under a list's title, on the search line, and on a job's page. The header's `? for shortcuts` lists the keys; [Keyboard and mouse](keybindings.md) has them all.
+Elsewhere, keys are named only where you entered something with keys of its own: under a list's title, on the line where a list asks for text or a yes or no, and on the search line. The header's `? for shortcuts` lists the keys; [Keyboard and mouse](keybindings.md) has them all.
 
 ## Questions in the frame
 
 A tool approval, a question from the model, a secret a task asks for, and the first run's setup and trust questions do not open a second box. The input box itself changes: the frame turns yellow and still, the plan box steps out of the way, and the box shows a title with a cyan lamp, what is being asked, and numbered options. For a file change, what is being asked includes the lines it would add and remove, up to 40 of them. The tool row above it, in the conversation, carries the same lamp and tint, so you can see which call is asking. A card does not appear while you are typing: it waits until you have paused for a second. When you answer, the box returns to normal and your draft is put back.
 
 If your screen is too short for a long command, the card shows the start of it and how many lines are hidden. Reject if you cannot see enough to approve.
+
+Setup asks one thing at a time on its card. The URL and the key are typed in the card's input row, the key as dots; when Circle was set up before, the empty row says `enter keeps …` and an empty `enter` keeps the saved one. The model is a list of what the endpoint offers, with no numbers: type to search it, and a model it does not list gets a row of its own, `use "…"`, marked `not listed`.
 
 ## Dark and light terminals
 

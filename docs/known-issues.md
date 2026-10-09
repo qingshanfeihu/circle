@@ -20,7 +20,6 @@ This page lists what does not work as you might expect in the current version, w
 - **`/yolo` turns itself off** on `/new`, `/fork`, `/clone`, `/import` and restart.
 - **`projects/` in the data folder is mostly not cleaned up.** It keeps the messages that summaries replaced and very long tool results, for every project; only command and job output is removed, a day after its run ended. Delete old folders by hand.
 - **Circle 0.5.0 cannot import the JSONL exports of this version.** This version imports 0.5.0's.
-- **`esc` on the label card of `/tree` removes the message's label** instead of leaving it as it was. The card starts with the current label: press `enter` to keep it.
 
 ## Safety
 

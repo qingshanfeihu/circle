@@ -6,7 +6,7 @@ import { dialogRows, type DialogState } from '../ink/components/dialog_card.js';
 import type { Picker } from '../ink/components/picker.js';
 import { planRows } from '../ink/components/plan_panel.js';
 import type { UserShellView } from '../user_shell.js';
-import { elapsed, outputTail, plainJobOutput, type Job } from '../jobs.js';
+import { outputTail, plainJobOutput, type Job } from '../jobs.js';
 import type { CompactionProgress } from '../compaction.js';
 import type { SubagentView } from './subagents.js';
 import { TranscriptFind, highlightMatches } from './transcript_find.js';
@@ -24,7 +24,13 @@ import {
   turnUsageRow,
   type TurnUsage,
 } from './status_rows.js';
-import { agentRows, jobRows, stripHeader, AGENT_ROWS } from './strip_rows.js';
+import {
+  agentRows,
+  jobBand,
+  jobRows,
+  stripHeader,
+  AGENT_ROWS,
+} from './strip_rows.js';
 import {
   extensionRows,
   HIDDEN_TOOLS,
@@ -86,6 +92,9 @@ export interface ScreenState {
   agentDetail?: SubagentView;
   /** Set by renderScreen: the screen row of a subagent page's band and its buttons. */
   pageButtons?: { row: number; spans: DetailBand['spans'] };
+  /** Set by renderScreen: the screen row of the strip's first subagent row, and the
+   * subagents its rows show, top to bottom. */
+  stripAgents?: { row: number; ids: string[] };
   find?: TranscriptFind;
   historySearch?: { query: string; match: boolean };
   renderToolResult?: (message: Message) => string[] | undefined;
@@ -335,12 +344,12 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
   return rows;
 }
 // The strip under the footer: the turn's subagents (and the one selected or open), then the
-// background jobs that are still running.
+// background jobs that are still running; `ids` are the subagents its rows show.
 function stripRows(
   state: ScreenState,
   width: number,
   height: number,
-): string[] {
+): { rows: string[]; ids: string[] } {
   const running = (agent: SubagentView): boolean =>
     ['running', 'waiting'].includes(agent.state);
   const selected = state.agentDetail?.id ?? state.selectedAgent;
@@ -348,7 +357,7 @@ function stripRows(
     (agent) => (!agent.background && running(agent)) || agent.id === selected,
   );
   const jobs = (state.jobs ?? []).filter((job) => job.status === 'running');
-  if (!agents.length && !jobs.length) return [];
+  if (!agents.length && !jobs.length) return { rows: [], ids: [] };
   const now = Date.now();
   const most = Math.min(AGENT_ROWS, Math.max(1, Math.floor((height - 8) / 3)));
   const at = Math.max(
@@ -378,7 +387,7 @@ function stripRows(
       ),
     }),
   );
-  return rows;
+  return { rows, ids: visible.map((agent) => agent.id) };
 }
 export function renderScreen(
   state: ScreenState,
@@ -393,7 +402,7 @@ export function renderScreen(
     bottom.push(
       ...state.picker.rows(width, Math.max(3, Math.floor(height / 3))),
     );
-  const strip = stripRows(state, width, height);
+  const { rows: strip, ids: stripIds } = stripRows(state, width, height);
   if (!state.dialog && state.todos.length) {
     bottom.push(
       ...planRows(
@@ -514,6 +523,8 @@ export function renderScreen(
       result,
     });
   } else transcript = transcriptRows(state, width);
+  // A job's page: its band stays under the header (0.5.0's), its output scrolls under it.
+  let bandRows = band?.rows ?? [];
   if (state.jobDetail) {
     const job = state.jobDetail;
     let output = '';
@@ -522,24 +533,13 @@ export function renderScreen(
     } catch {
       output = 'Output is unavailable.';
     }
-    transcript = [
-      p.text +
-        ` ${job.id} · ${job.status} · ${plainJobOutput(job.title)}` +
-        p.reset,
-      p.faint +
-        ` ${job.virtualPath} · ${elapsed(job)} · esc back · ctrl+d ${job.status === 'running' ? 'stop' : 'remove'}` +
-        p.reset,
-      '',
-      ...wrap(plainJobOutput(output), width).map(
-        (row) => p.dim + row + p.reset,
-      ),
-    ];
+    bandRows = jobBand(job, width);
+    transcript = wrap(plainJobOutput(output), width).map(
+      (row) => p.dim + row + p.reset,
+    );
   }
   // two header rows (and a page's band) above the transcript
-  const available = Math.max(
-    1,
-    height - bottom.length - 2 - (band?.rows.length ?? 0),
-  );
+  const available = Math.max(1, height - bottom.length - 2 - bandRows.length);
   state.view = {
     rows: available,
     maxScroll: Math.max(0, transcript.length - available),
@@ -577,7 +577,7 @@ export function renderScreen(
     },
     width,
   );
-  rows.push(...(band?.rows ?? []));
+  rows.push(...bandRows);
   const headerHeight = rows.length;
   rows.push(...transcript.slice(first, end));
   while (rows.length < height - bottom.length) rows.push('');
@@ -592,6 +592,10 @@ export function renderScreen(
     row: headerHeight - band.rows.length - Math.max(0, rows.length - height),
     spans: band.spans,
   };
+  // The strip is the screen's last rows: its header, then a row per subagent shown.
+  state.stripAgents = stripIds.length
+    ? { row: Math.min(rows.length, height) - strip.length + 1, ids: stripIds }
+    : undefined;
   // A row never runs past the edge: on a very narrow screen even a status row is cut.
   return rows
     .slice(-height)
