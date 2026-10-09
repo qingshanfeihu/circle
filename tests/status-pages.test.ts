@@ -352,7 +352,9 @@ test('a subagent folds under its Agent row while it runs and when it is done, an
       plain[5]!,
       /^ ⎿ ∴ Thought \d+s · Scan the notes · 39 chars {2}ctrl\+t +$/,
     );
-    assert.ok(rows[5]!.includes(p.think_bg.slice(2, -1)));
+    assert.ok(rows[5]!.includes(p.reason.slice(2, -1)));
+    assert.ok(!rows[5]!.includes(p.think_bg.slice(2, -1)));
+    assert.ok(!rows[5]!.includes('\x1b[48'));
     assert.equal(plain[6]!.trimEnd(), ' ● Read(a.txt) 1: a1');
     assert.ok(rows[6]!.includes(p.read_bg.slice(2, -1)));
     assert.equal(plain[9]!.trimEnd(), ' ● Read(d.txt) 1: d1');
@@ -361,10 +363,16 @@ test('a subagent folds under its Agent row while it runs and when it is done, an
     assert.match(plain[12]!, /^ Result · done · 4 calls · ↑5\.5k · \d+s +$/);
     assert.equal(plain[13]!.trimEnd(), '    ⎿ Four notes, nine lines.');
     coloursFrom(p, rows.join('\n'));
-    // ctrl+t shows the reasoning under its row.
+    // ctrl+t shows the reasoning under its row, still without a tint.
     app.state.thinkingExpanded = true;
-    plain = frame().map(stripAnsi);
-    assert.ok(plain.some((row) => row.trim() === 'One file at a time.'));
+    const openRows = frame();
+    plain = openRows.map(stripAnsi);
+    const body = openRows.find(
+      (row) => stripAnsi(row).trim() === 'One file at a time.',
+    );
+    assert.ok(body);
+    assert.ok(body!.includes(p.faint.slice(2, -1)));
+    assert.ok(!body!.includes(p.think_bg.slice(2, -1)));
     app.state.thinkingExpanded = false;
     // `main` on the band goes back to the conversation.
     plain = frame().map(stripAnsi);

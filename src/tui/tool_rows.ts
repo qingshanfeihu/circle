@@ -2,7 +2,8 @@
 // one row `{lamp} {Short}({summary})` with its result on `⎿` lines right under it, the row
 // and its lines on the tool's type tint (read blue, write green, agent cyan, question
 // magenta). A failure the model can fix itself gets no lamp and a muted strikethrough.
-// Thinking is one folded row, `∴ Thought 6.3s · title  ctrl+t`, on the thinking tint
+// Thinking is one folded row, `∴ Thought 6.3s · title  ctrl+t`, on the terminal
+// background: italic blue from the terminal's own slot, faint body text. No type tint
 // (ported from transcript_view.py, content_blocks.py and tool_display.py).
 import { lampSgr, palette, sgrJoin, type LampState } from '../ink/theme.js';
 import { pad, stringWidth, truncate } from '../ink/string_width.js';
@@ -501,7 +502,9 @@ export function reasoningSummary(text: string): {
 }
 
 // `∴ Thinking · title` while it runs, `∴ Thought 6.3s · title` when settled, with `ctrl+t`
-// when its text is folded away; expanded, the text follows in faint.
+// when its text is folded away; expanded, the text follows in faint. The row is not
+// tinted: blue is the terminal's slot, so it follows a dark or a light theme, and the
+// body is `faint`, already held to a contrast floor on that background.
 export function thinkingRows(
   text: string,
   options: {
@@ -523,16 +526,11 @@ export function thinkingRows(
     [style, truncate(header, Math.max(1, options.width - 10))],
   ];
   if (body && !options.expanded) head.push(['', '  '], [p.faint, 'ctrl+t']);
-  const rows = [tintedRow(head, p.think_bg, options.width)];
+  const rows = [tintedRow(head, '', options.width)];
   if (options.expanded && body)
     for (const line of markdownRows(body, Math.max(20, options.width - 3), {
       base: p.faint,
-      background: p.think_bg,
     }))
-      rows.push(
-        sgrJoin(p.think_bg, p.faint) +
-          pad('   ' + line, options.width) +
-          p.reset,
-      );
+      rows.push(p.faint + pad('   ' + line, options.width) + p.reset);
   return rows;
 }

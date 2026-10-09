@@ -4,6 +4,10 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Changed
+
+- **Thinking has no background tint.** A thought, folded or open, and the same line on a subagent's page, sit on the terminal background. The line stays italic blue and the open text stays faint, on a dark theme and on a light one. The plan and questions keep the magenta tint.
+
 ## 1.0.1 - 2026-10-09
 
 ### Changed
