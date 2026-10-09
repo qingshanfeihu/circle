@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 1.0.3 - 2026-10-09
+
 ### Changed
 
 - **Subagent rows in the strip have no background until you select one or point at it.** The row under the mouse lights up, as in 0.5.0, and so do the buttons on a record's band. The selected row used to sit on a colour almost the same as the others'.
