@@ -43,6 +43,7 @@ import {
 import { welcomeRows } from '../ink/components/welcome.js';
 import { renderScreen, transcriptRows, type ScreenState } from './render.js';
 import { InputHistory } from './input_history.js';
+import { Composer } from './composer.js';
 import { TranscriptFind } from './transcript_find.js';
 import { InteractionQueue } from './interaction_queue.js';
 import { installExitGuard } from '../exit_guard.js';
@@ -108,6 +109,8 @@ export class SessionApp {
   private previousSession = '';
   private lastEscape = 0;
   private history: InputHistory;
+  private composer: Composer;
+  private commandList?: Map<string, string>;
   private off?: () => void;
   private offSignals?: () => void;
   private jobWakeAt = 0;
@@ -195,6 +198,27 @@ export class SessionApp {
       this.done = resolve;
     });
     this.history = InputHistory.forHome(home);
+    this.composer = new Composer(this.state, {
+      history: this.history,
+      columns: () => process.stdout.columns || 80,
+      viewRows: () =>
+        this.state.view?.rows ?? Math.max(1, (process.stdout.rows || 24) - 8),
+      scroll: (rows) => {
+        const top = this.state.view?.maxScroll ?? Number.MAX_SAFE_INTEGER;
+        this.state.scroll =
+          rows === 'top'
+            ? top
+            : rows === 'bottom'
+              ? 0
+              : Math.max(0, Math.min(top, this.state.scroll + rows));
+      },
+      send: (kind) => this.send(kind),
+      command: (name) =>
+        void this.command(name, '').catch((error) => this.fail(error)),
+      flash: (text) => this.flash(text),
+      commands: () => this.completionCommands(),
+      files: (partial, limit) => complete(partial, this.workspace, limit),
+    });
   }
   start(): void {
     process.stdin.setRawMode(true);
@@ -376,8 +400,8 @@ export class SessionApp {
     );
   }
   private setDraft(text: string): void {
-    this.state.draft = text;
-    this.state.draftCursor = Array.from(text).length;
+    this.composer.set(text);
+    this.state.completion = undefined;
   }
   async initialize(force = false): Promise<boolean> {
     if (force || !this.settings.initialized) {
@@ -881,7 +905,10 @@ export class SessionApp {
         this.state.dialog = this.questionCard.state();
       } else if (this.state.dialog?.input !== undefined)
         this.state.dialog.input += event.text;
-      else this.insert(event.text);
+      else {
+        this.composer.paste(event.text);
+        this.composer.update();
+      }
       this.repaint();
       return;
     }
@@ -1065,10 +1092,18 @@ export class SessionApp {
       this.exit(0);
       return;
     }
+    if (this.composer.completionKey(key)) {
+      this.repaint();
+      return;
+    }
     if (key === 'ctrl+c') {
       this.jobWakeSnoozed = true;
       if (this.runtime?.busy) void this.runtime.cancel();
-      else this.setDraft('');
+      else {
+        // What you typed is cleared but stays in the history
+        this.history.add(this.state.draft);
+        this.composer.clear();
+      }
     } else if (key === 'escape') {
       this.jobWakeSnoozed = true;
       if (this.runtime?.busy) void this.runtime.cancel();
@@ -1078,7 +1113,10 @@ export class SessionApp {
         this.settings.double_escape !== 'none'
       )
         void this.command(this.settings.double_escape, '');
-      this.lastEscape = Date.now();
+      // Only an esc on an empty box counts toward esc esc: the one that clears your
+      // text must not open the tree as well
+      this.lastEscape = this.state.draft ? 0 : Date.now();
+      if (!this.runtime?.busy) this.composer.clear();
     } else if (key === 'ctrl+b') {
       const count = this.runtime?.jobs.backgroundForeground() ?? 0;
       this.flash(
@@ -1123,83 +1161,50 @@ export class SessionApp {
           `${messages.length} queued message${messages.length === 1 ? '' : 's'} back in the box`,
         );
       }
-    } else if (
-      ['ctrl+q', 'alt+enter', 'alt+return'].includes(key) &&
-      this.state.draft.trim()
-    ) {
-      const message = this.state.draft.trim();
-      this.setDraft('');
-      this.history.add(message);
-      if (this.runtime?.busy) {
-        this.runtime.harness.queue(message, 'followUp');
-        this.flash('Queued follow-up');
-      } else void this.submit(message).catch((error) => this.fail(error));
-    } else if (key === 'shift+enter' || key === 'ctrl+j') this.insert('\n');
-    else if (key === 'enter') {
-      const message = this.state.draft.trim();
-      if (message) {
-        this.setDraft('');
-        this.history.add(message);
-        void this.submit(message).catch((error) => this.fail(error));
-      }
-    } else if (key === 'tab') this.completeDraft();
-    else if (key === 'backspace') {
-      const chars = Array.from(this.state.draft);
-      if (this.state.draftCursor > 0) chars.splice(--this.state.draftCursor, 1);
-      this.state.draft = chars.join('');
-    } else if (key === 'delete' || key === 'ctrl+d') {
-      const chars = Array.from(this.state.draft);
-      chars.splice(this.state.draftCursor, 1);
-      this.state.draft = chars.join('');
-    } else if (key === 'left')
-      this.state.draftCursor = Math.max(0, this.state.draftCursor - 1);
-    else if (key === 'right')
-      this.state.draftCursor = Math.min(
-        Array.from(this.state.draft).length,
-        this.state.draftCursor + 1,
-      );
-    else if (key === 'home' || key === 'ctrl+a') this.state.draftCursor = 0;
-    else if (key === 'end' || key === 'ctrl+e')
-      this.state.draftCursor = Array.from(this.state.draft).length;
-    else if (key === 'up' || key === 'down') {
-      const value =
-        key === 'up' ? this.history.up(this.state.draft) : this.history.down();
-      if (value !== undefined) this.setDraft(value);
-    } else if (key === 'pageup')
-      this.state.scroll += Math.max(1, (process.stdout.rows || 24) - 8);
-    else if (key === 'pagedown')
-      this.state.scroll = Math.max(
-        0,
-        this.state.scroll - Math.max(1, (process.stdout.rows || 24) - 8),
-      );
-    else if (char && !key.startsWith('ctrl+') && !key.startsWith('alt+'))
-      this.insert(char);
+    } else if (['ctrl+q', 'alt+enter', 'alt+return'].includes(key)) {
+      if (this.state.draft.trim()) this.send('followUp');
+    } else this.composer.key(key, char);
     this.repaint();
   }
-  private insert(text: string): void {
-    const chars = Array.from(this.state.draft);
-    chars.splice(this.state.draftCursor, 0, ...Array.from(text));
-    this.state.draftCursor += Array.from(text).length;
-    this.state.draft = chars.join('');
-  }
-  private completeDraft(): void {
-    if (this.state.draft.startsWith('/') && !this.state.draft.includes(' ')) {
-      const matches = BUILTIN_SLASH.filter((command) =>
-        command.name.startsWith(this.state.draft.slice(1)),
+  /** Send the draft: the model reads the long pastes, the screen and the history keep it as shown. */
+  private send(kind: 'steer' | 'followUp'): void {
+    const shown = this.state.draft.trim();
+    if (!shown) return;
+    this.composer.take();
+    const message = this.composer.modelText(shown);
+    const pastes = this.composer.pastesOf(shown);
+    this.history.add(shown);
+    if (kind === 'followUp' && this.runtime?.busy) {
+      if (message !== shown)
+        this.runtime.harness.shown.set(message, { display: shown, pastes });
+      this.runtime.harness.queue(message, 'followUp');
+      this.flash('Queued follow-up');
+    } else
+      void this.submit(message, shown, pastes).catch((error) =>
+        this.fail(error),
       );
-      if (matches[0]) this.setDraft('/' + matches[0].name + ' ');
-    } else {
-      const match = this.state.draft.match(/@([^\s]*)$/);
-      if (match) {
-        const matches = complete(match[1]!, this.workspace);
-        if (matches[0])
-          this.setDraft(
-            this.state.draft.slice(0, match.index) + '@' + matches[0],
-          );
-      }
-    }
   }
-  async submit(message: string): Promise<void> {
+  /** Everything that can follow `/` for the completion list, read again each time a `/` is typed. */
+  private completionCommands(): Map<string, string> {
+    if (this.commandList && this.state.draft.length > 1)
+      return this.commandList;
+    const found = new Map(
+      BUILTIN_SLASH.map((command) => [command.name, command.description]),
+    );
+    for (const command of discoverCustomCommands(this.workspace, this.home))
+      found.set(command.name, command.description);
+    for (const [name, command] of this.runtime?.extensions.commands() ?? [])
+      found.set(name, command.description);
+    for (const skill of this.runtime?.skills ?? [])
+      found.set(`skill:${skill.name}`, skill.description);
+    this.commandList = found;
+    return found;
+  }
+  async submit(
+    message: string,
+    shown = message,
+    pastes?: Record<string, string>,
+  ): Promise<void> {
     if (message === '?') {
       await this.command('hotkeys', '');
       return;
@@ -1225,6 +1230,8 @@ export class SessionApp {
     }
     this.jobWakeSnoozed = false;
     this.jobWakeCount = 0;
+    if (shown !== message)
+      this.runtime.harness.shown.set(message, { display: shown, pastes });
     if (this.runtime.busy) {
       this.runtime.harness.queue(message);
       this.flash('Queued steering');
@@ -1542,8 +1549,9 @@ export class SessionApp {
             await runtime.switchSession(session.id);
           } else runtime.store.select(runtime.session.id, head);
           if (checkpoint.message.role === 'user')
-            this.setDraft(
+            this.composer.restore(
               checkpoint.message.display || checkpoint.message.content,
+              checkpoint.message.pastes,
             );
           this.state.notices = [];
           this.state.hiddenTurns = 0;
@@ -1883,7 +1891,10 @@ export class SessionApp {
     );
     const directory = mkdtempSync(join(tmpdir(), 'circle-editor-'));
     const path = join(directory, 'draft.md');
-    writeFileSync(path, this.state.draft, { mode: 0o600 });
+    // The editor gets the draft in full, pastes written out
+    writeFileSync(path, this.composer.modelText(this.state.draft), {
+      mode: 0o600,
+    });
     this.externalEditor = true;
     process.stdin.off('data', this.dataListener);
     this.input.reset();
@@ -1905,7 +1916,9 @@ export class SessionApp {
             : reject(new Error(`editor exited ${code}`)),
         );
       });
-      this.setDraft(readFileSync(path, 'utf8'));
+      // Back in the box like a paste: a long text folded again
+      this.composer.clear();
+      this.composer.paste(readFileSync(path, 'utf8').replace(/\n+$/, ''));
     } finally {
       rmSync(directory, { recursive: true, force: true });
       this.externalEditor = false;

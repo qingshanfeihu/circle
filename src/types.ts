@@ -26,6 +26,8 @@ export interface Message {
   name?: string;
   status?: 'success' | 'error';
   display?: string;
+  /** Long pastes that `display` shows folded as `[Pasted text #N]`, by number. */
+  pastes?: Record<string, string>;
   provider_content?: unknown[];
   usage?: Usage;
   cost?: import('./pricing.js').PriceReceipt;
