@@ -51,3 +51,28 @@ export function wrap(text: string, width: number): string[] {
 export function pad(text: string, width: number): string {
   return text + ' '.repeat(Math.max(0, width - stringWidth(text)));
 }
+// A row with colour codes cut to `width` columns: the codes are kept, `…` marks the cut and
+// the colours are reset after it.
+export function truncateStyled(text: string, width: number): string {
+  if (stringWidth(text) <= width) return text;
+  if (width <= 0) return '';
+  const code = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/y;
+  let out = '';
+  let used = 0;
+  for (let index = 0; index < text.length;) {
+    code.lastIndex = index;
+    const found = code.exec(text);
+    if (found) {
+      out += found[0];
+      index += found[0].length;
+      continue;
+    }
+    const char = String.fromCodePoint(text.codePointAt(index)!);
+    const size = stringWidth(char);
+    if (used + size > width - 1) break;
+    out += char;
+    used += size;
+    index += char.length;
+  }
+  return out + '…\x1b[0m';
+}

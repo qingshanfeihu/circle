@@ -1,5 +1,5 @@
 import { palette, sgrJoin, statusLight } from '../ink/theme.js';
-import { wrap, pad, stringWidth, truncate } from '../ink/string_width.js';
+import { wrap, pad, truncate, truncateStyled } from '../ink/string_width.js';
 import type { Message, Usage } from '../types.js';
 import type { Todo } from '../tools.js';
 import { dialogRows, type DialogState } from '../ink/components/dialog_card.js';
@@ -15,6 +15,23 @@ import {
   terminalText,
 } from '../ink/components/markdown_renderer.js';
 import { completionRows, draftLines, type Completion } from './composer.js';
+import { loopFrame } from '../ink/components/loop_frame.js';
+import {
+  busyLabel,
+  footerRow,
+  headerRows,
+  turnUsageRow,
+  type TurnUsage,
+} from './status_rows.js';
+import { agentRows, jobRows, stripHeader, AGENT_ROWS } from './strip_rows.js';
+import {
+  HIDDEN_TOOLS,
+  resultRows,
+  thinkingRows,
+  tintedRow,
+  toolRow,
+  toolTint,
+} from './tool_rows.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
@@ -61,10 +78,43 @@ export interface ScreenState {
   find?: TranscriptFind;
   historySearch?: { query: string; match: boolean };
   renderToolResult?: (message: Message) => string[] | undefined;
+  // ctrl+t: thinking rows show their text; otherwise they are one folded row each.
+  thinkingExpanded?: boolean;
+  // How long each answer's thinking took, by message id, and the one streaming now.
+  thinkingSeconds?: Record<string, number>;
+  liveThinkingSeconds?: number;
+  // The line under each finished turn, by the id of the turn's last message.
+  turnUsage?: Record<string, TurnUsage>;
+  // The busy word for this turn and the tokens the turn has written so far.
+  busyVerb?: string;
+  busyTokens?: number;
+  // The header: thinking depth, the folder's git branch, and whether setup or trust is
+  // asking (`gate`) or the session is up (`connected`).
+  thinkingDepth?: string;
+  branch?: string;
+  gate?: boolean;
+  connected?: boolean;
 }
+// Blocks are separated by exactly one blank row; inside a block there is none. An answer is
+// its thinking rows plus the text after them, a tool group is consecutive tool rows.
+const CONTINUES: Record<string, string[]> = {
+  text: ['thinking'],
+  thinking: ['thinking'],
+  tool: ['tool'],
+};
 export function transcriptRows(state: ScreenState, width: number): string[] {
   const p = palette();
-  const rows: string[] = [...state.welcome, ''];
+  const rows: string[] = [...state.welcome];
+  let lastKind = 'welcome';
+  const gap = (kind: string): void => {
+    if (
+      rows.length &&
+      rows.at(-1) !== '' &&
+      !(CONTINUES[kind] ?? []).includes(lastKind)
+    )
+      rows.push('');
+    lastKind = kind;
+  };
   let messages = state.messages.filter(
     (message) => !message.internal || message.internal === 'job_notice',
   );
@@ -80,7 +130,9 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
     style = '',
     base = p.text,
     markdown = false,
+    kind = 'other',
   ): void => {
+    gap(kind);
     const lines = markdown
       ? markdownRows(content, width - 3, { base, background: style })
       : wrap(terminalText(content), width - 3);
@@ -91,7 +143,30 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
           pad((index === 0 ? ' ' + marker + ' ' : '   ') + line, width) +
           p.reset,
       ),
-      '',
+    );
+  };
+  // Your words: the blue `›` in the marker column, the words emphasised.
+  const user = (content: string): void => {
+    gap('user');
+    wrap(terminalText(content), width - 3).forEach((line, index) =>
+      rows.push(
+        (index === 0 ? ` ${p.blue}›${p.reset} ` : '   ') +
+          p.em +
+          line +
+          p.reset,
+      ),
+    );
+  };
+  const thinking = (text: string, done: boolean, seconds?: number): void => {
+    if (!state.showThinking || !text.trim()) return;
+    gap('thinking');
+    rows.push(
+      ...thinkingRows(text, {
+        done,
+        seconds,
+        expanded: Boolean(state.thinkingExpanded),
+        width,
+      }),
     );
   };
   const shellRows = (shell: {
@@ -120,7 +195,6 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       rows.push('   ' + p.dim + '⎿ ' + line + p.reset);
     if (!state.showTools && lines.length > 3)
       rows.push(p.faint + `… +${lines.length - 3} lines · ctrl+o` + p.reset);
-    rows.push('');
   };
   const localShells = state.agentDetail ? [] : (state.userShells ?? []);
   const localIds = new Set(
@@ -154,89 +228,80 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
             ? p.green
             : p.dim,
       );
-    else if (message.role === 'user')
-      block('›', message.display ?? message.content, '', p.blue);
+    else if (message.role === 'user') user(message.display ?? message.content);
     else if (message.role === 'assistant') {
       if (message.thinking)
-        block(
-          '∴',
-          state.showThinking ? message.thinking : 'Thought · ctrl+t',
-          p.think_bg,
-          p.dim,
-          state.showThinking,
-        );
-      if (message.content) block('⏺', message.content, '', p.text, true);
+        thinking(message.thinking, true, state.thinkingSeconds?.[message.id]);
+      if (message.content.trim())
+        block('⏺', message.content, '', p.text, true, 'text');
+      // Calls run one after another: the first without a result is the one running (or
+      // waiting on you), the ones after it have not started.
+      let first = true;
       for (const call of message.tool_calls ?? []) {
         const result = messages.find(
           (message) =>
             message.role === 'tool' && message.tool_call_id === call.id,
         );
-        const read = [
-          'read_file',
-          'ls',
-          'glob',
-          'grep',
-          'webfetch',
-          'websearch',
-          'skill',
-        ].includes(call.name);
-        const style =
-          call.name === 'task' ? p.agent_bg : read ? p.read_bg : p.write_bg;
-        const args =
-          Object.values(call.args).find((value) => typeof value === 'string') ||
-          '';
-        block(
-          statusLight(
-            result
-              ? result.status === 'error'
-                ? result.recoverable
-                  ? 'none'
-                  : 'error'
-                : 'ok'
-              : state.agentDetail &&
-                  !['running', 'waiting'].includes(state.agentDetail.state)
-                ? 'none'
-                : state.waiting
-                  ? 'wait'
-                  : 'running',
-          ),
-          `${call.name}(${truncate(String(args), Math.max(1, width - call.name.length - 8))})`,
-          style,
-        );
+        const pending =
+          result ||
+          (state.agentDetail &&
+            !['running', 'waiting'].includes(state.agentDetail.state))
+            ? 'none'
+            : !first
+              ? 'none'
+              : state.waiting
+                ? 'wait'
+                : 'running';
+        if (!result) first = false;
+        if (HIDDEN_TOOLS.has(call.name)) continue;
+        gap('tool');
+        rows.push(toolRow(call, result, { width, pending }));
+        if (!result) continue;
+        const custom = state.renderToolResult?.(result);
+        if (custom)
+          for (const row of custom)
+            rows.push(tintedRow([['', row]], toolTint(call.name), width));
+        else
+          rows.push(
+            ...resultRows(call, result, { width, expanded: state.showTools }),
+          );
       }
     } else if (message.role === 'tool') {
-      const custom = state.renderToolResult?.(message);
-      if (custom) {
-        for (const row of custom) rows.push(pad(row, width));
-        rows.push('');
-        continue;
-      }
-      const lines = wrap(terminalText(message.content), width - 5);
-      const shown = state.showTools ? lines : lines.slice(0, 3);
-      rows.push(...shown.map((line) => '   ' + p.dim + '⎿ ' + line + p.reset));
-      if (lines.length > shown.length)
+      // A result whose call is not in view (the turn was cut short of it).
+      const called = messages.some((other) =>
+        other.tool_calls?.some((call) => call.id === message.tool_call_id),
+      );
+      if (!called && !HIDDEN_TOOLS.has(message.name ?? '')) {
+        const call = {
+          id: message.tool_call_id ?? '',
+          name: message.name ?? 'tool',
+          args: {},
+        };
+        gap('tool');
+        rows.push(toolRow(call, message, { width }));
         rows.push(
-          '     ' +
-            p.faint +
-            `… +${lines.length - shown.length} lines · ctrl+o` +
-            p.reset,
+          ...resultRows(call, message, { width, expanded: state.showTools }),
         );
-      rows.push('');
+      }
     }
     for (const shell of localShells.filter(
       (shell) => shell.anchor === message.id,
     ))
       shellRows(shell);
+    const usage = state.turnUsage?.[message.id];
+    if (usage) {
+      rows.push(turnUsageRow(usage));
+      lastKind = 'usage';
+    }
   }
   if (state.thinking)
-    block(
-      '∴',
-      state.showThinking ? state.thinking : 'Thinking · ctrl+t',
-      p.think_bg,
-      p.dim,
-      state.showThinking,
+    thinking(
+      state.thinking,
+      Boolean(state.streaming),
+      state.liveThinkingSeconds,
     );
-  if (state.streaming) block('⏺', state.streaming, '', p.text, true);
+  if (state.streaming.trim())
+    block('⏺', state.streaming, '', p.text, true, 'text');
   for (const note of state.notices)
     block(
       note.startsWith('✖') ? '✖' : ' ',
@@ -244,6 +309,53 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       '',
       note.startsWith('✖') ? p.red : p.dim,
     );
+  if (rows.length && rows.at(-1) !== '') rows.push('');
+  return rows;
+}
+// The strip under the footer: the turn's subagents (and the one selected or open), then the
+// background jobs that are still running.
+function stripRows(
+  state: ScreenState,
+  width: number,
+  height: number,
+): string[] {
+  const running = (agent: SubagentView): boolean =>
+    ['running', 'waiting'].includes(agent.state);
+  const selected = state.agentDetail?.id ?? state.selectedAgent;
+  const agents = (state.subagents ?? []).filter(
+    (agent) => (!agent.background && running(agent)) || agent.id === selected,
+  );
+  const jobs = (state.jobs ?? []).filter((job) => job.status === 'running');
+  if (!agents.length && !jobs.length) return [];
+  const now = Date.now();
+  const most = Math.min(AGENT_ROWS, Math.max(1, Math.floor((height - 8) / 3)));
+  const at = Math.max(
+    0,
+    agents.findIndex((agent) => agent.id === selected),
+  );
+  const start =
+    agents.length <= most
+      ? 0
+      : Math.min(Math.max(0, at - most + 1), agents.length - most);
+  const visible = agents.slice(start, start + most);
+  const rows = [stripHeader(agents.filter(running).length, jobs.length, width)];
+  rows.push(
+    ...agentRows(visible, {
+      width,
+      selected,
+      hidden: agents.length - visible.length,
+      now,
+    }),
+  );
+  rows.push(
+    ...jobRows(jobs, {
+      width,
+      now,
+      max: Math.floor(
+        (height - rows.length - (state.todos.length ? 14 : 8)) / 2,
+      ),
+    }),
+  );
   return rows;
 }
 export function renderScreen(
@@ -259,85 +371,7 @@ export function renderScreen(
     bottom.push(
       ...state.picker.rows(width, Math.max(3, Math.floor(height / 3))),
     );
-  const jobs = (state.jobs ?? []).filter((job) => job.status === 'running');
-  const jobRows: string[] = [];
-  const agents = (state.subagents ?? []).filter(
-    (agent) =>
-      (!agent.background && ['running', 'waiting'].includes(agent.state)) ||
-      agent.id === state.selectedAgent ||
-      agent.id === state.agentDetail?.id,
-  );
-  if (!state.dialog && !state.picker && agents.length && height >= 12) {
-    jobRows.push(
-      p.dim +
-        pad(
-          ` Agents · ${agents.filter((agent) => ['running', 'waiting'].includes(agent.state)).length} · ↓ select`,
-          width,
-        ) +
-        p.reset,
-    );
-    const at = Math.max(
-      0,
-      agents.findIndex((agent) => agent.id === state.selectedAgent),
-    );
-    const max = Math.min(3, Math.max(1, Math.floor(height / 10)));
-    for (const agent of agents.slice(
-      Math.max(0, at - max + 1),
-      Math.max(0, at - max + 1) + max,
-    )) {
-      const lamp =
-        agent.state === 'running'
-          ? 'running'
-          : agent.state === 'waiting'
-            ? 'wait'
-            : agent.state === 'done'
-              ? 'ok'
-              : agent.state === 'error'
-                ? 'error'
-                : 'none';
-      jobRows.push(
-        sgrJoin(agent.id === state.selectedAgent ? p.agent_bg : '', p.dim) +
-          pad(
-            ` ${agent.id === state.selectedAgent ? '›' : ' '} ${statusLight(lamp)} ${truncate(agent.name, 24)} · ${agent.state === 'waiting' ? 'waiting for you' : agent.state} · ${agent.tokens} tokens`,
-            width,
-          ) +
-          p.reset,
-      );
-    }
-  }
-  const maxJobs = Math.max(
-    0,
-    Math.min(
-      4,
-      Math.floor((height - jobRows.length - (state.todos.length ? 14 : 6)) / 2),
-    ),
-  );
-  if (!state.dialog && !state.picker && jobs.length && maxJobs) {
-    jobRows.push(p.dim + pad(` Jobs · ${jobs.length}`, width) + p.reset);
-    for (const job of jobs.slice(0, maxJobs)) {
-      let activity = job.detail ?? '';
-      if (job.kind !== 'agent')
-        try {
-          activity = outputTail(job.outputPath, 2048, 1);
-        } catch {
-          /* Output may have been removed externally. */
-        }
-      jobRows.push(
-        p.dim +
-          pad(
-            ` ${statusLight(job.detail === 'waiting for you' ? 'wait' : 'running')} ${job.id} ${truncate(plainJobOutput(job.title), Math.max(6, Math.floor(width / 2)))} · ${elapsed(job)}`,
-            width,
-          ) +
-          p.reset,
-      );
-      if (activity)
-        jobRows.push(
-          p.faint +
-            pad('   ' + truncate(plainJobOutput(activity), width - 3), width) +
-            p.reset,
-        );
-    }
-  }
+  const strip = stripRows(state, width, height);
   if (!state.dialog && state.todos.length) {
     bottom.push(...planRows(state.todos, width, state.planStart));
   }
@@ -364,66 +398,36 @@ export function renderScreen(
       );
   }
   if (state.dialog)
-    bottom.push(...dialogRows(state.dialog, width, Math.max(5, height - 3)));
+    bottom.push(
+      ...dialogRows(
+        state.dialog,
+        width,
+        Math.max(5, height - 4 - strip.length),
+      ),
+    );
   else {
-    const elapsed = ((Date.now() - state.started) / 1000).toFixed(1);
+    // The frame says whose turn it is: the rainbow runs while the model works.
+    const seconds = (Date.now() - state.started) / 1000;
     const label = state.compaction
-      ? ` ${truncate(state.compaction.row(width), width - 5)} `
+      ? state.compaction.row(width)
       : state.busy
-        ? ` Brewing… · ${elapsed}s `
+        ? busyLabel(state.busyVerb ?? 'Brewing', seconds, state.busyTokens ?? 0)
         : '';
     if (state.completion && !state.picker)
       bottom.push(...completionRows(state.completion, width));
-    const frame = (text: string): string => {
-      if (!state.busy) return p.outline + text + p.reset;
-      return (
-        Array.from(text)
-          .map(
-            (char, index) =>
-              p.rainbow[
-                (index + Math.floor(Date.now() / 160)) % p.rainbow.length
-              ] + char,
-          )
-          .join('') + p.reset
-      );
-    };
-    bottom.push(frame('╭' + '─'.repeat(width - 2) + '╮'));
-    if (label)
-      bottom[bottom.length - 1] =
-        frame('╭─') +
-        p.dim +
-        label +
-        p.reset +
-        frame('─'.repeat(Math.max(0, width - stringWidth(label) - 3)) + '╮');
+    const frame = loopFrame(width, {
+      elapsed: state.busy ? seconds : undefined,
+      label,
+      mode: state.planMode ? 'read-only' : state.autoMode ? 'auto' : '',
+      modeSgr: state.planMode ? p.green : p.yellow,
+    });
+    bottom.push(frame.top);
     for (const line of draftLines(state, width, height))
       bottom.push(
-        frame('│') + p.text + pad(line, width - 2) + p.reset + frame('│'),
+        frame.left + p.text + pad(line, width - 2) + p.reset + frame.right,
       );
-    const mode = state.planMode
-      ? ' read-only '
-      : state.autoMode
-        ? ' auto '
-        : '';
-    bottom.push(
-      frame('╰' + '─'.repeat(Math.max(0, width - stringWidth(mode) - 2))) +
-        p.dim +
-        mode +
-        p.reset +
-        frame('╯'),
-    );
+    bottom.push(frame.bottom);
   }
-  bottom.push(...jobRows);
-  const formatTokens = (value: number): string =>
-    value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
-  const formatWindow = (value: number): string =>
-    value >= 1_000_000
-      ? `${(value / 1_000_000).toFixed(1)}M`
-      : formatTokens(value);
-  const context =
-    state.contextInput === undefined
-      ? ''
-      : ` · ctx ${formatTokens(state.contextInput)}/${state.contextWindow ? `${formatWindow(state.contextWindow)} (${Math.min(999, Math.round((state.contextInput / state.contextWindow) * 100))}%)` : 'N/A'}`;
-  const footer = ` ↑ ${formatTokens(state.usage.input_tokens)} · ↓ ${formatTokens(state.usage.output_tokens)}${state.costText ? ` · ${state.costText}` : ''} · cache ${(state.usage.input_tokens ? (state.usage.cache_read_tokens / state.usage.input_tokens) * 100 : 0).toFixed(1)}%${context}`;
   const searchStatus =
     state.find?.status ??
     (state.historySearch
@@ -431,25 +435,21 @@ export function renderScreen(
       : undefined);
   if (searchStatus)
     bottom.push(p.dim + pad(truncate(searchStatus, width), width) + p.reset);
-  const right = state.flash
-    ? truncate(state.flash, Math.max(1, Math.floor(width / 2)))
-    : '';
-  bottom.push(
-    p.faint +
-      truncate(footer, Math.max(1, width - stringWidth(right) - 2)) +
-      ' '.repeat(
-        Math.max(1, width - stringWidth(footer) - stringWidth(right) - 1),
-      ) +
-      right +
-      p.reset,
-  );
-  const header = ` circle ${state.version} · ${state.model} · ${truncate(state.workspace, Math.max(1, width - 35), true)}`;
-  const rows = [
-    p.dim +
-      truncate(header, width >= 60 ? width - 19 : width) +
-      (width >= 60 ? '  ? for shortcuts' : '') +
-      p.reset,
-  ];
+  // No meters before a session is connected.
+  if (state.connected !== false)
+    bottom.push(
+      footerRow(
+        {
+          usage: state.usage,
+          costText: state.costText,
+          contextInput: state.contextInput,
+          contextWindow: state.contextWindow,
+        },
+        state.flash,
+        width,
+      ),
+    );
+  bottom.push(...strip);
   let transcript = transcriptRows(state, width);
   if (state.agentDetail) {
     const agent = state.agentDetail;
@@ -493,7 +493,8 @@ export function renderScreen(
       ),
     ];
   }
-  const available = Math.max(1, height - bottom.length - 1);
+  // two header rows above the transcript
+  const available = Math.max(1, height - bottom.length - 2);
   state.view = {
     rows: available,
     maxScroll: Math.max(0, transcript.length - available),
@@ -513,14 +514,36 @@ export function renderScreen(
         : row,
     );
   const first = Math.max(0, end - available);
+  // While the welcome is on screen it says who and where; the header hands off to it.
+  const rows = headerRows(
+    {
+      version: state.version,
+      model: state.model,
+      depth: state.thinkingDepth,
+      workspace: state.workspace,
+      branch: state.branch,
+      gate: state.gate,
+      connected: state.connected,
+      welcomeInView:
+        !state.agentDetail &&
+        !state.jobDetail &&
+        state.welcome.length > 0 &&
+        first < state.welcome.length,
+    },
+    width,
+  );
+  const headerHeight = rows.length;
   rows.push(...transcript.slice(first, end));
   while (rows.length < height - bottom.length) rows.push('');
   rows.push(...bottom);
   state.viewport = {
-    top: 1 - Math.max(0, rows.length - height),
+    top: headerHeight - Math.max(0, rows.length - height),
     height: available,
     first,
     total: transcript.length,
   };
-  return rows.slice(-height).map((row) => pad(row, width));
+  // A row never runs past the edge: on a very narrow screen even a status row is cut.
+  return rows
+    .slice(-height)
+    .map((row) => pad(truncateStyled(row, width), width));
 }

@@ -98,6 +98,64 @@ export function sgrJoin(...codes: string[]): string {
     .filter(Boolean);
   return parameters.length ? '\x1b[' + parameters.join(';') + 'm' : '';
 }
+// The rainbow: blue → purple → red → orange, then back to blue. The frame runs it round
+// the input box while the model works; the welcome's logo is the same ring, standing still.
+export const GRADIENT_STOPS: readonly [number, RGB][] = [
+  [0, [8, 148, 255]],
+  [0.3, [201, 89, 221]],
+  [0.65, [255, 46, 84]],
+  [0.9, [255, 144, 4]],
+  [1, [8, 148, 255]],
+];
+// The stops for the frame on `bg`: each one is mixed toward black, 5% at a time and at most
+// 60%, until it reads at 3:1. On a dark background they stay as they are.
+export function frameStops(bg: string): [number, RGB][] {
+  return GRADIENT_STOPS.map(([at, rgb]) => {
+    const own = rgbToHex(rgb);
+    let colour = own;
+    let amount = 0;
+    while (amount < 0.6 && contrastRatio(colour, bg) < 3) {
+      amount = Math.round((amount + 0.05) * 10000) / 10000;
+      colour = mix(own, '#000000', amount);
+    }
+    return [at, hexToRgb(colour)];
+  });
+}
+// The colour at `u` (0–1, wrapping) along `stops`, channels truncated as in the Python version.
+export function gradientAt(stops: readonly [number, RGB][], u: number): RGB {
+  const at = ((u % 1) + 1) % 1;
+  for (let index = 1; index < stops.length; index++) {
+    const [p0, c0] = stops[index - 1]!;
+    const [p1, c1] = stops[index]!;
+    if (at <= p1) {
+      const t = p1 > p0 ? (at - p0) / (p1 - p0) : 0;
+      return c0.map((channel, i) =>
+        Math.trunc(channel + (c1[i]! - channel) * t),
+      ) as RGB;
+    }
+  }
+  return stops.at(-1)![1];
+}
+// The frame's colour at `u` round its perimeter, on the current background.
+export function rainbowAt(u: number): string {
+  return fgSgr(rgbToHex(gradientAt(palette().rainbow_stops, u)));
+}
+// A colour given as RGB channels, such as a cell of the logo.
+export function rgbSgr(rgb: RGB): string {
+  return fgSgr(rgbToHex(rgb));
+}
+// `COLORFGBG` names the background's colour slot last ("15;0"): 0–6 and 8 are dark.
+export function colorfgbgIsLight(raw: string | undefined): boolean {
+  const last = (raw ?? '').split(';').at(-1)?.trim() ?? '';
+  if (!/^\d+$/.test(last)) return false;
+  return ![0, 1, 2, 3, 4, 5, 6, 8].includes(Number(last));
+}
+// The built-in pair when the terminal cannot be asked: COLORFGBG, then dark.
+export function fallbackColors(
+  env: NodeJS.ProcessEnv = process.env,
+): [string, string] {
+  return colorfgbgIsLight(env.COLORFGBG) ? DEFAULT_LIGHT : DEFAULT_DARK;
+}
 export interface Palette {
   text: string;
   dim: string;
@@ -123,7 +181,15 @@ export interface Palette {
   write_bg_hex: string;
   think_bg_hex: string;
   agent_bg_hex: string;
+  // Thinking rows: blue, the terminal's own slot; dimmed for an expanded header.
+  reason: string;
+  reason_dim: string;
+  reason_hi: string;
+  // A call the model can fix itself: no lamp, dim and struck through.
+  muted_strike: string;
+  // The frame's rainbow: the gradient stops as drawn on this background.
   rainbow: string[];
+  rainbow_stops: [number, RGB][];
 }
 export function buildPalette(
   fgHex: string,
@@ -141,23 +207,7 @@ export function buildPalette(
   };
   const panel = mix(bg, fg, 0.06);
   const surfaces = [panel, ...Object.values(tints)];
-  const rainbow = [
-    '#e06c75',
-    '#e5c07b',
-    '#98c379',
-    '#56b6c2',
-    '#61afef',
-    '#c678dd',
-  ].map((color) => {
-    let result = color;
-    for (
-      let amount = 0;
-      contrastRatio(result, bg) < 3 && amount <= 1;
-      amount += 0.05
-    )
-      result = mix(color, dark ? '#ffffff' : '#000000', amount);
-    return fgSgr(result);
-  });
+  const rainbowStops = frameStops(bg);
   return {
     text: fgSgr(fg),
     dim: fgSgr(mixWithFloor(fg, bg, 0.35, 4.5, surfaces)),
@@ -183,7 +233,12 @@ export function buildPalette(
     write_bg_hex: tints.write_bg,
     think_bg_hex: tints.think_bg,
     agent_bg_hex: tints.agent_bg,
-    rainbow,
+    reason: '\x1b[34m',
+    reason_dim: '\x1b[2;34m',
+    reason_hi: '\x1b[94m',
+    muted_strike: '\x1b[2;9m',
+    rainbow: rainbowStops.slice(0, -1).map(([, rgb]) => fgSgr(rgbToHex(rgb))),
+    rainbow_stops: rainbowStops,
   };
 }
 let current = buildPalette(...DEFAULT_DARK);
@@ -193,24 +248,26 @@ export function palette(): Palette {
 export function setPalette(value: Palette): void {
   current = value;
 }
-export function statusLight(
-  state: 'running' | 'ok' | 'error' | 'wait' | 'none',
-  now = Date.now(),
-): string {
+export type LampState = 'running' | 'ok' | 'error' | 'wait' | 'none';
+// The lamp's colour alone, so a tinted row can put its background in the same SGR
+// (`sgrJoin(bg, lampSgr(state))`); '' for a lamp that is not lit.
+export function lampSgr(state: LampState, now = Date.now()): string {
   const p = palette();
-  return (
-    (state === 'running'
-      ? Math.floor(now / 575) % 2
-        ? sgrJoin('\x1b[2m', p.yellow)
-        : p.yellow
-      : state === 'ok'
-        ? p.green
-        : state === 'error'
-          ? p.red
-          : state === 'wait'
-            ? p.blue
-            : p.faint) +
-    '●' +
-    p.reset
-  );
+  return state === 'running'
+    ? Math.floor(now / 575) % 2
+      ? sgrJoin('\x1b[2m', p.yellow)
+      : p.yellow
+    : state === 'ok'
+      ? p.green
+      : state === 'error'
+        ? p.red
+        : state === 'wait'
+          ? p.blue
+          : '';
+}
+// One lamp: yellow and blinking while it runs, green done, red failed, cyan waiting for
+// you. A lamp that is not lit is a blank that keeps the column.
+export function statusLight(state: LampState, now = Date.now()): string {
+  const sgr = lampSgr(state, now);
+  return sgr ? sgr + '●' + palette().reset : ' ';
 }

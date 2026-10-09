@@ -39,6 +39,7 @@ import { defaultAuth } from '../settings.js';
 import { normalizeBaseUrl, resolveEndpoint } from '../probe.js';
 import { InputParser, type InputEvent } from '../ink/parse_keypress.js';
 import { ThemeWatch } from '../ink/theme_watch.js';
+import { palette } from '../ink/theme.js';
 import {
   Picker,
   type PickerItem,
@@ -58,7 +59,9 @@ import {
 } from '../compaction.js';
 import { formatCosts } from '../pricing.js';
 import { SubagentNavigation } from './subagents.js';
-import { currentBranch } from '../git_info.js';
+import { TurnStatus } from './turn_status.js';
+import { WelcomeState } from './welcome_state.js';
+import { windowTitle } from './status_rows.js';
 import { loadRemap, ACTIONS } from '../keybindings.js';
 import { emptyUsage, type ToolCall } from '../types.js';
 import { ScreenRenderer } from '../ink/screen.js';
@@ -145,6 +148,13 @@ export class SessionApp {
     repaint: () => this.repaint(),
   });
   private shared?: string;
+  private turns = new TurnStatus();
+  private welcomeState: WelcomeState;
+  // The runtime is loading the folder's things (attach): the welcome's lamps blink.
+  private connecting = false;
+  private started = false;
+  private title = '';
+  private titleAt = 0;
   private dataListener = (data: string): void => {
     if (this.externalEditor) return;
     for (const event of this.input.feed(data)) this.handle(event);
@@ -194,7 +204,7 @@ export class SessionApp {
       (text) => {
         if (!this.externalEditor) process.stdout.write(text);
       },
-      () => this.repaint(),
+      (flip) => (flip ? this.flash(`Theme → ${flip}`) : this.repaint()),
     );
     this.completion = new Promise((resolve) => {
       this.done = resolve;
@@ -221,6 +231,7 @@ export class SessionApp {
       commands: () => this.completionCommands(),
       files: (partial, limit) => complete(partial, this.workspace, limit),
     });
+    this.welcomeState = new WelcomeState(workspace);
   }
   start(): void {
     process.stdin.setRawMode(true);
@@ -229,9 +240,11 @@ export class SessionApp {
     process.stdin.on('data', this.dataListener);
     process.stdout.on('resize', this.resizeListener);
     process.on('SIGINT', this.signalListener);
+    // The terminal keeps the title it had, to give back on close (xterm's title stack).
     process.stdout.write(
-      '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h',
+      '\x1b[22;0t\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h',
     );
+    this.started = true;
     this.theme.start();
     this.animation = setInterval(() => {
       if (
@@ -239,7 +252,8 @@ export class SessionApp {
         this.state.waiting ||
         this.runtime?.jobs.list().some((job) => job.status === 'running') ||
         this.state.jobDetail ||
-        this.state.agentDetail
+        this.state.agentDetail ||
+        this.connecting
       )
         this.repaint();
       this.wakeJobs();
@@ -311,6 +325,7 @@ export class SessionApp {
               ? 'done'
               : 'interrupted'),
           started: session.created,
+          updated: session.updated,
           tokens: messages.reduce(
             (sum, message) =>
               sum +
@@ -352,29 +367,7 @@ export class SessionApp {
         }
       };
     }
-    this.state.welcome = welcomeRows(process.stdout.columns || 80, {
-      version: VERSION,
-      model: this.state.model,
-      endpoint: this.settings.auth.base_url
-        ? new URL(this.settings.auth.base_url).hostname
-        : '',
-      workspace: this.workspace,
-      branch: currentBranch(this.workspace),
-      resources: [
-        existsSync(join(this.workspace, 'AGENTS.md'))
-          ? 'instructions  AGENTS.md'
-          : '',
-        this.runtime?.skills.length
-          ? `skills        ${this.runtime.skills.length}`
-          : '',
-      ].filter(Boolean),
-      recent:
-        this.runtime?.store
-          .list(this.workspace)
-          .filter((session) => session.id !== this.runtime!.session.id)
-          .slice(0, 3)
-          .map((session) => session.title || session.id) ?? [],
-    });
+    this.syncStatus();
     const rows = renderScreen(
       this.state,
       process.stdout.columns || 80,
@@ -382,6 +375,36 @@ export class SessionApp {
     );
     this.frameRows = rows;
     this.screen.render(this.selection.frame(rows, this.state));
+  }
+  // The header, the welcome and the window title follow the session.
+  private syncStatus(): void {
+    const trusted = isFolderTrusted(this.settings, this.workspace);
+    this.state.gate = !this.runtime && Boolean(this.state.dialog);
+    this.state.connected = Boolean(this.runtime) && !this.connecting;
+    this.state.branch = this.welcomeState.branch();
+    this.state.thinkingDepth = this.runtime?.thinkingLevel;
+    this.turns.fill(this.state);
+    this.state.welcome = welcomeRows(
+      process.stdout.columns || 80,
+      this.welcomeState.info({
+        version: VERSION,
+        settings: this.settings,
+        runtime: this.runtime,
+        connected: this.state.connected,
+        trusted,
+      }),
+    );
+    if (!this.started || Date.now() - this.titleAt < 1000) return;
+    this.titleAt = Date.now();
+    const runtime = this.runtime;
+    const title = windowTitle(
+      (runtime && runtime.store.get(runtime.session.id)?.title) || '',
+      this.workspace,
+    );
+    if (title !== this.title) {
+      this.title = title;
+      process.stdout.write(`\x1b]0;${title}\x07`);
+    }
   }
   private flash(text: string): void {
     this.state.flash = text;
@@ -492,6 +515,7 @@ export class SessionApp {
   async attach(
     options: Omit<RuntimeOptions, 'approve' | 'question'>,
   ): Promise<void> {
+    this.connecting = true;
     this.runtime = new AgentRuntime({
       ...options,
       settings: this.settings,
@@ -505,6 +529,7 @@ export class SessionApp {
       );
     });
     this.off = this.runtime.bus.subscribe((event) => {
+      this.turns.apply(event, () => this.runtime?.harness.messages.at(-1)?.id);
       if (event.kind === 'compaction') {
         const progress = event.payload as unknown as CompactionEvent;
         if (progress.sessionId === this.runtime?.session.id) {
@@ -598,7 +623,11 @@ export class SessionApp {
       }
       this.repaint();
     });
-    await this.runtime.initialize();
+    try {
+      await this.runtime.initialize();
+    } finally {
+      this.connecting = false;
+    }
     for (const error of this.runtime.migration.errors)
       this.fail(
         `Could not migrate ${error.thread || 'legacy data'}: ${error.message}`,
@@ -812,7 +841,7 @@ export class SessionApp {
       if (
         event.action === 'press' &&
         event.button === 0 &&
-        /task\(/.test(this.frameRows[event.y] ?? '') &&
+        /^ . Agent\(/.test(stripAnsi(this.frameRows[event.y] ?? '')) &&
         this.state.subagents?.length
       ) {
         const open = (id: string): void => {
@@ -1130,9 +1159,12 @@ export class SessionApp {
       this.state.showTools = !this.state.showTools;
       this.flash(this.state.showTools ? 'Tools expanded' : 'Tools folded');
     } else if (key === 'ctrl+t') {
-      this.state.showThinking = !this.state.showThinking;
+      this.state.thinkingExpanded = !this.state.thinkingExpanded;
+      this.state.showThinking = true;
       this.flash(
-        this.state.showThinking ? 'Thinking shown' : 'Thinking hidden',
+        this.state.thinkingExpanded
+          ? 'Thinking expanded'
+          : 'Thinking collapsed',
       );
     } else if (key === 'ctrl+l')
       void this.command('models', '').catch((error) => this.fail(error));
@@ -1397,7 +1429,9 @@ export class SessionApp {
     }
     if (name === 'themes') {
       if (!args) {
-        this.notice(`Theme: ${this.settings.theme}`);
+        this.notice(
+          `Theme: ${this.settings.theme} · available: auto, dark, light`,
+        );
         return;
       }
       if (!['auto', 'dark', 'light'].includes(args))
@@ -1409,7 +1443,11 @@ export class SessionApp {
       });
       this.theme.mode = this.settings.theme;
       this.theme.apply();
-      this.repaint();
+      this.notice(
+        theme === 'auto'
+          ? `Theme → auto (${palette().is_dark ? 'dark' : 'light'})`
+          : `Theme → ${theme}`,
+      );
       return;
     }
     if (name === 'name') {
@@ -1864,7 +1902,7 @@ export class SessionApp {
   ): boolean {
     if (
       event.action === 'press' &&
-      /task\(/.test(this.frameRows[event.y] ?? '') &&
+      /^ . Agent\(/.test(stripAnsi(this.frameRows[event.y] ?? '')) &&
       this.state.subagents?.length
     )
       return false;
@@ -1903,7 +1941,7 @@ export class SessionApp {
     process.stdin.pause();
     process.stdin.setRawMode(false);
     process.stdout.write(
-      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l',
+      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
     );
     try {
       await new Promise<void>((resolveEditor, reject) => {
@@ -1929,7 +1967,7 @@ export class SessionApp {
         process.stdin.resume();
         process.stdin.on('data', this.dataListener);
         process.stdout.write(
-          '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h',
+          `\x1b[22;0t\x1b]0;${this.title}\x07\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h`,
         );
         this.screen.invalidate();
         this.repaint();
@@ -1962,7 +2000,7 @@ export class SessionApp {
     process.stdin.setRawMode(false);
     process.stdin.pause();
     process.stdout.write(
-      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l',
+      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
     );
     await this.runtime?.close();
   }
