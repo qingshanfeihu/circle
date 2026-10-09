@@ -57,6 +57,8 @@ import { currentBranch } from '../git_info.js';
 import { loadRemap, ACTIONS } from '../keybindings.js';
 import { emptyUsage, type ToolCall } from '../types.js';
 import { ScreenRenderer } from '../ink/screen.js';
+import { Clipboard } from '../ink/clipboard.js';
+import { MouseSelection } from './mouse_selection.js';
 import { type ApprovalDecision } from '../harness.js';
 import { BUILTIN_SLASH, parseSlash } from './slash_commands.js';
 import { GatewayModel, EFFORT_LEVELS } from '../model.js';
@@ -131,6 +133,12 @@ export class SessionApp {
     }
   >();
   private frameRows: string[] = [];
+  private clipboard = new Clipboard();
+  private selection = new MouseSelection({
+    scroll: (delta) => this.scrollTranscript(delta),
+    copy: (text) => this.copySelection(text),
+    repaint: () => this.repaint(),
+  });
   private shared?: string;
   private dataListener = (data: string): void => {
     if (this.externalEditor) return;
@@ -196,7 +204,7 @@ export class SessionApp {
     process.stdout.on('resize', this.resizeListener);
     process.on('SIGINT', this.signalListener);
     process.stdout.write(
-      '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h',
+      '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h',
     );
     this.theme.start();
     this.animation = setInterval(() => {
@@ -347,7 +355,7 @@ export class SessionApp {
       process.stdout.rows || 24,
     );
     this.frameRows = rows;
-    this.screen.render(rows);
+    this.screen.render(this.selection.frame(rows, this.state));
   }
   private flash(text: string): void {
     this.state.flash = text;
@@ -787,6 +795,7 @@ export class SessionApp {
     this.theme.feed(event);
     if (event.type === 'color' || event.type === 'scheme') return;
     if (event.type === 'mouse') {
+      if (this.selectionMouse(event)) return;
       if (
         event.action === 'press' &&
         event.button === 0 &&
@@ -951,6 +960,8 @@ export class SessionApp {
       this.repaint();
       return;
     }
+    if (!this.state.dialog && !this.state.picker && this.selection.key(key))
+      return;
     if (
       !this.state.dialog &&
       !this.state.picker &&
@@ -1731,12 +1742,34 @@ export class SessionApp {
       return;
     }
     if (name === 'copy') {
-      await this.copy(
+      let text =
         runtime.harness.messages
           .filter((message) => message.role === 'assistant' && message.content)
-          .at(-1)?.content || '',
-      );
-      this.flash('Copied answer');
+          .at(-1)
+          ?.content.trim() ?? '';
+      // no answer yet: the last line of the transcript that is not yours
+      if (!text)
+        text =
+          transcriptRows(
+            { ...this.state, welcome: [] },
+            process.stdout.columns || 80,
+          )
+            .map((row) => stripAnsi(row).trim())
+            .findLast(
+              (row) => row && !row.startsWith('>') && !row.startsWith('›'),
+            ) ?? '';
+      if (!text) {
+        this.flash('No assistant message to copy');
+        return;
+      }
+      if (await this.copy(text))
+        this.flash(`Copied ${Array.from(text).length} chars`);
+      else {
+        const path = join(this.home, 'exports', 'last-copy.txt');
+        mkdirSync(join(this.home, 'exports'), { recursive: true });
+        writeFileSync(path, text + '\n');
+        this.notice(`No clipboard tool · wrote ${path}`);
+      }
       return;
     }
     if (name === 'editor') {
@@ -1811,24 +1844,35 @@ export class SessionApp {
     }
     throw new Error(`command not available: /${name}`);
   }
-  private async copy(text: string): Promise<void> {
-    const program =
-      process.platform === 'darwin'
-        ? 'pbcopy'
-        : process.platform === 'win32'
-          ? 'clip'
-          : 'wl-copy';
-    await new Promise<void>((resolveCopy) => {
-      const child = spawn(program, [], { stdio: ['pipe', 'ignore', 'ignore'] });
-      child.once('error', () => {
-        const path = join(this.home, 'exports', 'clipboard.txt');
-        mkdirSync(join(this.home, 'exports'), { recursive: true });
-        writeFileSync(path, text);
-        resolveCopy();
-      });
-      child.once('close', () => resolveCopy());
-      child.stdin.end(text);
-    });
+  /** pbcopy, wl-copy or xclip (clip on Windows); false when none took the text. */
+  private async copy(text: string): Promise<boolean> {
+    return this.clipboard.copyNative(text);
+  }
+  /** A mouse event for the selection; a press on a task row opens the task instead. */
+  private selectionMouse(
+    event: Extract<InputEvent, { type: 'mouse' }>,
+  ): boolean {
+    if (
+      event.action === 'press' &&
+      /task\(/.test(this.frameRows[event.y] ?? '') &&
+      this.state.subagents?.length
+    )
+      return false;
+    return this.selection.mouse(event);
+  }
+  private scrollTranscript(delta: number): void {
+    const view = this.state.viewport;
+    this.state.scroll = Math.min(
+      view ? Math.max(0, view.total - view.height) : Infinity,
+      Math.max(0, this.state.scroll - delta),
+    );
+    this.repaint();
+  }
+  private copySelection(text: string): void {
+    void this.clipboard.copySelection(text).then(
+      () => this.flash(`Copied ${Array.from(text).length} chars`),
+      (error) => this.fail(error),
+    );
   }
   private async editor(): Promise<void> {
     if (this.externalEditor) throw new Error('an editor is already running');
@@ -1846,7 +1890,7 @@ export class SessionApp {
     process.stdin.pause();
     process.stdin.setRawMode(false);
     process.stdout.write(
-      '\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l',
+      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l',
     );
     try {
       await new Promise<void>((resolveEditor, reject) => {
@@ -1870,7 +1914,7 @@ export class SessionApp {
         process.stdin.resume();
         process.stdin.on('data', this.dataListener);
         process.stdout.write(
-          '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h',
+          '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h',
         );
         this.screen.invalidate();
         this.repaint();
@@ -1896,13 +1940,14 @@ export class SessionApp {
     this.theme.close();
     if (this.animation) clearInterval(this.animation);
     if (this.flashTimer) clearTimeout(this.flashTimer);
+    this.selection.close();
     process.stdin.off('data', this.dataListener);
     process.stdout.off('resize', this.resizeListener);
     process.off('SIGINT', this.signalListener);
     process.stdin.setRawMode(false);
     process.stdin.pause();
     process.stdout.write(
-      '\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l',
+      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l',
     );
     await this.runtime?.close();
   }

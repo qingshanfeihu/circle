@@ -39,6 +39,8 @@ export interface ScreenState {
   flash: string;
   started: number;
   scroll: number;
+  /** Set by renderScreen: the transcript's screen rows and its first row shown. */
+  viewport?: { top: number; height: number; first: number; total: number };
   dialog?: DialogState;
   picker?: Picker;
   hiddenTurns: number;
@@ -507,8 +509,15 @@ export function renderScreen(
         ? highlightMatches(row, state.find!.query)
         : row,
     );
-  rows.push(...transcript.slice(Math.max(0, end - available), end));
+  const first = Math.max(0, end - available);
+  rows.push(...transcript.slice(first, end));
   while (rows.length < height - bottom.length) rows.push('');
   rows.push(...bottom);
+  state.viewport = {
+    top: 1 - Math.max(0, rows.length - height),
+    height: available,
+    first,
+    total: transcript.length,
+  };
   return rows.slice(-height).map((row) => pad(row, width));
 }
