@@ -4,6 +4,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+## 1.0.2 - 2026-10-09
+
 ### Changed
 
 - **Circle keeps up while a turn runs, and long sessions stay quick.** A repaint no longer reads the whole conversation back from the session database or draws every earlier message again, and streamed text is drawn at most every 16 ms instead of once per token. Typing, the wheel and `ctrl+o` answer while the model writes.
