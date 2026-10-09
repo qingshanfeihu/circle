@@ -6,6 +6,8 @@ export interface SubagentView {
   messages: Message[];
   state: 'running' | 'waiting' | 'done' | 'error' | 'interrupted';
   started: number;
+  // When its session last changed: the end of a subagent that is no longer running.
+  updated?: number;
   tokens: number;
   background?: boolean;
 }

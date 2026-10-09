@@ -3,7 +3,9 @@ import {
   COLOR_QUERY,
   DEFAULT_DARK,
   DEFAULT_LIGHT,
+  fallbackColors,
   hexToRgb,
+  palette,
   relativeLuminance,
   setPalette,
   type RGB,
@@ -16,10 +18,14 @@ export class ThemeWatch {
   private polls = 0;
   private timer?: NodeJS.Timeout;
   private settle?: NodeJS.Timeout;
+  private reading = '';
+  // `changed` runs when the terminal reports different colours, with `dark` or `light`
+  // when the palette flipped between the two (the footer flashes `Theme → …`).
   constructor(
     public mode: 'auto' | 'dark' | 'light',
     private output: (text: string) => void,
-    private changed: () => void,
+    private changed: (flip?: 'dark' | 'light') => void,
+    private env: NodeJS.ProcessEnv = process.env,
   ) {}
   start(): void {
     this.apply();
@@ -39,14 +45,28 @@ export class ThemeWatch {
     else this.slots[event.slot] = hexToRgb(event.color);
     if (this.settle) clearTimeout(this.settle);
     this.settle = setTimeout(() => {
+      const reading = JSON.stringify([this.fg, this.bg, this.slots]);
+      if (reading === this.reading) return;
+      const first = !this.reading;
+      this.reading = reading;
+      const wasDark = palette().is_dark;
       this.apply();
-      this.changed();
+      const dark = palette().is_dark;
+      // The first answer only replaces the guess made before the terminal was asked.
+      this.changed(
+        !first && dark !== wasDark ? (dark ? 'dark' : 'light') : undefined,
+      );
     }, 150);
   }
   apply(): void {
     const dark = this.bg ? relativeLuminance(this.bg) < 0.5 : true;
     const matches = this.mode === 'auto' || (this.mode === 'dark') === dark;
-    const fallback = this.mode === 'light' ? DEFAULT_LIGHT : DEFAULT_DARK;
+    const fallback =
+      this.mode === 'light'
+        ? DEFAULT_LIGHT
+        : this.mode === 'dark'
+          ? DEFAULT_DARK
+          : fallbackColors(this.env);
     setPalette(
       this.fg && this.bg && matches
         ? buildPalette(this.fg, this.bg, this.slots)
