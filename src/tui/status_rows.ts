@@ -42,9 +42,14 @@ export function formatElapsed(seconds: number): string {
   if (minutes < 60) return `${minutes}m ${Math.floor(value) % 60}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
+// `840`, `12.3k`, `7.8M`: past a million the k would grow to `7824.0k`.
 export function formatTokens(value: number): string {
   const count = Math.max(0, Math.floor(value || 0));
-  return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count);
+  return count >= 1_000_000
+    ? `${(count / 1_000_000).toFixed(1)}M`
+    : count >= 1000
+      ? `${(count / 1000).toFixed(1)}k`
+      : String(count);
 }
 function formatWindow(value: number): string {
   return value >= 1_000_000

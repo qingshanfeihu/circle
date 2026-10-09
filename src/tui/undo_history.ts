@@ -6,6 +6,7 @@ export interface ScreenSnapshot {
   sessionId: string;
   shown: Set<string>;
   notices: string[];
+  noticeAnchors?: (string | undefined)[];
 }
 const LIMIT = 40;
 export class UndoHistory {
@@ -22,11 +23,13 @@ export class UndoHistory {
     sessionId: string,
     messages: Message[],
     notices: string[],
+    noticeAnchors: (string | undefined)[] = [],
   ): ScreenSnapshot {
     return {
       sessionId,
       shown: new Set(this.visible(messages).map((message) => message.id)),
       notices: [...notices],
+      noticeAnchors: [...noticeAnchors],
     };
   }
   // A turn starts: the screen before it is what /undo goes back to.

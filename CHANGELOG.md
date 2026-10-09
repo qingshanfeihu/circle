@@ -4,6 +4,24 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Changed
+
+- **Subagent rows in the strip have no background until you select one or point at it.** The row under the mouse lights up, as in 0.5.0, and so do the buttons on a record's band. The selected row used to sit on a colour almost the same as the others'.
+- **A record keeps its keys while a card waits under it.** `esc` leaves the record instead of rejecting the card, `←` `→` move between subagents instead of moving the card's choice, and any other key only leaves the record, so nothing pressed on the page answers the card.
+- **A record opened with the mouse goes back to the conversation**, and `main` on its band always does; one opened with `enter` from the strip goes back to the strip.
+- **A subagent's card says which subagent asks**: `general-purpose·1a2b3c4d · Bash needs your permission`.
+- **The plan box has no background**, and its whole frame is the input box's resting colour. The top edge after the plan's lamp used to turn white.
+- **A background subagent's job row shows its tokens and its step as a tool row would**, `Write(notes/a.md)`, instead of the call's raw arguments.
+- **Token counts past a million read as `M`**, `7.8M` instead of `7824.0k`.
+- **The mouse wheel over the subagent strip scrolls it** when more subagents run than it shows.
+
+### Fixed
+
+- **The mouse wheel stops at the first and last row** of the conversation and of a record. Scrolling past the top used to pile up, so the next scrolls down did nothing.
+- **A subagent that ended no longer stays in the strip** because it was once selected, with an empty header above it.
+- **Notices stay where they came.** `New session …`, `Signed out` and the like used to sit under everything that came after them.
+- **The row of your own `!` command keeps its tint after its lamp.**
+
 ## 1.0.2 - 2026-10-09
 
 ### Changed

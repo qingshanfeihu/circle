@@ -543,6 +543,7 @@ function current(host: CommandHost): ScreenSnapshot {
     host.runtime.session.id,
     host.runtime.harness.messages,
     host.state.notices,
+    host.state.noticeAnchors,
   );
 }
 async function showSnapshot(
@@ -556,6 +557,7 @@ async function showSnapshot(
   }
   host.undo.restore(snapshot, runtime.harness.messages);
   host.state.notices = [...snapshot.notices];
+  host.state.noticeAnchors = [...(snapshot.noticeAnchors ?? [])];
 }
 // The screen as it was before the last turn. Only the screen: the model still has the turn.
 async function undo(host: CommandHost): Promise<void> {
@@ -735,6 +737,7 @@ async function importSession(host: CommandHost, args: string): Promise<void> {
     host.previousSession = previous;
     host.undo.showAll();
     host.state.notices = [];
+    host.state.noticeAnchors = [];
     host.notice(`Imported ${path} → ${runtime.session.id}`);
     return;
   }
@@ -757,6 +760,7 @@ async function importSession(host: CommandHost, args: string): Promise<void> {
   ]);
   host.undo.showAll();
   host.state.notices = [];
+  host.state.noticeAnchors = [];
   host.notice(`Imported ${path}`);
 }
 
@@ -1101,6 +1105,7 @@ async function compact(host: CommandHost, args: string): Promise<void> {
 function redrawn(host: CommandHost, note: string): void {
   host.undo.showAll();
   host.state.notices = [];
+  host.state.noticeAnchors = [];
   host.notice(note);
 }
 async function newSession(host: CommandHost): Promise<void> {

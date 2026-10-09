@@ -20,7 +20,12 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AgentRuntime, type RuntimeOptions } from '../runtime.js';
+import {
+  AgentRuntime,
+  type InteractionContext,
+  type RuntimeOptions,
+} from '../runtime.js';
+import { agentName } from './strip_rows.js';
 import type { CircleSettings } from '../settings.js';
 import {
   applyProjectSettings,
@@ -157,6 +162,7 @@ export class SessionApp {
       state: 'running' | 'waiting' | 'done' | 'error';
       name: string;
       background?: boolean;
+      jobId?: string;
     }
   >();
   private frameRows: string[] = [];
@@ -241,6 +247,7 @@ export class SessionApp {
     this.state = {
       messages: [],
       notices: [],
+      noticeAnchors: [],
       welcome: [],
       draft: '',
       draftCursor: 0,
@@ -279,13 +286,11 @@ export class SessionApp {
       viewRows: () =>
         this.state.view?.rows ?? Math.max(1, (process.stdout.rows || 24) - 8),
       scroll: (rows) => {
-        const top = this.state.view?.maxScroll ?? Number.MAX_SAFE_INTEGER;
-        this.state.scroll =
-          rows === 'top'
-            ? top
-            : rows === 'bottom'
-              ? 0
-              : Math.max(0, Math.min(top, this.state.scroll + rows));
+        if (rows === 'top')
+          this.state.scroll =
+            this.state.view?.maxScroll ?? Number.MAX_SAFE_INTEGER;
+        else if (rows === 'bottom') this.state.scroll = 0;
+        else this.scrollBy(rows);
       },
       send: (kind) => this.send(kind),
       command: (name) =>
@@ -305,7 +310,7 @@ export class SessionApp {
     process.on('SIGINT', this.signalListener);
     // The terminal keeps the title it had, to give back on close (xterm's title stack).
     process.stdout.write(
-      '\x1b[22;0t\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h',
+      '\x1b[22;0t\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h',
     );
     this.started = true;
     this.theme.start();
@@ -405,6 +410,7 @@ export class SessionApp {
               name: activity?.name || session.title.split(':')[0] || 'subagent',
               description: session.title,
               background: activity?.background,
+              jobId: activity?.jobId,
               messages,
               state:
                 activity?.state ??
@@ -432,6 +438,18 @@ export class SessionApp {
         };
         this.state.subagents = views;
       }
+      // A selection outlives its subagent only while its record is open; with nothing
+      // running the strip is gone, and a scrolled window starts over next time.
+      const running = this.state.subagents
+        .filter(
+          (agent) =>
+            !agent.background && ['running', 'waiting'].includes(agent.state),
+        )
+        .map((agent) => agent.id);
+      this.agents.prune(running);
+      if (!running.length) this.state.stripStart = undefined;
+      if (this.state.hoverAgent && !running.includes(this.state.hoverAgent))
+        this.state.hoverAgent = undefined;
       this.state.selectedAgent = this.agents.selected;
       this.state.agentDetail = this.state.subagents.find(
         (agent) => agent.id === this.agents.detail,
@@ -459,7 +477,7 @@ export class SessionApp {
           const note =
             '✖ Extension renderer failed: ' +
             (error instanceof Error ? error.message : String(error));
-          if (!this.state.notices.includes(note)) this.state.notices.push(note);
+          if (!this.state.notices.includes(note)) this.addNotice(note);
           return undefined;
         }
       };
@@ -529,8 +547,26 @@ export class SessionApp {
     this.repaint();
   }
   private notice(text: string): void {
-    this.state.notices.push(text);
+    this.addNotice(text);
     this.repaint();
+  }
+  // A notice goes after the message on screen when it came, not under everything that
+  // arrives later: `''` before the first message, nothing when no session is open yet.
+  private addNotice(text: string): void {
+    const anchors = (this.state.noticeAnchors ??= []);
+    while (anchors.length < this.state.notices.length) anchors.push(undefined);
+    this.state.notices.push(text);
+    anchors.push(
+      this.runtime
+        ? (this.undo
+            .visible(this.runtime.harness.messages)
+            .filter(
+              (message) =>
+                !message.internal || message.internal === 'job_notice',
+            )
+            .at(-1)?.id ?? '')
+        : undefined,
+    );
   }
   private fail(error: unknown): void {
     this.notice(
@@ -666,6 +702,7 @@ export class SessionApp {
           state,
           name: String(event.tags.name || old?.name || 'subagent'),
           background: Boolean(event.tags.job_id) || old?.background,
+          jobId: event.tags.job_id ? String(event.tags.job_id) : old?.jobId,
         });
         this.activityVersion++;
         if (event.kind === 'llm_end')
@@ -683,9 +720,12 @@ export class SessionApp {
         // The stop mark belongs to the turn that was stopped. Snapshot it for /undo,
         // then drop it: a new turn has started, so it must not stay at the bottom.
         this.undo.push(this.screenBefore(event.payload.message));
-        this.state.notices = this.state.notices.filter(
-          (note) => note !== '✖ Interrupted',
-        );
+        const anchors = this.state.noticeAnchors ?? [];
+        const kept = this.state.notices
+          .map((note, index) => [note, anchors[index]] as const)
+          .filter(([note]) => note !== '✖ Interrupted');
+        this.state.notices = kept.map(([note]) => note);
+        this.state.noticeAnchors = kept.map(([, anchor]) => anchor);
         this.state.scroll = 0;
       } else if (event.kind === 'llm_start') {
         this.state.streaming = '';
@@ -704,7 +744,7 @@ export class SessionApp {
           this.state.usage[key] += event.usage?.[key] ?? 0;
       } else if (event.kind === 'run_error')
         // A key the endpoint turned down (401, 403) says where to change it, as in 0.5.0.
-        this.state.notices.push(
+        this.addNotice(
           '✖ ' +
             String(event.payload.message) +
             ([401, 403].includes(Number(event.payload.status))
@@ -797,8 +837,14 @@ export class SessionApp {
         signal,
         Boolean(origin?.jobId),
       );
-    const label = (origin?: { jobId?: string; name?: string }): string =>
-      origin?.jobId ? `${origin.jobId} ${origin.name ?? ''}`.trim() : '';
+    // Whose card: a background job by its id, a subagent of this turn by its strip name
+    // (`general-purpose·1a2b3c4d`), the main agent by nothing.
+    const label = (origin?: InteractionContext): string =>
+      origin?.jobId
+        ? `${origin.jobId} ${origin.name ?? ''}`.trim()
+        : origin?.agent
+          ? agentName({ id: origin.agent, name: origin.name || 'subagent' })
+          : '';
     return {
       approve: (call, signal, origin) =>
         asCard(() => this.approve(call, signal, label(origin)), signal, origin),
@@ -825,7 +871,7 @@ export class SessionApp {
               {
                 ...request,
                 question:
-                  (origin?.jobId ? `${origin.jobId} · ` : '') +
+                  (label(origin) ? `${label(origin)} · ` : '') +
                   request.question,
               },
               signal,
@@ -947,6 +993,11 @@ export class SessionApp {
     this.theme.feed(event);
     if (event.type === 'color' || event.type === 'scheme') return;
     if (event.type === 'mouse') {
+      // Motion with no button: what is under the mouse lights up, nothing else happens.
+      if (event.action === 'move' && event.button !== 0) {
+        this.hover(event);
+        return;
+      }
       if (this.pageButton(event)) return;
       if (this.stripClick(event)) return;
       if (this.selectionMouse(event)) return;
@@ -957,8 +1008,7 @@ export class SessionApp {
         this.state.subagents?.length
       ) {
         const open = (id: string): void => {
-          this.agents.detail = id;
-          this.agents.selected = id;
+          this.agents.open(id);
           this.state.scroll = 0;
           this.repaint();
         };
@@ -977,7 +1027,16 @@ export class SessionApp {
             },
           );
       }
-      if (event.action === 'wheel') {
+      const strip = this.state.stripAgents;
+      if (
+        event.action === 'wheel' &&
+        strip?.scrollable &&
+        event.y >= strip.row - 1 &&
+        event.y < strip.row - 1 + strip.rows
+      )
+        // over the strip, with subagents folded away: the wheel moves the strip
+        this.scrollStrip(event.button === 0 ? -1 : 1);
+      else if (event.action === 'wheel') {
         const top = this.frameRows.findIndex((row) =>
           /^┌.*Plan \d+\//.test(stripAnsi(row)),
         );
@@ -995,11 +1054,7 @@ export class SessionApp {
         ) {
           this.plan.scroll(event.button === 0 ? -1 : 1);
           this.state.planStart = this.plan.start;
-        } else
-          this.state.scroll = Math.max(
-            0,
-            this.state.scroll + (event.button === 0 ? 3 : -3),
-          );
+        } else this.scrollBy(event.button === 0 ? 3 : -3);
       }
       this.repaint();
       return;
@@ -1068,6 +1123,7 @@ export class SessionApp {
               ...this.state,
               messages,
               notices: [],
+              noticeAnchors: [],
               streaming: '',
               thinking: '',
             },
@@ -1124,25 +1180,49 @@ export class SessionApp {
     }
     if (!this.state.dialog && !this.state.picker && this.selection.key(key))
       return;
+    const agentIds = (): string[] =>
+      (this.state.subagents ?? [])
+        .filter(
+          (agent) =>
+            this.agents.detail ||
+            ['running', 'waiting'].includes(agent.state) ||
+            agent.id === this.agents.selected,
+        )
+        .map((agent) => agent.id);
     if (
       !this.state.dialog &&
       !this.state.picker &&
       !this.state.jobDetail &&
-      this.agents.handle(
-        key,
-        char,
-        (this.state.subagents ?? [])
-          .filter(
-            (agent) =>
-              this.agents.detail ||
-              ['running', 'waiting'].includes(agent.state) ||
-              agent.id === this.agents.selected,
-          )
-          .map((agent) => agent.id),
-        this.state.draft,
-      )
+      this.agents.handle(key, char, agentIds(), this.state.draft)
     ) {
       this.state.scroll = 0;
+      this.state.stripStart = undefined;
+      this.repaint();
+      return;
+    }
+    // A subagent's record you are reading keeps its keys while a card waits under it: esc
+    // and backspace leave the record, ← → move between subagents, the page keys scroll it.
+    // Any other key only leaves the record, so a key meant for the page never answers the
+    // card. ctrl+c still stops the turn.
+    if (
+      this.agents.detail &&
+      this.state.dialog &&
+      !this.state.picker &&
+      key !== 'ctrl+c'
+    ) {
+      const page = Math.max(1, this.state.view?.rows ?? 1);
+      if (key === 'pageup' || key === 'pagedown')
+        this.scrollBy(key === 'pageup' ? page : -page);
+      else if (key === 'home')
+        this.state.scroll = this.state.view?.maxScroll ?? 0;
+      else if (key === 'end') this.state.scroll = 0;
+      else {
+        // back to the conversation: the card has the keys now, not the strip
+        if (key === 'left' || key === 'right')
+          this.agents.handle(key, '', agentIds(), '');
+        else this.agents.clear();
+        this.state.scroll = 0;
+      }
       this.repaint();
       return;
     }
@@ -1193,10 +1273,7 @@ export class SessionApp {
           if (key === 'ctrl+c' && this.runtime?.busy) this.ctrlC();
           else if (key === 'pageup' || key === 'pagedown') {
             const page = Math.max(1, (process.stdout.rows || 24) - 8);
-            this.state.scroll = Math.max(
-              0,
-              this.state.scroll + (key === 'pageup' ? page : -page),
-            );
+            this.scrollBy(key === 'pageup' ? page : -page);
           }
         } else if (result) this.pending?.complete(result.answer);
         else this.state.dialog = this.card.state();
@@ -1406,7 +1483,7 @@ export class SessionApp {
     this.externalEditor = true;
     this.input.reset();
     this.terminal.write(
-      '\x1b[?2031l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
+      '\x1b[?2031l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
     );
     this.terminal.input(false);
   }
@@ -1417,7 +1494,7 @@ export class SessionApp {
     this.terminal.write(
       '\x1b[22;0t' +
         (this.title ? `\x1b]0;${this.title}\x07` : '') +
-        '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?2031h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J',
+        '\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?2031h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[2J',
     );
     this.screen.invalidate();
     this.repaint();
@@ -1662,6 +1739,7 @@ export class SessionApp {
         ? messages.slice(0, -1)
         : messages,
       this.state.notices,
+      this.state.noticeAnchors,
     );
   }
   private scopedModels(): string[] {
@@ -2015,12 +2093,14 @@ export class SessionApp {
       ([start, end]) => event.x >= start && event.x < end,
     );
     if (!hit) return false;
-    this.agents.handle(
-      hit[2] === 'back' ? 'escape' : hit[2] === 'prev' ? 'left' : 'right',
-      '',
-      (this.state.subagents ?? []).map((agent) => agent.id),
-      '',
-    );
+    if (hit[2] === 'back') this.agents.clear();
+    else
+      this.agents.handle(
+        hit[2] === 'prev' ? 'left' : 'right',
+        '',
+        (this.state.subagents ?? []).map((agent) => agent.id),
+        '',
+      );
     this.state.scroll = 0;
     this.repaint();
     return true;
@@ -2031,8 +2111,8 @@ export class SessionApp {
     if (!strip || event.action !== 'press' || event.button !== 0) return false;
     const id = strip.ids[event.y - strip.row];
     if (!id) return false;
-    this.agents.detail = id;
-    this.agents.selected = id;
+    this.agents.open(id);
+    this.state.hoverAgent = undefined;
     this.state.scroll = 0;
     this.repaint();
     return true;
@@ -2048,6 +2128,45 @@ export class SessionApp {
     )
       return false;
     return this.selection.mouse(event);
+  }
+  // The conversation, or the record that is open, by `rows` (positive goes back towards
+  // the start), never past either end: rows past the top would have to be scrolled back
+  // before anything moved.
+  private scrollBy(rows: number): void {
+    const top = this.state.view?.maxScroll ?? Number.MAX_SAFE_INTEGER;
+    this.state.scroll = Math.max(0, Math.min(top, this.state.scroll + rows));
+  }
+  // The subagents the strip shows, one row along; the window then stays where the wheel
+  // left it until a key moves the selection.
+  private scrollStrip(step: number): void {
+    const running = (this.state.subagents ?? [])
+      .filter(
+        (agent) =>
+          !agent.background && ['running', 'waiting'].includes(agent.state),
+      )
+      .map((agent) => agent.id);
+    const first = Math.max(
+      0,
+      running.indexOf(this.state.stripAgents?.ids[0] ?? ''),
+    );
+    this.state.stripStart = Math.max(0, first + step);
+  }
+  // The strip row and the page button under the mouse; a repaint only when that changed.
+  private hover(event: Extract<InputEvent, { type: 'mouse' }>): void {
+    const strip = this.state.stripAgents;
+    const agent = strip ? strip.ids[event.y - strip.row] : undefined;
+    const band = this.state.pageButtons;
+    const button =
+      band && event.y === band.row
+        ? band.spans.find(
+            ([start, end]) => event.x >= start && event.x < end,
+          )?.[2]
+        : undefined;
+    if (agent === this.state.hoverAgent && button === this.state.hoverButton)
+      return;
+    this.state.hoverAgent = agent;
+    this.state.hoverButton = button;
+    this.repaint();
   }
   private scrollTranscript(delta: number): void {
     const view = this.state.viewport;
@@ -2135,7 +2254,7 @@ export class SessionApp {
     process.off('SIGINT', this.signalListener);
     this.terminal.input(false);
     this.terminal.write(
-      '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
+      '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
     );
     // As 0.5.0 did once the screen was gone: the jobs that leaving stopped, then the
     // command that opens this conversation again.

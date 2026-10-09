@@ -35,14 +35,14 @@ Circle's screen has a few parts, and each kind of information always goes to the
 |---|---|
 | **Header** | Version, model (with the thinking depth when it has one, such as `step-3.7-flash • high`), folder, and the git branch in brackets when the folder is in a repository, once the welcome has scrolled off the screen. While the welcome is on screen the header shows only, on the right, the one general shortcut hint. While setup or the trust question is asking, it is empty. |
 | **Welcome** | The first block of the conversation. See [The welcome](#the-welcome). |
-| **Conversation** | Everything that happened: your messages, Circle's answers, thinking, tool calls and their results, notices, and after each turn a line with its time and tokens. Answers are drawn from their Markdown: headings, emphasis, links, code, lists, quotations and tables. It scrolls and never loses anything. |
+| **Conversation** | Everything that happened: your messages, Circle's answers, thinking, tool calls and their results, notices, and after each turn a line with its time and tokens. The time leaves out what the turn spent waiting for your answer on a card. A notice stays where it came, after the message before it, and later turns go under it. Answers are drawn from their Markdown: headings, emphasis, links, code, lists, quotations and tables. It scrolls and never loses anything. |
 | **Lists** | The lists that commands and keys open, such as `/models` or `/resume`, appear above the plan box and the input box. They close when you choose or press `esc`. A list that needs a line of text or a yes or no, such as a new name in `/resume`, asks on the line under its title. |
-| **Plan box** | Circle's own plan, when it has one: five steps at a time, following the current step, with the range at the bottom right (`2–6 / 8`) when there are more. The mouse wheel over it scrolls it. It stays above a card, so the plan-exit card's question has the plan right above it. It belongs to the session: `/new` starts without one, and a resumed session brings its own back. |
+| **Plan box** | Circle's own plan, when it has one: five steps at a time, following the current step, with the range at the bottom right (`2–6 / 8`) when there are more. Nothing is drawn behind the steps, and the frame has the input box's resting colour. The mouse wheel over it scrolls it. It stays above a card, so the plan-exit card's question has the plan right above it. It belongs to the session: `/new` starts without one, and a resumed session brings its own back. |
 | **Waiting messages** | Above the input box, while a turn runs: a compaction under way, with its progress bar (see [Compaction](sessions.md#compaction)); each message you sent that the model has not read yet, `steering: …`; and each that waits for the turn to end, `follow-up: …`. More than fit end in `+N queued · alt+up edits all`. See [Steer a running turn](usage.md#steer-a-running-turn). |
 | **Input box** | The one framed box on the screen. It is where you type, and where questions appear. Above it, while you type `/` or `@`, the completion list. |
 | **Search line** | Under the input box, only while you search your history (`ctrl+r`) or find text in the conversation (`ctrl+f`): what you typed and, for find, which match you are at, such as `2/5`. |
 | **Footer** | One line of numbers: tokens sent and received, estimated cost in US dollars, cache hit rate, how full the context is (yellow from 70%, red from 90%). A cost or context window Circle does not know reads `N/A`; see [Models](models.md#cost-and-context-in-the-footer). A short confirmation such as `Copied 120 chars` shows at its right for a second or two, then goes. Before a session is connected there is no footer. |
-| **Subagent strip** | Below the footer, only while subagents or [background jobs](background-jobs.md) run: a header such as `Agents · 2 · Jobs · 1`, a row per subagent (lamp, name, task, time and tokens), then a row per job with its lamp, id, command, the last line it printed, and how long it has run. At most four jobs are listed; the rest are counted as `… +N more jobs`. |
+| **Subagent strip** | Below the footer, only while subagents or [background jobs](background-jobs.md) run: a header such as `Agents · 2 · Jobs · 1`, a row per running subagent (lamp, name, task, time and tokens), then a row per job with its lamp, id, command or agent, what it is doing, and how long it has run; a background subagent's row adds its tokens. A subagent row has no background until you select it or point at it with the mouse. Six subagents are shown at a time and the rest counted as `… +N more`; the mouse wheel over the strip scrolls through them. At most four jobs are listed; the rest are counted as `… +N more jobs`. |
 
 A few things appear briefly and are not kept: the confirmations in the footer, the completion list, and the lists of `/models`, `/effort`, `/resume`, `/tree`, `/fork`, `/jobs`, `/settings`, `/login` and `/approvals`. Some views take over the whole conversation area: a subagent's record and a background job's page.
 
@@ -114,10 +114,10 @@ A tinted background says what kind of work a block is.
 |---|---|
 | Blue | Reading: files, searches, the web, skills, the language server |
 | Green | Changing: files and commands, including Bash |
-| Magenta | The plan, and questions the model asks you |
+| Magenta | Questions the model asks you |
 | Cyan | Subagents |
 
-Thinking is not tinted. The folded line is italic blue, the terminal's own blue, and the text behind `ctrl+t` is faint. Both sit on the terminal background, so they read on a dark theme and on a light one. Answers from the model are never tinted.
+Thinking and the plan box are not tinted. The folded line is italic blue, the terminal's own blue, and the text behind `ctrl+t` is faint. Both sit on the terminal background, so they read on a dark theme and on a light one. Answers from the model are never tinted.
 
 ## Marks at the start of a line
 
@@ -143,7 +143,7 @@ Elsewhere, keys are named only where you entered something with keys of its own:
 
 ## Questions in the frame
 
-A tool approval, a question from the model, a secret a task asks for, and the first run's setup and trust questions do not open a second box. The input box itself changes: the frame turns yellow and still, the plan box steps out of the way, and the box shows a title with a cyan lamp, what is being asked, and numbered options. For a file change, what is being asked includes the lines it would add and remove, up to 40 of them. The tool row above it, in the conversation, carries the same lamp and tint, so you can see which call is asking. A card does not appear while you are typing: it waits until you have paused for a second. When you answer, the box returns to normal and your draft is put back.
+A tool approval, a question from the model, a secret a task asks for, and the first run's setup and trust questions do not open a second box. The input box itself changes: the frame turns yellow and still, the plan box stays above it, and the box shows a title with a cyan lamp, what is being asked, and numbered options. When a subagent asks, the title starts with the subagent's name as the strip shows it, such as `general-purpose·1a2b3c4d · Bash needs your permission`. For a file change, what is being asked includes the lines it would add and remove, up to 40 of them. The tool row above it, in the conversation, carries the same lamp and tint, so you can see which call is asking. A card does not appear while you are typing: it waits until you have paused for a second. When you answer, the box returns to normal and your draft is put back.
 
 If your screen is too short for a long command, the card shows the start of it and how many lines are hidden. Reject if you cannot see enough to approve.
 

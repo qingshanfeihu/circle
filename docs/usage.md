@@ -56,11 +56,11 @@ Two modes change what Circle is allowed to do. The current one is shown in the b
 
 ## The plan
 
-When Circle plans with `write_todos`, a box above the input shows the steps: green lamp for done, yellow for the one in progress. It shows five rows and follows the current step. Scroll it with the mouse wheel. It stays above a card, so when the model asks to implement the plan you can read it.
+When Circle plans with `write_todos`, a box above the input shows the steps: green lamp for done, yellow for the one in progress. It shows five rows and follows the current step, with nothing drawn behind them. Scroll it with the mouse wheel. It stays above a card, so when the model asks to implement the plan you can read it.
 
 ## Subagents
 
-While `task` subagents run, a strip below the footer lists them. Press `↓` in an empty prompt to select one, `↑` `↓` to move, `enter` to open its record, `←` `→` to switch between subagents, `esc` to go back. You can also click a subagent's row in the strip.
+While `task` subagents run, a strip below the footer lists them. Press `↓` in an empty prompt to select one, `↑` `↓` to move, `enter` to open its record, `←` `→` to switch between subagents, `esc` to go back. You can also click a subagent's row in the strip; the row under the mouse lights up, and the wheel over the strip scrolls it when more subagents run than it shows. A subagent's approval card names it.
 
 ## See more, or less
 

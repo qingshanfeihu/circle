@@ -173,7 +173,9 @@ While subagents run, `↓` in an empty input box selects the strip below the foo
 | `esc` | Leave the strip. |
 | A letter | Leave the strip and start typing. |
 
-In a subagent's record: `esc` or `backspace` go back, `←` `→` move to the previous or next subagent, and `pageup` `pagedown` `home` `end` scroll. The band at its top has `main`, `prev` and `next` to click. Typing a letter leaves the record and starts a message.
+In a subagent's record: `esc` or `backspace` go back, `←` `→` move to the previous or next subagent, and `pageup` `pagedown` `home` `end` scroll. Back means the strip when you opened the record from it with `enter`, and the conversation when you opened it with the mouse. The band at its top has `main`, `prev` and `next` to click; `main` always goes back to the conversation. Typing a letter leaves the record and starts a message.
+
+A record keeps these keys while a card waits under it: `esc` leaves the record instead of answering the card, and any other key only leaves the record, so nothing you press on the page answers the card. Answer the card once you are back. `ctrl+c` still stops the turn.
 
 On a job's page (from `/jobs`): `esc` goes back to the list, `ctrl+d` stops the job (after a card asks) or removes one that has ended, and the mouse wheel scrolls. Other keys do nothing there, except `ctrl+c` and `ctrl+z`.
 
@@ -181,7 +183,8 @@ On a job's page (from `/jobs`): `esc` goes back to the list, `ctrl+d` stops the 
 
 | Action | Effect |
 |---|---|
-| Wheel | Scroll the conversation by 3 rows. Over the plan box, scroll the plan. |
+| Wheel | Scroll the conversation by 3 rows, never past its first or last row. Over the plan box, scroll the plan. Over the subagent strip, when it has more subagents than it shows, scroll the strip. |
+| Point at a subagent's row in the strip, or a button on a record's band | It lights up. |
 | Drag | Select text and copy it when you let go. |
 | Drag to the top or bottom edge | Scroll while selecting. |
 | Double-click | Select a word. |
@@ -228,4 +231,4 @@ Key names are written as on this page: `ctrl+k`, `alt+up`, `shift+tab`, `f1` to 
 
 ## Which key wins
 
-When several places could take a key, the first of these does: a card, a list, find, search, a selection, the subagent strip or a subagent's record, a job's page, `ctrl+s`, `ctrl+d` on an empty box, the completion list, the other global keys, then the input box. A card passes on the control keys it does not use, which is why `ctrl+c` still stops a turn while a card is up and plain letters do not.
+When several places could take a key, the first of these does: a subagent's record, a card, a list, find, search, a selection, the subagent strip, a job's page, `ctrl+s`, `ctrl+d` on an empty box, the completion list, the other global keys, then the input box. A card passes on the control keys it does not use, which is why `ctrl+c` still stops a turn while a card is up and plain letters do not.

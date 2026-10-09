@@ -379,7 +379,7 @@ test('the strip sits under the footer: a header naming what is there, subagent r
         plain[header + 2]!,
         width >= 80 ? /waiting for you/ : /waiting…/,
       );
-      assert.ok(rows[header + 2]!.includes(';36m●'));
+      assert.match(rows[header + 2]!, /\x1b\[(?:[\d;]*;)?36m●/);
       assert.match(plain[header + 3]!, /^ ● j1 npm run dev/);
       assert.match(plain[header + 3]!, /1m 12s $/);
       assert.ok(rows[header + 3]!.includes(p.write_bg.slice(2, -1)));
@@ -389,13 +389,20 @@ test('the strip sits under the footer: a header naming what is there, subagent r
       assert.ok(!plain.some((row) => row.includes('↓ select')));
     }
     assert.match(stripAnsi(stripHeader(0, 3, 30)), /^ Jobs · 3 +$/);
-    // The selected subagent sits on the selection colour; long names keep their id tail.
+    // A subagent row has no background until it is selected or under the mouse; long
+    // names keep their id tail.
     const selected = agentRows(state.subagents!, {
       width: 60,
       selected: 'session-0001-abcdef12',
     });
     assert.ok(selected[0]!.includes(p.sel_bg.slice(2, -1)));
-    assert.ok(selected[1]!.includes(p.agent_bg.slice(2, -1)));
+    assert.ok(!/\x1b\[[\d;]*48;/.test(selected[1]!), selected[1]);
+    const hovered = agentRows(state.subagents!, {
+      width: 60,
+      hover: 'session-0002-99999999',
+    });
+    assert.ok(!/\x1b\[[\d;]*48;/.test(hovered[0]!));
+    assert.ok(hovered[1]!.includes(p.sel_bg.slice(2, -1)));
     const narrow = agentRows(state.subagents!, { width: 30 }).map(stripAnsi);
     assert.ok(
       narrow.every((row) => stringWidth(row) === 30),

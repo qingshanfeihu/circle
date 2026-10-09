@@ -118,6 +118,15 @@ test('actual session input routes wheel events to the plan and Alt+Up takes unse
   });
   cleanup(t, () => runtime.close());
   runtime.todos = todos();
+  // A conversation longer than the screen, so the wheel has rows to scroll back through.
+  runtime.store.append(
+    runtime.session.id,
+    Array.from({ length: 60 }, (_, index) => ({
+      id: `line-${index}`,
+      role: 'user' as const,
+      content: `line ${index}`,
+    })),
+  );
   const app = new SessionApp(root, root, settings);
   app.runtime = runtime;
   const ui = app as any;
@@ -139,6 +148,14 @@ test('actual session input routes wheel events to the plan and Alt+Up takes unse
   assert.equal(app.state.scroll, 0);
   for (const event of parser.feed('\x1b[<64;3;2M')) ui.handle(event);
   assert.equal(app.state.scroll, 3);
+  // Past the top it stops there: one notch down moves the view again at once.
+  const deepest = app.state.view!.maxScroll;
+  for (let notch = 0; notch < deepest + 40; notch++)
+    for (const event of parser.feed('\x1b[<64;3;2M')) ui.handle(event);
+  assert.equal(app.state.scroll, deepest);
+  for (const event of parser.feed('\x1b[<65;3;2M')) ui.handle(event);
+  assert.equal(app.state.scroll, Math.max(0, deepest - 3));
+  app.state.scroll = 0;
   runtime.harness.queue('steer\nnext', 'steer');
   runtime.harness.queue('follow', 'followUp');
   const snapshot = runtime.harness.queuedMessages;

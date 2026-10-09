@@ -231,7 +231,14 @@ export interface DetailBand {
 // the identity drops segments from its end; the buttons stay, they are the mouse's way out.
 export function detailBand(
   agent: SubagentView,
-  options: { index: number; total: number; width: number; now?: number },
+  options: {
+    index: number;
+    total: number;
+    width: number;
+    now?: number;
+    // the button under the mouse: on `sel_bg`, brighter, as in 0.5.0
+    hover?: BandAction;
+  },
 ): DetailBand {
   const p = palette();
   const now = options.now ?? Date.now();
@@ -285,7 +292,11 @@ export function detailBand(
         const label = ` ${text} `;
         spans.push([cursor, cursor + stringWidth(label), action]);
         cursor += stringWidth(label) + 2;
-        return sgrJoin(p.panel_bg, p.text) + label;
+        return (
+          (action === options.hover
+            ? sgrJoin(p.sel_bg, p.em)
+            : sgrJoin(p.panel_bg, p.text)) + label
+        );
       }).join(onPanel + '  ') +
       onPanel +
       ' ';

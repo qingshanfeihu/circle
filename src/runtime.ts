@@ -41,6 +41,7 @@ import {
 } from './pricing.js';
 import { addUsage, emptyUsage } from './types.js';
 import { UserShells } from './user_shell.js';
+import { toolCallLine } from './headless.js';
 const BUILTIN_TOOL_NAMES = new Set([
   'ls',
   'read_file',
@@ -80,6 +81,8 @@ const EXPLORE_TOOLS = new Set([
 export interface InteractionContext {
   jobId?: string;
   name?: string;
+  // The subagent's session, so a card can say which of several running agents asks.
+  agent?: string;
 }
 export interface RuntimeOptions {
   workspace: string;
@@ -371,19 +374,37 @@ export class AgentRuntime {
         const interact = async <T>(
           action: (origin: InteractionContext) => Promise<T>,
         ): Promise<T> => {
+          // what the job said it was doing comes back once the answer is in
+          const before = backgroundJob?.detail;
           if (backgroundJob)
             this.jobs.activity(backgroundJob.id, 'waiting for you');
           try {
-            return await action({ jobId: backgroundJob?.id, name });
+            return await action({
+              jobId: backgroundJob?.id,
+              name,
+              agent: session.id,
+            });
           } finally {
-            if (backgroundJob) this.jobs.activity(backgroundJob.id, 'working');
+            if (backgroundJob)
+              this.jobs.activity(
+                backgroundJob.id,
+                before && before !== 'waiting for you' ? before : 'working',
+              );
           }
         };
         childBus.subscribe((event) => {
-          if (event.kind === 'tool_call')
+          if (event.kind === 'tool_call') {
+            // The log keeps the whole call for the model to read; the strip shows the
+            // step as a tool row does, `Write(notes/a.md)`, not its raw JSON.
             backgroundLog?.(
               `${event.payload.name}(${JSON.stringify(event.payload.args)})`,
             );
+            if (backgroundJob)
+              this.jobs.activity(
+                backgroundJob.id,
+                toolCallLine(String(event.payload.name), event.payload.args),
+              );
+          }
           if (event.kind === 'llm_end')
             backgroundLog?.(
               String((event.payload.message as Message)?.content || ''),

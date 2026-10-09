@@ -53,6 +53,7 @@ function row(
   body: string,
   meta: string,
   now: number,
+  metaFg = palette().dim,
 ): string {
   const p = palette();
   const light = lampSgr(lamp, now);
@@ -67,7 +68,7 @@ function row(
     ' ' +
     body +
     p.reset +
-    sgrJoin(bg, p.dim) +
+    sgrJoin(bg, metaFg) +
     meta +
     ' ' +
     p.reset
@@ -93,7 +94,7 @@ export function stripHeader(
 }
 
 // `general-purpose·1a2b3c4d`: parallel subagents of one type stay apart.
-export function agentName(agent: SubagentView): string {
+export function agentName(agent: Pick<SubagentView, 'id' | 'name'>): string {
   const tail = agent.id.replace(/[^0-9A-Za-z]/g, '').slice(-8);
   return tail ? `${agent.name}·${tail}` : agent.name;
 }
@@ -113,11 +114,17 @@ export function agentSeconds(agent: SubagentView, now: number): number {
   return Math.max(0, (end - agent.started) / 1000);
 }
 
-// The visible subagent rows, and `… +N more` for the ones folded away. The selected row
-// sits on `sel_bg`, the others on the agent tint.
+// The visible subagent rows, and `… +N more` for the ones folded away. A row has no
+// background until you select it or point at it: then it sits on `sel_bg` in `em`.
 export function agentRows(
   agents: SubagentView[],
-  options: { width: number; selected?: string; hidden?: number; now?: number },
+  options: {
+    width: number;
+    selected?: string;
+    hover?: string;
+    hidden?: number;
+    now?: number;
+  },
 ): string[] {
   if (!agents.length) return [];
   const p = palette();
@@ -145,7 +152,7 @@ export function agentRows(
   // Narrower than the columns can go: the name gives way last.
   nameW = Math.max(1, Math.min(nameW, width - 3 - 2 - doingW - 2 - metaW - 1));
   const rows = agents.map((agent, index) => {
-    const selected = agent.id === options.selected;
+    const lit = agent.id === options.selected || agent.id === options.hover;
     const lamp: LampState =
       agent.state === 'waiting'
         ? 'wait'
@@ -157,12 +164,14 @@ export function agentRows(
               ? 'error'
               : 'none';
     return row(
-      selected ? p.sel_bg : p.agent_bg,
-      selected ? p.em : p.text,
+      lit ? p.sel_bg : '',
+      lit ? p.em : p.text,
       lamp,
       `${padTo(fitMiddle(names[index]!, nameW), nameW)}  ${padTo(doings[index]!, doingW)}  `,
       rightTo(metas[index]!, metaW),
       now,
+      // `dim` is held to its contrast floor on the background, not on the selection
+      lit ? p.text : p.dim,
     );
   });
   if (options.hidden && options.hidden > 0)
@@ -189,7 +198,13 @@ export function jobActivity(job: Job): string {
 // agents the agent tint.
 export function jobRows(
   jobs: Job[],
-  options: { width: number; now?: number; max?: number },
+  options: {
+    width: number;
+    now?: number;
+    max?: number;
+    // A background subagent's tokens, by its job: its meter reads like an agent row's.
+    tokens?: Map<string, number>;
+  },
 ): string[] {
   if (!jobs.length) return [];
   const p = palette();
@@ -203,7 +218,12 @@ export function jobRows(
     (job) => `${job.id} ${plainJobOutput(job.title).replace(/\s+/g, ' ')}`,
   );
   const doings = shown.map(jobActivity);
-  const metas = shown.map((job) => elapsed(job));
+  const metas = shown.map((job) => {
+    const tokens = options.tokens?.get(job.id);
+    return tokens === undefined
+      ? elapsed(job)
+      : `${elapsed(job)} · ${formatTokens(tokens)} tokens`;
+  });
   let nameW = Math.min(
     JOB_NAME_W,
     Math.max(...names.map((name) => stringWidth(name))),

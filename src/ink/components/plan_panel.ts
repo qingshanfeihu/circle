@@ -1,5 +1,5 @@
 import type { Todo } from '../../tools.js';
-import { palette, sgrJoin, statusLight } from '../theme.js';
+import { palette, statusLight } from '../theme.js';
 import { pad, truncate, stringWidth } from '../string_width.js';
 import { terminalText } from './markdown_renderer.js';
 export const PLAN_ROWS = 5;
@@ -53,9 +53,10 @@ export function planRows(
       : todos.some((todo) => todo.status === 'in_progress')
         ? working
         : 'none';
-  const title = `${lamp === 'none' ? ' ' : ` ${statusLight(lamp)} `}Plan ${done}/${todos.length} `;
+  const title = `${lamp === 'none' ? ' ' : ` ${statusLight(lamp)}${p.faint} `}Plan ${done}/${todos.length} `;
+  // The frame in the input box's own resting colour, `faint`, and nothing behind the steps.
   const rows = [
-    p.line +
+    p.faint +
       '┌─' +
       title +
       '─'.repeat(Math.max(0, width - stringWidth(title) - 3)) +
@@ -81,19 +82,15 @@ export function planRows(
     const lightColor =
       status === 'none' ? color : light.slice(0, light.indexOf('●'));
     const label = ` ${String(start + index + 1).padStart(2)}  ${truncate(text, Math.max(1, width - 10))}`;
-    const cell =
-      ' ' +
-      sgrJoin(p.think_bg, lightColor) +
-      glyph +
-      sgrJoin(p.think_bg, color) +
-      label;
+    const cell = ' ' + lightColor + glyph + p.reset + color + label;
     rows.push(
-      p.line +
+      p.faint +
         '│' +
-        sgrJoin(p.think_bg, color) +
+        p.reset +
+        color +
         pad(cell, width - 2) +
         p.reset +
-        p.line +
+        p.faint +
         '│' +
         p.reset,
     );
@@ -103,12 +100,10 @@ export function planRows(
       ? ` ${start + 1}–${start + shown.length} / ${todos.length} `
       : '';
   rows.push(
-    p.line +
+    p.faint +
       '└' +
       '─'.repeat(Math.max(0, width - stringWidth(range) - 3)) +
-      p.dim +
       range +
-      p.line +
       '─┘' +
       p.reset,
   );

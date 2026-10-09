@@ -51,12 +51,16 @@ import {
   taskAgents,
   taskSummaryRows,
   agentRunning,
+  type BandAction,
   type DetailBand,
 } from './agent_rows.js';
 import { paletteRev } from '../ink/theme.js';
 export interface ScreenState {
   messages: Message[];
   notices: string[];
+  // Where each notice goes: after the message with this id, `''` before the first message,
+  // nothing (or no entry) after everything. Kept in step with `notices`.
+  noticeAnchors?: (string | undefined)[];
   welcome: string[];
   draft: string;
   draftCursor: number;
@@ -96,12 +100,23 @@ export interface ScreenState {
   costText?: string;
   subagents?: SubagentView[];
   selectedAgent?: string;
+  // The strip row and the page button under the mouse.
+  hoverAgent?: string;
+  hoverButton?: BandAction;
+  // The strip's first row when you scrolled it with the wheel; unset, it follows the selection.
+  stripStart?: number;
   agentDetail?: SubagentView;
   /** Set by renderScreen: the screen row of a subagent page's band and its buttons. */
   pageButtons?: { row: number; spans: DetailBand['spans'] };
-  /** Set by renderScreen: the screen row of the strip's first subagent row, and the
-   * subagents its rows show, top to bottom. */
-  stripAgents?: { row: number; ids: string[] };
+  /** Set by renderScreen: the screen row of the strip's first subagent row, the subagents
+   * its rows show, top to bottom, how many rows the strip takes with its header, and
+   * whether it has subagents folded away to scroll to. */
+  stripAgents?: {
+    row: number;
+    ids: string[];
+    rows: number;
+    scrollable: boolean;
+  };
   find?: TranscriptFind;
   historySearch?: { query: string; match: boolean };
   renderToolResult?: (message: Message) => string[] | undefined;
@@ -172,11 +187,14 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
     const lines = markdown
       ? markdownRows(content, width - 3, { base, background: style })
       : wrap(terminalText(content), width - 3);
+    // A lamp for a marker ends in a reset: the row's tint and colour come back after it.
+    const lead =
+      ' ' + marker.replaceAll(p.reset, p.reset + sgrJoin(style, base)) + ' ';
     rows.push(
       ...lines.map(
         (line, index) =>
           sgrJoin(style, base) +
-          pad((index === 0 ? ' ' + marker + ' ' : '   ') + line, width) +
+          pad((index === 0 ? lead : '   ') + line, width) +
           p.reset,
       ),
     );
@@ -238,6 +256,26 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
   );
   for (const shell of localShells.filter((shell) => !shell.anchor))
     shellRows(shell);
+  // Each notice after the message it came after; one whose message is not on screen, and
+  // one from before anchors existed, after everything as before.
+  const anchors = state.noticeAnchors ?? [];
+  const shownIds = new Set(messages.map((message) => message.id));
+  const placed = new Map<string, string[]>();
+  const trailing: string[] = [];
+  state.notices.forEach((note, index) => {
+    const anchor = anchors[index];
+    if (anchor === undefined || (anchor !== '' && !shownIds.has(anchor)))
+      trailing.push(note);
+    else placed.set(anchor, [...(placed.get(anchor) ?? []), note]);
+  });
+  const noticeBlock = (note: string): void =>
+    block(
+      note.startsWith('✖') ? '✖' : ' ',
+      note.replace(/^✖\s*/, ''),
+      '',
+      note.startsWith('✖') ? p.red : p.dim,
+    );
+  for (const note of placed.get('') ?? []) noticeBlock(note);
   const agents = taskAgents(messages, state.subagents ?? []);
   // The reply a running turn is working on: the newest one with tool calls.
   const newestReply = messages.findLast(
@@ -390,16 +428,15 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       if (cached && cached.key === key) {
         rows.push(...cached.rows);
         lastKind = cached.outKind;
-        continue;
+      } else {
+        const start = rows.length;
+        emit(message);
+        const block = rows.slice(start);
+        if (block.length)
+          blockCache.set(message, { key, rows: block, outKind: lastKind });
       }
-      const start = rows.length;
-      emit(message);
-      const block = rows.slice(start);
-      if (block.length)
-        blockCache.set(message, { key, rows: block, outKind: lastKind });
-      continue;
-    }
-    emit(message);
+    } else emit(message);
+    for (const note of placed.get(message.id) ?? []) noticeBlock(note);
   }
   if (state.thinking)
     thinking(
@@ -409,13 +446,7 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
     );
   if (state.streaming.trim())
     block('●', state.streaming, '', p.text, true, 'text');
-  for (const note of state.notices)
-    block(
-      note.startsWith('✖') ? '✖' : ' ',
-      note.replace(/^✖\s*/, ''),
-      '',
-      note.startsWith('✖') ? p.red : p.dim,
-    );
+  for (const note of trailing) noticeBlock(note);
   if (rows.length && rows.at(-1) !== '') rows.push('');
   return rows;
 }
@@ -425,31 +456,32 @@ function stripRows(
   state: ScreenState,
   width: number,
   height: number,
-): { rows: string[]; ids: string[] } {
-  const running = (agent: SubagentView): boolean =>
-    ['running', 'waiting'].includes(agent.state);
-  const selected = state.agentDetail?.id ?? state.selectedAgent;
+): { rows: string[]; ids: string[]; scrollable: boolean } {
+  // Only what runs: a subagent that ended leaves the strip, selected or open or not.
   const agents = (state.subagents ?? []).filter(
-    (agent) => (!agent.background && running(agent)) || agent.id === selected,
+    (agent) =>
+      !agent.background && ['running', 'waiting'].includes(agent.state),
   );
+  const selected = state.agentDetail?.id ?? state.selectedAgent;
   const jobs = (state.jobs ?? []).filter((job) => job.status === 'running');
-  if (!agents.length && !jobs.length) return { rows: [], ids: [] };
+  if (!agents.length && !jobs.length)
+    return { rows: [], ids: [], scrollable: false };
   const now = Date.now();
   const most = Math.min(AGENT_ROWS, Math.max(1, Math.floor((height - 8) / 3)));
+  const last = Math.max(0, agents.length - most);
   const at = Math.max(
     0,
     agents.findIndex((agent) => agent.id === selected),
   );
-  const start =
-    agents.length <= most
-      ? 0
-      : Math.min(Math.max(0, at - most + 1), agents.length - most);
+  // Where the wheel left it, else where the selection is.
+  const start = Math.min(last, Math.max(0, state.stripStart ?? at - most + 1));
   const visible = agents.slice(start, start + most);
-  const rows = [stripHeader(agents.filter(running).length, jobs.length, width)];
+  const rows = [stripHeader(agents.length, jobs.length, width)];
   rows.push(
     ...agentRows(visible, {
       width,
       selected,
+      hover: state.hoverAgent,
       hidden: agents.length - visible.length,
       now,
     }),
@@ -458,12 +490,21 @@ function stripRows(
     ...jobRows(jobs, {
       width,
       now,
+      tokens: new Map(
+        (state.subagents ?? [])
+          .filter((agent) => agent.jobId)
+          .map((agent) => [agent.jobId!, agent.tokens]),
+      ),
       max: Math.floor(
         (height - rows.length - (state.todos.length ? 14 : 8)) / 2,
       ),
     }),
   );
-  return { rows, ids: visible.map((agent) => agent.id) };
+  return {
+    rows,
+    ids: visible.map((agent) => agent.id),
+    scrollable: agents.length > most,
+  };
 }
 export interface ScreenCursor {
   /** 1-based screen row and column. */
@@ -485,7 +526,11 @@ export function renderScreen(
     bottom.push(
       ...state.picker.rows(width, Math.max(3, Math.floor(height / 3))),
     );
-  const { rows: strip, ids: stripIds } = stripRows(state, width, height);
+  const {
+    rows: strip,
+    ids: stripIds,
+    scrollable: stripScrollable,
+  } = stripRows(state, width, height);
   // The plan frame stays up while a card asks: the plan-exit card is about it, so the plan
   // you would implement sits above the card instead of being hidden by it.
   if (state.todos.length) {
@@ -599,6 +644,7 @@ export function renderScreen(
         ) + 1,
       total: Math.max(1, all.length),
       width,
+      hover: state.hoverButton,
     });
     // What its task call returned, unless the task went on in the background.
     let result: string | undefined;
@@ -688,7 +734,12 @@ export function renderScreen(
   };
   // The strip is the screen's last rows: its header, then a row per subagent shown.
   state.stripAgents = stripIds.length
-    ? { row: Math.min(rows.length, height) - strip.length + 1, ids: stripIds }
+    ? {
+        row: Math.min(rows.length, height) - strip.length + 1,
+        ids: stripIds,
+        rows: strip.length,
+        scrollable: stripScrollable,
+      }
     : undefined;
   // A row never runs past the edge: on a very narrow screen even a status row is cut.
   if (cursor && cursorInBottom) {
