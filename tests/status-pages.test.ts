@@ -441,9 +441,10 @@ test('a background job is one faint line under its call and a notice row whose g
     results[0]!.content,
     /^In background: j1 · shell · .*do not poll or sleep\.$/,
   );
+  // what the command printed before it moved stays with the result, as in 0.5.0
   assert.match(
     results[1]!.content,
-    /^Command continues in background: j2 · shell · /,
+    /^ready\n\nThe command was moved to the background\.\nCommand continues in background: j2 · shell · /,
   );
   for (const [, p] of PALETTES) {
     setPalette(p);
@@ -460,10 +461,13 @@ test('a background job is one faint line under its call and a notice row whose g
         sgrJoin(p.write_bg, p.faint) + 'in background',
       ),
     );
+    // what it printed before, then the job; the sentences for the model are not shown
+    assert.equal(plain[second! + 1]!.trimEnd(), '   ⎿ ready');
     assert.equal(
-      plain[second! + 1]!.trimEnd(),
-      '   ⎿ moved to background · j2',
+      plain[second! + 2]!.trimEnd(),
+      '     moved to background · j2',
     );
+    assert.ok(!plain.some((row) => row.includes('The command was')));
     assert.ok(!plain.some((row) => row.includes('do not poll')));
     const notice = plain.findIndex((row) => row.startsWith(' ◆ j1'));
     assert.match(plain[notice]!, /^ ◆ j1 failed · exit 3 · .+ · \d+s +$/);

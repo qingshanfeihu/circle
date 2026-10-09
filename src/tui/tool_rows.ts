@@ -320,6 +320,9 @@ export function resultRows(
 const JOB_SENTENCE =
   /(?:^|\n)(In background|Command continues in background|Watching in background): (j\d+) · (\w+) · [^\n]*do not poll or sleep\.\s*$/;
 const LEGACY_JOB_NOTE = /\[The command[^[\]]*stop_job\.\]\s*$/;
+// Why the command left the foreground, written for the model just before the job sentence.
+const JOB_REASON =
+  /\n*(?:Exit code: -?\d+\n)?The command (?:was moved to the background|was still running after \d+ seconds|has ended, but processes it started are still running)\.\s*$/;
 const LEGACY_EXIT =
   /\n*\[Command (?:succeeded|failed) with exit code -?\d+\]\s*$/;
 export interface BackgroundJob {
@@ -341,7 +344,7 @@ export function backgroundJob(result: Message): BackgroundJob | undefined {
             : 'moved',
       text:
         match[1] === 'Command continues in background'
-          ? result.content.slice(0, match.index).trim()
+          ? result.content.slice(0, match.index).replace(JOB_REASON, '').trim()
           : '',
     };
   const extra = result.legacy_data?.data.additional_kwargs;

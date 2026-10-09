@@ -76,6 +76,21 @@ export interface ExecuteResult {
   how?: string;
 }
 
+// The first `limit` bytes of an output file, as text.
+function readHead(path: string, limit: number): string {
+  try {
+    const fd = openSync(path, 'r');
+    try {
+      const data = Buffer.alloc(Math.min(statSync(path).size, limit));
+      const read = readSync(fd, data, 0, data.length, 0);
+      return data.subarray(0, read).toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
 export function elapsed(job: Job): string {
   const seconds = Math.floor(((job.ended ?? Date.now()) - job.started) / 1000);
   return seconds < 60
@@ -418,8 +433,11 @@ export class JobRegistry {
       release = resolve;
     });
     entry.interrupt = release;
+    // Why the command left the foreground, for the model (as 0.5.0 told it).
+    let why = 'The command was moved to the background.';
     const promote = (): void => {
       if (!entry.finished && !entry.stopPromise) {
+        why = `The command was still running after ${Math.round(defaultTimeout / 1000)} seconds.`;
         this.publish(entry, 'shell', 'moved to background');
         release();
       }
@@ -442,12 +460,23 @@ export class JobRegistry {
         await this.stopEntry(entry, 'cancelled');
         signal.throwIfAborted();
       }
-      if (entry.job)
+      if (entry.job) {
+        // What it printed so far stays with the result, as in 0.5.0; the rest goes to the job.
+        const head = readHead(entry.path, 80_000).trimEnd();
+        const adopted = entry.job.kind === 'adopted';
+        if (adopted)
+          why =
+            (entry.exitCode ? `Exit code: ${entry.exitCode}\n` : '') +
+            'The command has ended, but processes it started are still running.';
         return {
           job: { ...entry.job },
-          how: entry.job.kind === 'adopted' ? 'adopted' : 'moved',
-          output: `Command continues in background: ${jobLine(entry.job)}. A notice will arrive when it ends; do not poll or sleep.`,
+          how: adopted ? 'adopted' : 'moved',
+          output:
+            (head ? head + '\n\n' : '') +
+            why +
+            `\nCommand continues in background: ${jobLine(entry.job)}. A notice will arrive when it ends; do not poll or sleep.`,
         };
+      }
       const fd = openSync(entry.path, 'r');
       try {
         const size = statSync(entry.path).size;

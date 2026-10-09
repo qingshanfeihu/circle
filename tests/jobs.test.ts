@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  realpathSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { JobRegistry, outputTail, plainJobOutput } from '../src/jobs.js';
@@ -77,7 +83,7 @@ test('Ctrl+B and the default timeout promote the actual running command without 
   cleanup(t, () => jobs.close().then(() => {}));
   const command = script(
     root,
-    `const fs=require('fs'); fs.appendFileSync('runs.txt','once\\n'); setTimeout(()=>console.log('completed'),200);`,
+    `const fs=require('fs'); fs.appendFileSync('runs.txt','once\\n'); console.log('started'); setTimeout(()=>console.log('completed'),200);`,
   );
   const first = jobs.execute(
     command,
@@ -88,6 +94,10 @@ test('Ctrl+B and the default timeout promote the actual running command without 
   );
   const moved = await first;
   assert.ok(moved.job);
+  assert.match(
+    moved.output,
+    /The command was still running after 0 seconds\.\nCommand continues in background: j\d+ · shell · /,
+  );
   await jobs.wait([moved.job.id], 5, new AbortController().signal);
   assert.equal(readFileSync(join(root, 'runs.txt'), 'utf8'), 'once\n');
   const second = jobs.execute(
@@ -95,9 +105,20 @@ test('Ctrl+B and the default timeout promote the actual running command without 
     { sessionId: 'one' },
     new AbortController().signal,
   );
+  // once it has printed, ctrl+b: what it printed stays with the result
+  const logs = (): string[] =>
+    readdirSync(root, { recursive: true })
+      .map((name) => join(root, String(name)))
+      .filter((path) => path.endsWith('.log'))
+      .map((path) => readFileSync(path, 'utf8'));
+  await until(() => logs().includes('started\n'));
   assert.equal(jobs.backgroundForeground(), 1);
   const userMoved = await second;
   assert.equal(userMoved.how, 'moved');
+  assert.match(
+    userMoved.output,
+    /^started\n\nThe command was moved to the background\.\nCommand continues in background: /,
+  );
   await jobs.wait([userMoved.job!.id], 5, new AbortController().signal);
   assert.equal(readFileSync(join(root, 'runs.txt'), 'utf8'), 'once\nonce\n');
 });
@@ -138,7 +159,7 @@ test(
     );
     const command = script(
       root,
-      `require('child_process').spawn(process.execPath,[${JSON.stringify(childPath)}],{stdio:'inherit'}); process.exit(0);`,
+      `console.log('parent done'); require('child_process').spawn(process.execPath,[${JSON.stringify(childPath)}],{stdio:'inherit'}); process.exit(0);`,
     );
     const result = await jobs.execute(
       command,
@@ -147,6 +168,10 @@ test(
     );
     assert.equal(result.job!.kind, 'adopted');
     assert.equal(result.how, 'adopted');
+    assert.match(
+      result.output,
+      /^parent done\n\nThe command has ended, but processes it started are still running\.\nCommand continues in background: /,
+    );
     await until(() => existsSync(join(root, 'adopted-ready')));
     await jobs.stop(result.job!.id);
     await delay(2200);
