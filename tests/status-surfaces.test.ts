@@ -25,6 +25,7 @@ import {
   type WelcomeInfo,
 } from '../src/ink/components/welcome.js';
 import { renderScreen, type ScreenState } from '../src/tui/render.js';
+import { thinkingRows } from '../src/tui/tool_rows.js';
 import {
   BUSY_VERBS,
   busyLabel,
@@ -558,6 +559,57 @@ test('the welcome lists what the folder brings, unlit until trusted, blinking wh
   assert.deepEqual(empty.items, []);
 });
 
+test('thinking rows have no background on a dark theme and on a light one', () => {
+  const text = '**Check the notes**\n\nThe file has three lines.';
+  for (const [, p] of PALETTES) {
+    setPalette(p);
+    const folded = thinkingRows(text, {
+      done: true,
+      seconds: 1.2,
+      expanded: false,
+      width: 80,
+    });
+    assert.equal(folded.length, 1);
+    assert.match(
+      stripAnsi(folded[0]!),
+      /^ ∴ Thought 1\.2s · Check the notes {2}ctrl\+t +$/,
+    );
+    assert.equal(stringWidth(folded[0]!), 80);
+    assert.ok(folded[0]!.includes(p.reason.slice(2, -1)));
+    assert.ok(folded[0]!.includes(p.faint.slice(2, -1)));
+    assert.ok(!folded[0]!.includes(p.think_bg.slice(2, -1)));
+    assert.ok(!folded[0]!.includes('\x1b[48'));
+    const open = thinkingRows(text, {
+      done: true,
+      seconds: 1.2,
+      expanded: true,
+      width: 80,
+    });
+    assert.ok(open.length > 1);
+    assert.ok(open[0]!.includes(p.reason_dim.slice(2, -1)));
+    assert.ok(open.slice(1).some((row) => row.includes(p.faint.slice(2, -1))));
+    assert.ok(
+      open.some((row) => stripAnsi(row).includes('The file has three lines.')),
+    );
+    for (const row of open) {
+      assert.equal(stringWidth(row), 80);
+      assert.ok(!row.includes(p.think_bg.slice(2, -1)));
+      assert.ok(!row.includes('\x1b[48'));
+    }
+    const live = thinkingRows('**Still reading**\n\nThe rest.', {
+      done: false,
+      expanded: false,
+      width: 40,
+    });
+    assert.match(
+      stripAnsi(live[0]!),
+      /^ ∴ Thinking · Still reading {2}ctrl\+t +$/,
+    );
+    assert.ok(live[0]!.includes(p.reason.slice(2, -1)));
+    assert.ok(!live[0]!.includes('\x1b[48'));
+  }
+});
+
 test('a real turn renders short tool rows, a folded read, a folded thought with its time and a usage line without the approval wait', async (t) => {
   const root = scratch(t);
   writeFileSync(join(root, 'notes.txt'), 'one\ntwo\nthree\n');
@@ -650,15 +702,23 @@ test('a real turn renders short tool rows, a folded read, a folded thought with 
       plain[thought]!,
       /^ ∴ Thought 0\.\ds · Check the notes {2}ctrl\+t/,
     );
-    assert.ok(rows[thought]!.includes(p.think_bg.slice(2, -1)));
+    assert.ok(rows[thought]!.includes(p.reason.slice(2, -1)));
+    assert.ok(!rows[thought]!.includes(p.think_bg.slice(2, -1)));
+    assert.ok(!rows[thought]!.includes('\x1b[48'));
     assert.match(plain[thought + 1]!, /^ ⏺ Read it\./);
     assert.match(plain[thought + 2]!.trimEnd(), /^ {3}\d+s · ↑ 3\.3k · ↓ 370$/);
     assert.ok(rows[thought + 2]!.includes(p.dim));
     coloursFrom(p, rows.join('\n'));
-    // ctrl+t shows the thought's text; hiding thinking drops the row.
+    // ctrl+t shows the thought's text on the terminal background; hiding thinking drops the row.
     state.thinkingExpanded = true;
-    plain = renderScreen(state, 80, 40).map(stripAnsi);
-    assert.ok(plain.some((row) => row.includes('The file has three lines.')));
+    const open = renderScreen(state, 80, 40);
+    plain = open.map(stripAnsi);
+    const body = open.find((row) =>
+      stripAnsi(row).includes('The file has three lines.'),
+    );
+    assert.ok(body);
+    assert.ok(body!.includes(p.faint.slice(2, -1)));
+    assert.ok(!body!.includes(p.think_bg.slice(2, -1)));
     assert.ok(!plain.some((row) => row.includes('ctrl+t')));
     state.showThinking = false;
     rows = renderScreen(state, 80, 40);

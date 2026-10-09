@@ -114,10 +114,10 @@ A tinted background says what kind of work a block is.
 |---|---|
 | Blue | Reading: files, searches, the web, skills, the language server |
 | Green | Changing: files and commands, including Bash |
-| Magenta | Thinking, the plan, and questions the model asks you |
+| Magenta | The plan, and questions the model asks you |
 | Cyan | Subagents |
 
-Answers from the model are never tinted.
+Thinking is not tinted. The folded line is italic blue, the terminal's own blue, and the text behind `ctrl+t` is faint. Both sit on the terminal background, so they read on a dark theme and on a light one. Answers from the model are never tinted.
 
 ## Marks at the start of a line
 

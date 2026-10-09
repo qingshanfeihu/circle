@@ -334,8 +334,9 @@ function callLine(step: ToolStep, width: number, now: number): string {
   return tintedRow(segments, toolTint(step.call.name), width);
 }
 
-// A round's reasoning on the thinking tint: `⎿ ∴ Thought 2s · title · 1.2k chars  ctrl+t`,
-// and its text under it once ctrl+t shows it.
+// A round's reasoning on the terminal background, same colours as a thought in the
+// transcript: `⎿ ∴ Thought 2s · title · 1.2k chars  ctrl+t`, and its text under it once
+// ctrl+t shows it.
 function thinkingLines(
   step: Extract<AgentStep, { kind: 'thinking' }>,
   options: { width: number; expanded: boolean; seconds?: number },
@@ -353,13 +354,12 @@ function thinkingLines(
     [style, truncate(`⎿ ${header}`, Math.max(1, options.width - 10))],
   ];
   if (body && !options.expanded) head.push(['', '  '], [p.faint, 'ctrl+t']);
-  const rows = [tintedRow(head, p.think_bg, options.width)];
+  const rows = [tintedRow(head, '', options.width)];
   if (options.expanded && body)
     for (const line of markdownRows(body, Math.max(20, options.width - 3), {
       base: p.faint,
-      background: p.think_bg,
     }))
-      rows.push(tintedRow([['', '   ' + line]], p.think_bg, options.width));
+      rows.push(tintedRow([[p.faint, '   ' + line]], '', options.width));
   return rows;
 }
 

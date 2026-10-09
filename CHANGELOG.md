@@ -4,6 +4,10 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Changed
+
+- **Thinking has no background tint.** A thought, folded or open, and the same line on a subagent's page, sit on the terminal background. The line stays italic blue and the open text stays faint, on a dark theme and on a light one. The plan and questions keep the magenta tint.
+
 ### Fixed
 
 - **Circle run in the folder that holds its data folder no longer reads the global `settings.json` as a project's.** `CIRCLE_HOME` was not known where the project's `.circle/settings.json` was looked for, so with `CIRCLE_HOME=~/.circle` and `~` as the folder, the global file was read as a project's and every key only it owns (`version`, `initialized`, `auth`, `trusted_folders`, `mcp_servers`, `extensions`, `update_check`, `models`) was named in red at start and on standard error in print mode. The keys the two files share were also applied as if the project had set them.
