@@ -244,7 +244,8 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
       if (message.content.trim())
         block('⏺', message.content, '', p.text, true, 'text');
       // Calls run one after another: the first without a result is the one running (or
-      // waiting on you), the ones after it have not started.
+      // waiting on you), the ones after it have not started. Task calls next to each other
+      // run together: each is running (or waiting) from its subagent until its result is in.
       let first = true;
       for (const call of message.tool_calls ?? []) {
         const result = messages.find(
@@ -256,19 +257,26 @@ export function transcriptRows(state: ScreenState, width: number): string[] {
         const live = state.agentDetail
           ? ['running', 'waiting'].includes(state.agentDetail.state)
           : (state.busy || state.waiting) && message === newestReply;
+        // A subagent folded under its row; one in the background is a job instead.
+        const agent = agents.get(call.id);
+        const together = agent && call.args.background !== true;
         const pending =
-          result || !live || !first
+          result || !live
             ? 'none'
-            : state.waiting
-              ? 'wait'
-              : 'running';
+            : together
+              ? agent.state === 'waiting'
+                ? 'wait'
+                : 'running'
+              : !first
+                ? 'none'
+                : state.waiting
+                  ? 'wait'
+                  : 'running';
         if (!result) first = false;
         if (HIDDEN_TOOLS.has(call.name)) continue;
         gap('tool');
         rows.push(toolRow(call, result, { width, pending }));
-        // A subagent folded under its row; one in the background is a job instead.
-        const agent = agents.get(call.id);
-        if (agent && call.args.background !== true)
+        if (together)
           rows.push(
             ...taskSummaryRows(agent, { width, expanded: state.showTools }),
           );

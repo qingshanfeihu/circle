@@ -92,6 +92,7 @@ import {
 import { PlanPanel } from '../ink/components/plan_panel.js';
 import { stripAnsi } from '../ink/string_width.js';
 import { modelScope } from '../model_scope.js';
+import { resumeHint, runningJobs, stoppedJobsLine } from './exit_lines.js';
 export { VERSION } from '../version.js';
 interface DialogPending {
   complete: (answer: unknown) => void;
@@ -113,6 +114,7 @@ export class SessionApp {
   private parked = new ParkedDraft();
   private secretReady?: SecretRequest;
   private ended = false;
+  private closing?: Promise<void>;
   private externalEditor = false;
   private animation?: NodeJS.Timeout;
   private flashTimer?: NodeJS.Timeout;
@@ -521,10 +523,12 @@ export class SessionApp {
         this.settings.auth.model,
       );
       if (this.ended || !model) return false;
+      // The URL that answered (`<url>/v1` when only that lists models), as line-mode setup
+      // and 0.5.0 save it; the typed one when nothing answered.
       const auth = {
         ...defaultAuth(),
         protocol,
-        base_url: normalizeBaseUrl(url, protocol),
+        base_url: normalizeBaseUrl(result.base_url || url, protocol),
         model,
       };
       const settings = withConnection(auth, this.home);
@@ -1222,7 +1226,7 @@ export class SessionApp {
       return;
     } else if (key === 'escape') {
       this.jobWakeSnoozed = true;
-      if (this.runtime?.busy) void this.runtime.cancel();
+      if (this.runtime?.busy) this.interrupt();
       else if (
         !this.state.draft &&
         Date.now() - this.lastEscape < 500 &&
@@ -1299,7 +1303,7 @@ export class SessionApp {
     this.jobWakeSnoozed = true;
     const now = Date.now();
     if (this.runtime?.busy) {
-      void this.runtime.cancel();
+      this.interrupt();
       this.lastCtrlC = now;
     } else if (now - this.lastCtrlC < 1500) this.exit(0);
     else {
@@ -1313,6 +1317,30 @@ export class SessionApp {
         1500,
       );
     }
+  }
+  // esc or ctrl+c during a turn, as in 0.5.0: the turn stops, and the messages it had not read
+  // yet are sent next, one turn each, the steering ones first.
+  private interrupt(): void {
+    const runtime = this.runtime;
+    if (!runtime) return;
+    void runtime.cancel({ keepQueue: true }).then(() => {
+      if (
+        this.ended ||
+        this.runtime !== runtime ||
+        runtime.busy ||
+        !runtime.harness.pendingMessageCount
+      )
+        return;
+      // A message of yours starts this turn: finished jobs may start turns again
+      this.jobWakeSnoozed = false;
+      this.jobWakeCount = 0;
+      void runtime.harness
+        .run()
+        .catch(() => {
+          /* The event bus shows how the turn ended. */
+        })
+        .finally(() => this.repaint());
+    });
   }
   // ctrl+z: the shell gets the terminal back and `fg` brings Circle back with the screen drawn
   // again (0.5.0's _suspend). Windows has no job control.
@@ -1907,7 +1935,12 @@ export class SessionApp {
   async wait(): Promise<number> {
     return this.completion;
   }
-  async close(): Promise<void> {
+  // Once: the exit guard and runTui may both close, and the lines are written only once.
+  close(): Promise<void> {
+    this.closing ??= this.closeOnce();
+    return this.closing;
+  }
+  private async closeOnce(): Promise<void> {
     this.ended = true;
     this.off?.();
     this.offSignals?.();
@@ -1918,15 +1951,20 @@ export class SessionApp {
     if (this.animation) clearInterval(this.animation);
     if (this.flashTimer) clearTimeout(this.flashTimer);
     this.selection.close();
-    process.stdin.off('data', this.dataListener);
     process.stdout.off('resize', this.resizeListener);
     process.off('SIGINT', this.signalListener);
-    process.stdin.setRawMode(false);
-    process.stdin.pause();
-    process.stdout.write(
+    this.terminal.input(false);
+    this.terminal.write(
       '\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[23;0t',
     );
-    await this.runtime?.close();
+    // As 0.5.0 did once the screen was gone: the jobs that leaving stopped, then the
+    // command that opens this conversation again.
+    const runtime = this.runtime;
+    const jobs = runtime ? runningJobs(runtime) : 0;
+    const hint = runtime ? resumeHint(runtime, this.workspace) : '';
+    await runtime?.close();
+    for (const line of [stoppedJobsLine(jobs), hint])
+      if (line) this.terminal.write(line + '\n');
   }
 }
 export async function runTui(

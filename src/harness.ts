@@ -106,10 +106,15 @@ export class Harness {
       this.shown.delete(message);
     return result;
   }
-  async cancel(): Promise<void> {
-    this.followUps = [];
-    this.steering = [];
-    this.shown.clear();
+  // Stop the turn. `keepQueue`, as esc in 0.5.0: the messages it had not read yet stay, each
+  // to be sent as a turn of its own (the steering ones first), and nothing starts them here.
+  async cancel(options: { keepQueue?: boolean } = {}): Promise<void> {
+    if (options.keepQueue) this.followUps.unshift(...this.steering.splice(0));
+    else {
+      this.followUps = [];
+      this.steering = [];
+      this.shown.clear();
+    }
     this.controller?.abort(new Error('Interrupted'));
     try {
       await this.active;
@@ -254,127 +259,25 @@ export class Harness {
           });
           return { answer, usage };
         }
-        for (const original of calls) {
-          let call = original;
-          let content = '';
-          let status: 'success' | 'error' = 'success';
-          let recoverable = false;
-          let attachments: MediaAttachment[] = [];
-          let acceptingAttachments = true;
-          this.bus.emit('tool_call', { payload: { ...call } });
-          try {
-            signal.throwIfAborted();
-            const prepared = prepareToolCall(call, this.tools);
-            call = prepared.call;
-            const tool = prepared.tool;
-            if (
-              this.readOnly &&
-              tool.effect !== 'read' &&
-              !this.options.planFileMutation?.(call)
-            )
-              throw new Error('read-only mode: this tool cannot run');
-            const found = this.options.policy.review(call.name, call.args);
-            if (found.verdict === 'DENY')
-              throw new Error(found.message || found.reason);
-            if (
-              tool.effect !== 'read' &&
-              tool.approval !== false &&
-              (this.options.policy.needsApproval(
-                call.name,
-                call.args,
-                this.options.approvalSessionId ?? this.sessionId,
-              ) ||
-                (this.options.headless && found.verdict === 'ASK_FORCED'))
-            ) {
-              this.bus.emit('tool_waiting', {
-                payload: { ...call, reason: found.reason },
-              });
-              if (!this.options.approve)
-                throw new Error(
-                  found.verdict === 'ASK_FORCED'
-                    ? 'not run: this operation always asks'
-                    : 'not run: needs --yolo or approval',
-                );
-              const decision = await this.options.approve(call, signal);
-              signal.throwIfAborted();
-              const reason =
-                typeof decision === 'string' ? '' : decision.message.trim();
-              if (
-                !this.options.policy.remember(
-                  this.options.approvalSessionId ?? this.sessionId,
-                  call.name,
-                  call.args,
-                  typeof decision === 'string' ? decision : decision.decision,
-                )
-              )
-                throw new Error(
-                  'The user rejected this tool call.' +
-                    (reason ? ` The user said: ${reason}` : ''),
-                );
-            }
-            signal.throwIfAborted();
-            if (
-              this.readOnly &&
-              tool.effect !== 'read' &&
-              !this.options.planFileMutation?.(call)
-            )
-              throw new Error('read-only mode: this tool cannot run');
-            this.bus.emit('tool_start', { payload: { ...call } });
-            const context = {
-              signal,
-              sessionId: this.sessionId,
-              emitAttachments: (items: MediaAttachment[]) => {
-                if (!acceptingAttachments)
-                  throw new Error('tool attachment channel is closed');
-                signal.throwIfAborted();
-                validateAttachments(items);
-                attachments.push(...structuredClone(items));
-                validateAttachments(attachments);
-              },
-            };
-            const guardedTool: Tool = {
-              ...tool,
-              run: async (args, context) => {
-                signal.throwIfAborted();
-                if (
-                  this.readOnly &&
-                  tool.effect !== 'read' &&
-                  !this.options.planFileMutation?.(call)
-                )
-                  throw new Error('read-only mode: this tool cannot run');
-                return tool.run(args, context);
-              },
-            };
-            content = this.options.toolBoundary
-              ? await this.options.toolBoundary(guardedTool, call.args, context)
-              : await guardedTool.run(call.args, context);
-            if (typeof content !== 'string')
-              throw new Error('tool must return text');
-            signal.throwIfAborted();
-          } catch (error) {
-            status = 'error';
-            recoverable = error instanceof RecoverableToolError;
-            attachments = [];
-            content = redact(
-              error instanceof Error ? error.message : String(error),
-            );
-          } finally {
-            acceptingAttachments = false;
-          }
-          this.save({
-            id: randomUUID(),
-            role: 'tool',
-            content,
-            tool_call_id: call.id,
-            name: call.name,
-            status,
-            ...(attachments.length ? { attachments } : {}),
-            ...(recoverable ? { recoverable: true } : {}),
-          });
-          this.bus.emit('tool_result', {
-            payload: { id: call.id, name: call.name, status, output: content },
-          });
-          this.bus.emit('tool_end', { payload: { id: call.id, status } });
+        // As in 0.5.0, the subagents of task calls next to each other run at the same time;
+        // every other call runs on its own, in order. Results are stored in the order of the
+        // calls, each once those before it are in.
+        for (let index = 0; index < calls.length;) {
+          let end = index + 1;
+          if (this.parallel(calls[index]!))
+            while (end < calls.length && this.parallel(calls[end]!)) end++;
+          const batch = calls.slice(index, end);
+          const results: (Message | undefined)[] = [];
+          let stored = 0;
+          const settled = await Promise.allSettled(
+            batch.map(async (call, at) => {
+              results[at] = await this.runCall(call, signal);
+              while (results[stored]) this.finishCall(results[stored++]!);
+            }),
+          );
+          for (const outcome of settled)
+            if (outcome.status === 'rejected') throw outcome.reason;
+          index = end;
         }
         signal.throwIfAborted();
       }
@@ -393,5 +296,147 @@ export class Harness {
       });
       throw failure;
     }
+  }
+  // A task call (its name as the tool table resolves it): its subagent can run beside others.
+  private parallel(call: ToolCall): boolean {
+    try {
+      return prepareToolCall(call, this.tools).tool.name === 'task';
+    } catch {
+      return false;
+    }
+  }
+  // One call: checked, approved when it must be, and run. The result comes back to be stored
+  // by the caller, which keeps the results in the order of the calls.
+  private async runCall(
+    original: ToolCall,
+    signal: AbortSignal,
+  ): Promise<Message> {
+    let call = original;
+    let content = '';
+    let status: 'success' | 'error' = 'success';
+    let recoverable = false;
+    let attachments: MediaAttachment[] = [];
+    let acceptingAttachments = true;
+    this.bus.emit('tool_call', { payload: { ...call } });
+    try {
+      signal.throwIfAborted();
+      const prepared = prepareToolCall(call, this.tools);
+      call = prepared.call;
+      const tool = prepared.tool;
+      if (
+        this.readOnly &&
+        tool.effect !== 'read' &&
+        !this.options.planFileMutation?.(call)
+      )
+        throw new Error('read-only mode: this tool cannot run');
+      const found = this.options.policy.review(call.name, call.args);
+      if (found.verdict === 'DENY')
+        throw new Error(found.message || found.reason);
+      if (
+        tool.effect !== 'read' &&
+        tool.approval !== false &&
+        (this.options.policy.needsApproval(
+          call.name,
+          call.args,
+          this.options.approvalSessionId ?? this.sessionId,
+        ) ||
+          (this.options.headless && found.verdict === 'ASK_FORCED'))
+      ) {
+        this.bus.emit('tool_waiting', {
+          payload: { ...call, reason: found.reason },
+        });
+        if (!this.options.approve)
+          throw new Error(
+            found.verdict === 'ASK_FORCED'
+              ? 'not run: this operation always asks'
+              : 'not run: needs --yolo or approval',
+          );
+        const decision = await this.options.approve(call, signal);
+        signal.throwIfAborted();
+        const reason =
+          typeof decision === 'string' ? '' : decision.message.trim();
+        if (
+          !this.options.policy.remember(
+            this.options.approvalSessionId ?? this.sessionId,
+            call.name,
+            call.args,
+            typeof decision === 'string' ? decision : decision.decision,
+          )
+        )
+          throw new Error(
+            'The user rejected this tool call.' +
+              (reason ? ` The user said: ${reason}` : ''),
+          );
+      }
+      signal.throwIfAborted();
+      if (
+        this.readOnly &&
+        tool.effect !== 'read' &&
+        !this.options.planFileMutation?.(call)
+      )
+        throw new Error('read-only mode: this tool cannot run');
+      this.bus.emit('tool_start', { payload: { ...call } });
+      const context = {
+        signal,
+        sessionId: this.sessionId,
+        emitAttachments: (items: MediaAttachment[]) => {
+          if (!acceptingAttachments)
+            throw new Error('tool attachment channel is closed');
+          signal.throwIfAborted();
+          validateAttachments(items);
+          attachments.push(...structuredClone(items));
+          validateAttachments(attachments);
+        },
+      };
+      const guardedTool: Tool = {
+        ...tool,
+        run: async (args, context) => {
+          signal.throwIfAborted();
+          if (
+            this.readOnly &&
+            tool.effect !== 'read' &&
+            !this.options.planFileMutation?.(call)
+          )
+            throw new Error('read-only mode: this tool cannot run');
+          return tool.run(args, context);
+        },
+      };
+      content = this.options.toolBoundary
+        ? await this.options.toolBoundary(guardedTool, call.args, context)
+        : await guardedTool.run(call.args, context);
+      if (typeof content !== 'string') throw new Error('tool must return text');
+      signal.throwIfAborted();
+    } catch (error) {
+      status = 'error';
+      recoverable = error instanceof RecoverableToolError;
+      attachments = [];
+      content = redact(error instanceof Error ? error.message : String(error));
+    } finally {
+      acceptingAttachments = false;
+    }
+    return {
+      id: randomUUID(),
+      role: 'tool',
+      content,
+      tool_call_id: call.id,
+      name: call.name,
+      status,
+      ...(attachments.length ? { attachments } : {}),
+      ...(recoverable ? { recoverable: true } : {}),
+    };
+  }
+  // The result of a call goes into the conversation and onto the bus.
+  private finishCall(result: Message): void {
+    this.save(result);
+    const status = result.status ?? 'success';
+    this.bus.emit('tool_result', {
+      payload: {
+        id: result.tool_call_id,
+        name: result.name,
+        status,
+        output: result.content,
+      },
+    });
+    this.bus.emit('tool_end', { payload: { id: result.tool_call_id, status } });
   }
 }
