@@ -1,58 +1,29 @@
-# Built-in tools
+# Tools
 
-The main agent has these nineteen tools. MCP servers and [extensions](extensions.md) add more.
+The runtime registers tools with JSON Schema arguments and declared effects. Built-in file and command tools include `ls`, `read_file`, `write_file`, `edit_file`, `apply_patch`, `glob`, `grep` and `execute`. File edits require a prior read; ambiguous replacements fail unless `replace_all` is used. Patches validate their operations before changing files.
 
-"Asks" means Circle shows an approval card before the call runs. See [Security](security.md).
+`read_file` uses a zero-based line offset and one-based displayed line numbers: `{ "file_path": "src/cli.ts", "offset": 20, "limit": 40 }` reads source lines 21–60. Omitted bounds read up to 2000 lines from the beginning; a non-positive limit requests no lines. Files and background logs are read as streams, with LF, CRLF and CR line endings accepted. An offset beyond the last line reports an error.
 
-## Reading and searching
+PNG, JPEG, GIF, WebP and PDF reads return media attachments instead of numbered binary text. The same formats can be supplied as workspace mentions, for example `Inspect @screenshot.png`. Credential-file rules apply to mentions as well as file tools. Each attachment is limited to 20 MiB, and a model request accepts up to 28 MiB of encoded media data. The selected model and endpoint must accept the media format; provider errors are reported without converting binary data into text.
 
-| Tool | What it does | Asks | Limits |
-|---|---|---|---|
-| `ls` | List a folder. | no | |
-| `read_file` | Read a text file, an image or a PDF. Arguments: `file_path`, `offset`, `limit`. | no | 100 lines by default. Content over 80,000 characters is cut. Lines over 5,000 characters are split. |
-| `glob` | Find files by pattern. | no | 10 second timeout. |
-| `grep` | Search file contents for **literal text**, not a regular expression. Modes: files with matches, matching lines, counts. | no | |
-| `lsp` | Ask a language server: go to definition, find references, hover, symbols, implementations. Positions are 1-based. | no | Needs `pylsp` (Python), `typescript-language-server` (TypeScript and JavaScript), `gopls` (Go) or `rust-analyzer` (Rust) on your `PATH`. |
-| `webfetch` | Fetch a URL. Formats: `markdown` (the default; HTML with the tags stripped), `text`, `html`. JSON is pretty-printed. | no | 500 KB, 30 seconds. Refuses local and private addresses. `http` becomes `https`. |
-| `websearch` | Search the web through DuckDuckGo. No API key. | no | 1 to 10 results, 20 seconds. |
+Attachment bytes and SHA-256 receipts persist in SQLite and JSONL session bundles. HTML exports embed images and provide PDF download links. Terminal output shows file names and MIME types. Context summaries keep attachment metadata and archive the original bytes; preflight media token counts are estimates, while usage and prices come from API responses. Protocol formats follow [OpenAI images](https://developers.openai.com/api/docs/guides/images-vision), [OpenAI PDF inputs](https://developers.openai.com/api/docs/guides/file-inputs), and [Anthropic PDF inputs](https://platform.claude.com/docs/en/build-with-claude/pdf-support).
 
-## Changing things
+Model-facing tools also include plans, skills, questions, subagents, context compaction and web fetching. Tool results are saved in the session before the next model request. A rejected or cancelled call receives an error result with the original call ID.
 
-| Tool | What it does | Asks | Limits |
-|---|---|---|---|
-| `write_file` | Create or overwrite a file. | yes | |
-| `edit_file` | Replace exact text in a file. Arguments: `file_path`, `old_string`, `new_string`, `replace_all`. | yes | |
-| `apply_patch` | Apply a multi-file patch in the `*** Begin Patch` format: add, update, move and delete files. | yes, and always when it deletes | Not atomic: if a later section fails, earlier ones stay applied. |
-| `delete` | Delete a file or a folder and everything in it. | always | |
-| `execute` | Run a shell command in the workspace. With `background: true` it runs as a [background job](background-jobs.md) and returns at once. Standard output and standard error come back together, in the order they were written. | yes | A command still running at the default 120 seconds goes on as a background job; one the model gave a `timeout` (up to an hour) is ended at that time. Processes a command leaves running become a job. Output over 100,000 characters is cut. With `background`, `timeout` is the longest the job may run (up to a day). |
+`execute` and `task` accept `background: true`. `list_jobs` and `stop_job` manage the resulting jobs; subagents additionally have `wait_jobs`. See [background jobs](background-jobs.md) for output, timeout and completion behavior.
 
-## Working with you
+`--tools read,grep`, `--exclude-tools execute`, and `--no-tools` limit available tools for a run. The aliases `read`, `write`, `edit`, `bash` and `find` map to `read_file`, `write_file`, `edit_file`, `execute` and `glob`. Context compaction remains available. Limits apply to the main agent; subagents retain their configured tools, so omit `task` too when that matters.
 
-| Tool | What it does | Asks |
-|---|---|---|
-| `write_todos` | Keep the plan shown in the plan box. | no |
-| `question` | Ask you one or more questions with options, or ask for a secret. Your answers become the tool result. | no |
+Read-only mode permits plan-file changes subject to normal approval and blocks other mutations and shell execution. Mixed patches affecting non-plan files are rejected before effects. Deleting files uses forced approval and remains blocked in headless mode, including `--yolo`. `plan_exit` requires an affirmative interactive answer. Mode transitions are persisted as marked boundary messages.
 
-## Background jobs
+`websearch` parses DuckDuckGo result pages and returns source URLs and snippets. `webfetch` accepts Markdown, text or HTML, formats JSON, bounds streamed responses and refuses private/local targets and redirects. See [questions](questions.md) for ordinary and secret input.
 
-See [Background jobs](background-jobs.md).
+## LSP
 
-| Tool | What it does | Asks |
-|---|---|---|
-| `list_jobs` | List this conversation's jobs: id, kind, state, time, what, and the file their output goes to. | no |
-| `stop_job` | Stop a running job with everything it started. | no |
-| `wait_jobs` | Wait until one of the given jobs ends (up to 600 seconds), and return how it ended. Only the `general-purpose` subagent has it: it cannot be woken by a notice. | no |
+`lsp` supports `goToDefinition`, `findReferences`, `hover`, `documentSymbol`, `workspaceSymbol` and `goToImplementation`. It reads the file, opens or updates it on the server, and sends the requested operation. `line` and `character` are one-based in tool arguments and converted to zero-based protocol positions.
 
-`list_jobs` and `stop_job` come with `execute` or `task`: `--tools bash` keeps them, `--tools read` does not.
+Install the language server for the files being inspected: `pylsp` for Python, `typescript-language-server --stdio` for TypeScript/JavaScript, `gopls` for Go, or `rust-analyzer` for Rust. Servers are discovered through `PATH`; an unavailable server produces an explicit tool error.
 
-## Extending itself
+Requests have a bounded response deadline and honor cancellation. `didOpen` and `didChange` are notifications. Server processes are closed when the runtime closes. The client does not accept server requests to edit the workspace.
 
-| Tool | What it does |
-|---|---|
-| `skill` | Load the full instructions of a [skill](skills.md) by name. |
-| `task` | Run a subagent (`general-purpose` or `explore`) and return its answer. With `background: true` the subagent runs as a [background job](background-jobs.md#background-subagents) and its report comes as a notice. See [How Circle works](how-circle-works.md#subagents). |
-| `compact_conversation` | Summarize older messages now. Used by `/compact`. |
-
-## Display
-
-Tool output in the conversation is shortened to a few lines; `ctrl+o` shows all of it. Very large results (over 80,000 characters) are saved in the data folder (`projects/<folder>-<id>/large_tool_results/`), and the model gets the start and end and a path, `/large_tool_results/…`, to read the rest. A background job's output is kept the same way, under `background_jobs/`, and the model reads it at `/background_jobs/…`.
+See [MCP](mcp.md) and [extensions](extensions.md) for additional tool sources. All of them share the runtime's policy and read-only gate.

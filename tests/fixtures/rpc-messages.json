@@ -1,0 +1,139 @@
+{
+  "source": {
+    "package": "langchain-core",
+    "version": "1.6.4",
+    "operation": "message_to_dict; data-only reference, no runtime dependency"
+  },
+  "cases": [
+    {
+      "native": {
+        "id": "u",
+        "role": "user",
+        "content": "hi"
+      },
+      "expected": {
+        "type": "human",
+        "data": {
+          "content": "hi",
+          "additional_kwargs": {},
+          "response_metadata": {},
+          "type": "human",
+          "name": null,
+          "id": "u"
+        }
+      }
+    },
+    {
+      "native": {
+        "id": "a",
+        "role": "assistant",
+        "content": "thought",
+        "tool_calls": [
+          {
+            "name": "read_file",
+            "args": {
+              "file_path": "a"
+            },
+            "id": "c"
+          }
+        ],
+        "usage": {
+          "input_tokens": 12,
+          "output_tokens": 3,
+          "cache_read_tokens": 4
+        }
+      },
+      "expected": {
+        "type": "ai",
+        "data": {
+          "content": "thought",
+          "additional_kwargs": {},
+          "response_metadata": {},
+          "type": "ai",
+          "name": null,
+          "id": "a",
+          "tool_calls": [
+            {
+              "name": "read_file",
+              "args": {
+                "file_path": "a"
+              },
+              "id": "c",
+              "type": "tool_call"
+            }
+          ],
+          "invalid_tool_calls": [],
+          "usage_metadata": {
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "total_tokens": 15,
+            "input_token_details": {
+              "cache_read": 4
+            }
+          }
+        }
+      }
+    },
+    {
+      "native": {
+        "id": "t",
+        "role": "tool",
+        "content": "read",
+        "tool_call_id": "c"
+      },
+      "expected": {
+        "type": "tool",
+        "data": {
+          "content": "read",
+          "additional_kwargs": {},
+          "response_metadata": {},
+          "type": "tool",
+          "name": null,
+          "id": "t",
+          "tool_call_id": "c",
+          "artifact": null,
+          "status": "success"
+        }
+      }
+    },
+    {
+      "native": {
+        "id": "s",
+        "role": "system",
+        "content": "system"
+      },
+      "expected": {
+        "type": "system",
+        "data": {
+          "content": "system",
+          "additional_kwargs": {},
+          "response_metadata": {},
+          "type": "system",
+          "name": null,
+          "id": "s"
+        }
+      }
+    },
+    {
+      "native": {
+        "id": "empty",
+        "role": "assistant",
+        "content": ""
+      },
+      "expected": {
+        "type": "ai",
+        "data": {
+          "content": "",
+          "additional_kwargs": {},
+          "response_metadata": {},
+          "type": "ai",
+          "name": null,
+          "id": "empty",
+          "tool_calls": [],
+          "invalid_tool_calls": [],
+          "usage_metadata": null
+        }
+      }
+    }
+  ]
+}

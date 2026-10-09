@@ -1,0 +1,1 @@
+Stop a background job by its id (for example `j3`). Shell jobs stop their process tree; subagents receive cancellation and finish their cleanup before this call returns. A stopped job does not automatically start a model turn.

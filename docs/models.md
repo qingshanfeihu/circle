@@ -1,97 +1,43 @@
-# Choose a model
+# Models and request recovery
 
-Circle talks to a model endpoint that you provide. It does not include one. You need a base URL and an API key for any service or gateway that speaks the OpenAI chat API or the Anthropic messages API.
+A connection specifies an API protocol (`openai` or `anthropic`), base URL, model ID and credential reference. The protocol is configured explicitly; a model name does not select another provider. Credentials live in the data folder's `credentials.json`.
 
-## Connect an endpoint
+Use `/models` to select an endpoint-listed model, or `/models <id>` for an exact ID. `--model` overrides the model for one invocation. `/effort` and `--thinking` select `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; endpoints can support fewer parameters than the client offers.
 
-The first time you run `circle`, setup asks for three things:
+## Context and model metadata
 
-1. Choose **API URL + KEY**.
-2. Enter the base URL, then the key.
-3. Pick a model from the list. Typing searches the list (every word has to appear); a model id the list does not have can be typed and chosen as `use "<id>"`.
+Context windows, output limits and token prices come from the packaged [models.dev](https://models.dev) snapshot and `CIRCLE_HOME/cache/models-dev.json`. The normal runtime refreshes a missing or day-old cache in the background. `CIRCLE_NO_MODELS_REFRESH=1` disables network refresh; offline startup uses the available cache or snapshot.
 
-Circle asks the endpoint for its model list, with a two-and-a-half-second timeout per request. OpenAI discovery tries `<base>/models` with a bearer token, then `<base>/v1/models` if the supplied base has no version suffix. Anthropic discovery uses `<base>/v1/models` with `x-api-key`, without duplicating an existing `/v1`. A URL containing `anthropic` makes Anthropic the first protocol tried; otherwise OpenAI is first. The host and gateway prefix stay unchanged. Setup saves the working base URL for subsequent model requests.
+Entries are selected by endpoint host, then by model name for gateways. Subscription entries use a matching pay-as-you-go entry where available. Per-model account settings override the catalog:
 
-Only valid server-provided model IDs appear in the list. Empty responses, failed requests and malformed responses never produce a built-in model list. Setup shows the outcome; if discovery fails, choose the protocol explicitly. You can enter a model ID manually whether or not discovery succeeds. A manually entered ID is not verified. If discovery failed, use the provider's documented API base URL: Circle cannot determine an unresponsive endpoint's path.
-
-For scripted setup, `complete_api_key_init` requires both `protocol` and `model` when discovery fails, or an explicit `model` when the endpoint returns an empty list. It raises an error before saving settings when these values are missing. `circle -m <name>` tries a model for one run without saving it.
-
-The key is saved in `credentials.json` and the rest in `settings.json`. See [Settings](settings.md).
-
-## Switch models
-
-```text
-/models                 choose from what the endpoint offers
-/models qwen3.8-flash   use this id
+```json
+{ "models": { "my-model": { "context_window": 64000 } } }
 ```
 
-`/models` (or `ctrl+l`) lists the models the endpoint offers, asking it with the saved protocol; when it cannot be asked, a red line says why and no names are made up. Type to search. `enter` uses the model for this session; `ctrl+s` uses it and saves it as the default for new sessions. The list marks the saved one `default`.
+`CIRCLE_MODEL_CTX=64000` applies one window to all models; a per-model setting wins. Known provider profiles supply a window when the catalog lacks that model. The final fallback is 128,000 tokens; the footer shows its window as `N/A`.
 
-`/models <name>` uses the id for this session without checking that the endpoint knows it. To keep it, open `/models` and press `ctrl+s` on it.
+For Anthropic requests, the builder fits known effort levels, uses explicit thinking budgets for older Claude profiles, and reserves at most a quarter of the context for output. Profiles are static metadata files; the runtime executes TypeScript and protocol SDKs.
 
-`ctrl+p` switches to the next model for this session. It goes through the models in `enabled_models` in `settings.json`, for example `["step-3.7-flash", "step-5-*"]`, where a pattern is matched against what the endpoint lists. With no `enabled_models` it goes through every listed model. Rows in the scope are marked `in ctrl+p` in `/models`, and `tab` there adds the marked model to the scope or takes it out; the list is saved as `enabled_models` (for this run only when Circle was started with `--models`).
+## Usage and prices
 
-The footer shows cost and context for the current model.
+Each completed call stores its model identity, token counts, selected USD rates and amount once. Changing models or refreshing the catalog preserves earlier receipts. Summary and native subagent usage contribute to the owning conversation's totals and survive restart. Unknown prices display `N/A`; an appended `+` marks totals containing unpriced calls. USD and older RMB receipts retain separate totals.
 
-## Change the endpoint or the key
+Anthropic total input includes ordinary input, cache reads and cache writes, as described in the [Messages API](https://platform.claude.com/docs/en/api/typescript/messages). Cache reads and writes are priced separately where the catalog supplies rates. A call crossing 200,000 input tokens uses its long-context rate tier when provided.
 
-Type `/login` in a session and choose **API URL + KEY**. It asks the same questions as setup: the base URL (the saved one is filled in to keep or edit), the key (shown as dots; a paste works), then the model from what the endpoint lists. When the endpoint cannot be asked, it asks whether the API is OpenAI-style or Anthropic-style and takes a model id you type. The session switches to the new model at once, and the connection is saved as with setup. `enter` on an empty line keeps the saved URL or key. `esc` on the URL or key line goes back to the list, and `esc` on a list leaves `/login`; nothing is saved before a model is picked.
+## Compaction
 
-When the endpoint turns the key down (HTTP 401 or 403, for example a wrong key or an account with no plan), the red line under the turn ends in `· /login to change the key`.
+Automatic compaction starts at 85% of the context window, or earlier when the output reservation consumes the remaining request budget. It retains a recent token-based tail and whole tool-call rounds. The TUI reports saving history, summarizing and completion with token counts and the history path. JSON/RPC expose `compaction` events.
 
-Outside a session, `circle --init` runs the same setup. Both keep your other settings. See [CLI](cli.md#setting-up-again).
+`/compact [hint]` uses the same engine. Esc cancels its actual model request. A cancelled, incomplete or branch-stale summary is never committed; the saved raw history remains available.
 
-## OAuth
+## Recovery
 
-Setup and `/login` list **OAuth sign-in**, but no real OAuth flow is built in yet. Both mark it `not available yet`, and it cannot be chosen. Use an API URL and key.
+Rate limits, server errors, network failures and in-stream API errors have separate retry budgets. `Retry-After`, `retry-after-ms` and explicit retry-delay messages take precedence over exponential backoff. Quota exhaustion and unrelated client errors are returned without retries.
 
-## Thinking depth
+A rejected optional parameter is removed only when the error identifies it and it was sent. The change remains on the model instance for the session and is reported in the interface. A request may drop at most four parameters.
 
-Circle always asks models for extended thinking when they support it. The depth is one of `minimal`, `low`, `medium`, `high`, `xhigh` or `max`.
+Once a stream has emitted content, an ordinary error does not resend that request. A keepalive-only stall may resend once. Repeating thinking may recover with a bounded reminder; repeating answer text stops the stream. Missing finish signals resend an empty response once; existing output is retained with a truncation notice. A summary with truncated output is not committed.
 
-- `/effort` lists the depths. `enter` uses one for the rest of this run; `ctrl+s` also saves it as `default_thinking` in `settings.json`.
-- `/effort <level>` and `/thinking <level>` set it for the rest of this run.
-- `shift+tab` switches to the next depth.
-- `CIRCLE_REASONING_EFFORT` sets it for a run and wins over `default_thinking`.
+`CIRCLE_LLM_TIMEOUT` controls SDK request timeout in seconds (default 45, minimum 5). `CIRCLE_LLM_STALL_TIMEOUT` controls the no-progress stream deadline (default 180). `CIRCLE_LLM_REPEAT_GUARD=0` and `CIRCLE_LLM_VERIFY_FINISH=0` disable their corresponding checks. Cancellation interrupts both streaming requests and retry waits.
 
-A change applies from the next message. When the model has a depth, the header shows it after the model name, such as `step-3.7-flash • high`.
-
-- **Anthropic protocol**: the default is `xhigh`. Circle picks the highest level the model supports at or below your choice. For Claude models that use a thinking budget, the budgets are 1,024 for `minimal`, 2,048 for `low`, 8,192 for `medium`, 16,000 for `high` and `xhigh`, and 31,999 for `max`.
-- **OpenAI protocol**: nothing is sent unless you set the variable, and only for models that accept it.
-
-If an endpoint rejects a parameter Circle sent (thinking, reasoning effort, stream options and a few others), Circle drops that parameter, resends, and does not send it again for the rest of the session. You see one line saying so.
-
-## When a request fails
-
-Circle retries transient failures for you and shows the wait in the footer.
-
-| Failure | Retries | Gives up after |
-|---|---|---|
-| Rate limit (429) | 5 | 10 minutes |
-| Server error (408, 409, 5xx) | 6 | 5 minutes |
-| Network error | 6 | 5 minutes |
-| Error inside an accepted stream | 3 | 2 minutes |
-
-The wait doubles each time up to a cap (2 minutes for rate limits, 30 seconds otherwise). If the endpoint sends `Retry-After`, Circle uses it. Circle does not retry 402, quota or billing errors, other 4xx errors, or anything after the answer has started streaming.
-
-Three more guards protect a turn:
-
-- A stream that sends only keep-alives for 180 seconds is cut and sent again once.
-- A model that repeats itself before answering is sent again with a reminder, twice at most.
-- A response that ends with no finish reason and no text is sent again once.
-
-`CIRCLE_LLM_STALL_TIMEOUT`, `CIRCLE_LLM_REPEAT_GUARD` and `CIRCLE_LLM_VERIFY_FINISH` change these. See [Environment variables](environment-variables.md).
-
-## Cost and context in the footer
-
-The footer shows tokens used, an estimated cost, the cache hit rate, and how full the context is.
-
-Endpoints report the usage of a streamed answer in different ways: once at the end, split between the first and last chunk, or (some OpenAI-compatible gateways) as the running total on every chunk. Circle counts each answer once whichever way it comes, so the footer, the cost and the point at which a long conversation is compacted are the same for all of them.
-
-The context window and the price come from [models.dev](https://models.dev), which lists each model once per provider: the same model can have a different window or price at another provider. Circle takes the entry of the provider whose API host is the host of your `base_url`. For providers models.dev lists without an address (Anthropic, OpenAI, Google, xAI, Mistral, Groq, Together, DeepInfra, Cerebras, Perplexity), their usual host counts, and with no `base_url` at all (an OAuth sign-in) the protocol's host does. A host models.dev does not list (a gateway, a proxy, a server of your own), or one that does not list the model, is matched by the model's name instead: the vendor's own entry first (`claude-sonnet-4-5` through a gateway gets Anthropic's window and price).
-
-A snapshot of models.dev ships with Circle. Once a day, when the full-screen interface starts, Circle fetches a newer copy in the background and keeps it in the data folder (`cache/models-dev.json`); without the network the copy or the snapshot is used. `CIRCLE_NO_MODELS_REFRESH=1` turns the fetch off.
-
-**Context window.** `models` in [settings](settings.md#keys) sets it for a model, and `CIRCLE_MODEL_CTX` for every model; otherwise models.dev's figure is used; otherwise the window the model's own LangChain profile gives; otherwise 128,000, and the footer shows `ctx 12.5k/N/A`. The footer and the automatic [compaction](sessions.md#compaction) use this one number. The answer takes part of the window too: when the model asks for an answer limit (`max_tokens`; Anthropic models always do), it is held to a quarter of the window, and a request must fit in 95% of the window less that limit. Compaction starts at 85% of the window, or where a request would no longer fit if that comes first: with a 200,000-token window and a 50,000-token answer, at 70%.
-
-**Cost.** Pay-as-you-go prices in US dollars per million tokens: input, cached input, cache writes and output, and the long-context rates for a request over 200,000 tokens where models.dev lists them. A cache price models.dev gives as 0 is charged as input. When the endpoint is a subscription (a coding plan or token plan, which models.dev prices at 0), the same vendor's pay-as-you-go price is shown as a reference, and `N/A` when models.dev has none for that model. Each call is priced when its usage arrives, including the calls a compaction makes: the summary, and with `/compact` the request and the answer around it. It is an estimate, not a bill; a model without a price shows `N/A`.
+Tests use local HTTP endpoints and verify request counts, parameter bodies, usage, retained history, partial output and cancellation. Multimodal input and additional provider/terminal cases remain under development; these checks do not establish every-provider compatibility.

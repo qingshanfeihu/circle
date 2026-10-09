@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-10-08",
+  "repository": "https://github.com/qingshanfeihu/circle",
+  "commit": "645ac4357fa4e7977c2812b133be8d65c277bf0b",
+  "version": "0.4.0",
+  "purpose": "Read-only compatibility reference for a TypeScript rewrite; not a validation receipt for circle-next.",
+  "files": [
+    {
+      "path": "pyproject.toml",
+      "sha256": "412f3787f40e520ecb57906d967d158901fc261694435f5780ea57cb112899be",
+      "bytes": 969
+    },
+    {
+      "path": "circle/cli.py",
+      "sha256": "b1e17c3a1efff8193fae9b0e044daa78e928018548d859aef77f41007146db4b",
+      "bytes": 25354
+    },
+    {
+      "path": "circle/harness.py",
+      "sha256": "4d7927b152a7597e24c54caf33c0e8f2165a2199cb0677ffd7bf5f61bf882542",
+      "bytes": 13452
+    },
+    {
+      "path": "circle/tui/session_app.py",
+      "sha256": "dea042af8f0bfbc12c4975d46c0e4faa6fbd2cabd06879f9861ce6764f1233c7",
+      "bytes": 236576
+    },
+    {
+      "path": "circle/tui/harness_bridge.py",
+      "sha256": "2ac9f5c70650b205f82f0225be47718569495995717fe65c4f9f842078dc866e",
+      "bytes": 26461
+    },
+    {
+      "path": "circle/tui/reducer.py",
+      "sha256": "2ab3a4e0cc82a74c51109b842f8665ef15ad35a3ce94d0d5272f106fd6a30312",
+      "bytes": 49787
+    },
+    {
+      "path": "circle/ink/theme.py",
+      "sha256": "4f5d5827bedb31e225dc99ef57cfa5c20fe76b1b50361d2e57840f2652219215",
+      "bytes": 21414
+    },
+    {
+      "path": "docs/development/tui-contract.md",
+      "sha256": "62e60c9c420d56204386c266e3b01de787477f53ba7b7cd3831d844a70988ff5",
+      "bytes": 16154
+    },
+    {
+      "path": "docs/interface.md",
+      "sha256": "2c2ac9d125aa21ab6c2a2649378a4b910c725b8d27cc69a013c40c1266bb7442",
+      "bytes": 11439
+    },
+    {
+      "path": "docs/keybindings.md",
+      "sha256": "6df647946b0e6e884eb92ac50833387a3557551f68cbac8921bd60907ad419e7",
+      "bytes": 10166
+    },
+    {
+      "path": "docs/cli.md",
+      "sha256": "2f22e01b70c89e0ec2ac12bb089fc96d1f1c1c33aa7fc4a046c8d882c7ba607d",
+      "bytes": 16687
+    },
+    {
+      "path": "docs/sessions.md",
+      "sha256": "37979b0a697e99f47d4b9decf92eb68441b5bcd519870e84173e87b61b27fb35",
+      "bytes": 8261
+    },
+    {
+      "path": "docs/configuration.md",
+      "sha256": "c4ef3b06f54079aea72f79cee0f8dcf0ccd946f425e62f7c7c04d246573a3a7c",
+      "bytes": 5527
+    },
+    {
+      "path": "tests/test_tui_contract.py",
+      "sha256": "d84416b7433878cf4eb46cd49fafdba66ab9421865c68f4cec0bf4566183deed",
+      "bytes": 41115
+    },
+    {
+      "path": "tests/test_display_contract.py",
+      "sha256": "4d41d63efe69fece182f99a73c125f2ed3521cb51a0130175e8dce5eba4a3148",
+      "bytes": 26722
+    },
+    {
+      "path": "tests/test_theme_matching.py",
+      "sha256": "a8218eddc893a9d777fd79b066d1824a983f48fe5dd46cf3d00102095a2dab73",
+      "bytes": 9858
+    },
+    {
+      "path": "tests/test_theme_watch.py",
+      "sha256": "3abb90bd2b85794093dbf9e6ec79ac145a47620a99cb00f9185521ce9ed0e3ba",
+      "bytes": 11534
+    },
+    {
+      "path": "tests/test_session_hotkeys.py",
+      "sha256": "b2aca2d4b0636510bd694bacca2bcda112efa7627ee6ab0092127568e8698d6f",
+      "bytes": 5112
+    },
+    {
+      "path": "tests/test_cli_options.py",
+      "sha256": "e20d1783f1dc8587c30b8413643e04351feced93abf052dd08cab50a0999bedb",
+      "bytes": 15860
+    }
+  ]
+}
