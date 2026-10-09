@@ -34,7 +34,11 @@ import { defaultAuth } from '../settings.js';
 import { normalizeBaseUrl, resolveEndpoint } from '../probe.js';
 import { InputParser, type InputEvent } from '../ink/parse_keypress.js';
 import { ThemeWatch } from '../ink/theme_watch.js';
-import { Picker, type PickerItem } from '../ink/components/picker.js';
+import {
+  Picker,
+  type PickerItem,
+  type PickerOptions,
+} from '../ink/components/picker.js';
 import { welcomeRows } from '../ink/components/welcome.js';
 import { renderScreen, transcriptRows, type ScreenState } from './render.js';
 import { InputHistory } from './input_history.js';
@@ -66,6 +70,7 @@ import { complete } from '../mentions.js';
 import { VERSION } from '../version.js';
 import { PlanPanel } from '../ink/components/plan_panel.js';
 import { stripAnsi } from '../ink/string_width.js';
+import { modelScope } from '../model_scope.js';
 export { VERSION } from '../version.js';
 interface DialogPending {
   complete: (answer: string) => void;
@@ -73,6 +78,9 @@ interface DialogPending {
 }
 export class SessionApp {
   private plan = new PlanPanel();
+  private knownModels?: string[];
+  private knownModelsEndpoint = '';
+  private runScopeOnly?: boolean;
   runtime?: AgentRuntime;
   readonly state: ScreenState;
   private input = new InputParser((event) => this.handle(event));
@@ -1040,7 +1048,17 @@ export class SessionApp {
       void this.command('editor', '').catch((error) => this.fail(error));
     else if (key === 'ctrl+x')
       void this.command('copy', '').catch((error) => this.fail(error));
-    else if (key === 'alt+up' && this.runtime) {
+    else if (key === 'ctrl+p')
+      void this.cycleModel().catch((error) => this.fail(error));
+    else if (key === 'shift+tab' && this.runtime) {
+      const current = EFFORT_LEVELS.indexOf(
+        this.runtime.thinkingLevel as (typeof EFFORT_LEVELS)[number],
+      );
+      void this.command(
+        'effort',
+        EFFORT_LEVELS[(current + 1) % EFFORT_LEVELS.length]!,
+      ).catch((error) => this.fail(error));
+    } else if (key === 'alt+up' && this.runtime) {
       const queue = this.runtime.harness.clearQueue();
       const messages = [...queue.steering, ...queue.followUp];
       if (messages.length) {
@@ -1158,6 +1176,7 @@ export class SessionApp {
     title: string,
     items: PickerItem[],
     choose: (item: PickerItem) => Promise<void> | void,
+    options: PickerOptions = {},
   ): void {
     this.state.picker = new Picker(
       title,
@@ -1173,8 +1192,65 @@ export class SessionApp {
         this.state.picker = undefined;
         this.repaint();
       },
+      {
+        ...options,
+        keys: Object.fromEntries(
+          Object.entries(options.keys ?? {}).map(([key, action]) => [
+            key,
+            (item: PickerItem | undefined) => {
+              Promise.resolve()
+                .then(() => action(item))
+                .then(
+                  () => this.repaint(),
+                  (error) => this.fail(error),
+                );
+            },
+          ]),
+        ),
+      },
     );
     this.repaint();
+  }
+  private scopedModels(): string[] {
+    const runtime = this.runtime!;
+    this.runScopeOnly ??= Boolean(runtime.runOptions.models.length);
+    return modelScope(
+      this.knownModels ?? [],
+      this.runScopeOnly
+        ? runtime.runOptions.models
+        : this.settings.enabled_models,
+      runtime.harness.model.model,
+    );
+  }
+  private async loadModels(): Promise<string[]> {
+    const credentials = loadCredentials(this.home);
+    const result = await resolveEndpoint(
+      this.settings.auth.base_url,
+      credentials[this.settings.auth.api_key_ref] || '',
+      { protocol: this.settings.auth.protocol },
+    );
+    if (result.status === 'failed') throw new Error(result.detail);
+    this.knownModels = result.models;
+    this.knownModelsEndpoint =
+      this.settings.auth.protocol + ':' + this.settings.auth.base_url;
+    return modelScope(result.models, [], this.runtime!.harness.model.model);
+  }
+  private async cycleModel(): Promise<void> {
+    if (!this.runtime) return;
+    if (this.runtime.busy) throw new Error('a turn is running');
+    if (
+      !this.knownModels ||
+      this.knownModelsEndpoint !==
+        this.settings.auth.protocol + ':' + this.settings.auth.base_url
+    )
+      await this.loadModels();
+    const scope = this.scopedModels();
+    if (scope.length < 2) {
+      this.flash('Only one model to cycle through · /models lists them');
+      return;
+    }
+    const current = scope.indexOf(this.runtime.harness.model.model);
+    await this.command('models', scope[(current + 1) % scope.length]!);
   }
   async command(name: string, args: string): Promise<void> {
     const runtime = this.runtime;
@@ -1416,6 +1492,7 @@ export class SessionApp {
       return;
     }
     if (name === 'models') {
+      if (runtime.busy) throw new Error('a turn is running');
       const choose = (model: string): void => {
         if (runtime.harness.busy) throw new Error('a turn is running');
         runtime.setModel(model);
@@ -1423,22 +1500,62 @@ export class SessionApp {
       };
       if (args) choose(args);
       else {
-        const credentials = loadCredentials(this.home);
-        const result = await resolveEndpoint(
-          this.settings.auth.base_url,
-          credentials[this.settings.auth.api_key_ref] || '',
-          { protocol: this.settings.auth.protocol },
-        );
-        if (result.status === 'failed') throw new Error(result.detail);
-        this.picker(
-          'models',
-          result.models.map((model) => ({
+        const models = await this.loadModels();
+        this.scopedModels();
+        const rows = (): PickerItem[] =>
+          models.map((model) => ({
             key: model,
             label: model,
             current: model === runtime.harness.model.model,
-          })),
-          (item) => choose(item.key),
-        );
+            meta: [
+              model === this.settings.auth.model ? 'default' : '',
+              (this.runScopeOnly
+                ? runtime.runOptions.models
+                : this.settings.enabled_models
+              ).length && this.scopedModels().includes(model)
+                ? 'in ctrl+p'
+                : '',
+            ]
+              .filter(Boolean)
+              .join(' · '),
+          }));
+        this.picker('models', rows(), (item) => choose(item.key), {
+          hint: 'enter uses · ctrl+s saves default · tab changes ctrl+p scope',
+          keys: {
+            'ctrl+s': (item) => {
+              if (!item) return;
+              choose(item.key);
+              this.settings.auth.model = item.key;
+              const saved = loadSettings(this.home);
+              saved.auth.model = item.key;
+              saveSettings(saved, this.home);
+              this.state.picker = undefined;
+            },
+            tab: (item) => {
+              if (!item) return;
+              const scoped = this.runScopeOnly
+                ? runtime.runOptions.models
+                : this.settings.enabled_models;
+              const chosen = scoped.length ? this.scopedModels() : [];
+              const next = chosen.includes(item.key)
+                ? chosen.filter((model) => model !== item.key)
+                : [...chosen, item.key];
+              if (this.runScopeOnly) runtime.runOptions.models = next;
+              else {
+                this.settings.enabled_models = next;
+                const saved = loadSettings(this.home);
+                saved.enabled_models = next;
+                saveSettings(saved, this.home);
+              }
+              this.state.picker?.setItems(rows());
+              this.flash(
+                next.length
+                  ? `ctrl+p goes through ${next.length} models`
+                  : 'ctrl+p goes through every listed model',
+              );
+            },
+          },
+        });
       }
       return;
     }
@@ -1455,6 +1572,20 @@ export class SessionApp {
           'thinking depth',
           EFFORT_LEVELS.map((level) => ({ key: level, label: level })),
           (item) => choose(item.key),
+          {
+            hint: 'enter uses · ctrl+s saves default',
+            keys: {
+              'ctrl+s': (item) => {
+                if (!item) return;
+                choose(item.key);
+                this.settings.default_thinking = item.key;
+                const saved = loadSettings(this.home);
+                saved.default_thinking = item.key;
+                saveSettings(saved, this.home);
+                this.state.picker = undefined;
+              },
+            },
+          },
         );
       return;
     }

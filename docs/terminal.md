@@ -14,6 +14,8 @@ Up/Down browse earlier prompts and return to the unsent draft. Ctrl+R searches p
 
 Ctrl+J inserts a newline. Ctrl+G opens `$VISUAL`, then `$EDITOR`, or the platform default. The editor owns stdin while active. Returning restores raw input, mouse/paste handling and the full screen; edits replace the draft and are submitted with Enter.
 
+Ctrl+L opens the model picker; Ctrl+P cycles its selected scope, and Shift+Tab cycles thinking depth. In `/models`, Enter uses the focused model for this session, Ctrl+S also saves the default, and Tab adds or removes it from the cycle scope. Empty scope uses every listed model. `--models` makes scope edits temporary for this run. In `/effort`, Enter changes this session and Ctrl+S saves the default. Pickers accept Ctrl+P/Ctrl+N as Up/Down.
+
 The plan box shows five tasks, follows the current item and displays its visible range. Scroll over that box to move one task per wheel notch; scrolling elsewhere moves the transcript. A changed plan or new turn follows the current task again. Cards temporarily hide the box without changing task statuses.
 
 Enter while busy queues steering for the next model step. Ctrl+Q queues a follow-up for the end of the turn, or sends it immediately while idle. Waiting messages appear above the input. Alt+Up takes every unsent steering/follow-up message back into the draft, ahead of its current contents.
