@@ -12,7 +12,7 @@ import { Harness, type ApprovalDecision } from './harness.js';
 import { EventBus } from './events.js';
 import { defaultRunOptions, type RunOptions } from './run_options.js';
 import type { CircleSettings } from './settings.js';
-import { discoverSkills, loadSkillBody } from './skills.js';
+import { discoverSkills, loadSkillBody, type SkillInfo } from './skills.js';
 import { fromJsonl, toSessionBundle } from './session_export.js';
 import { projectDataDir, circleHome, normalizeWorkspace } from './paths.js';
 import { McpManager } from './mcp_loader.js';
@@ -125,7 +125,8 @@ export class AgentRuntime {
   private closingPromise?: Promise<void>;
   readonly policy;
   readonly runOptions: RunOptions;
-  readonly skills;
+  // Read again with every system prompt, see systemPrompt().
+  skills: SkillInfo[] = [];
   readonly mcp: McpManager;
   readonly lsp: LspManager;
   readonly context: ContextManager;
@@ -187,7 +188,6 @@ export class AgentRuntime {
       planMode: () => this.harness.planMode,
       changed: () => this.bus.emit('info', { payload: { user_shell: true } }),
     });
-    this.skills = discoverSkills(options.workspace, options.home);
     this.mcp = new McpManager(options.workspace);
     this.lsp = new LspManager(this.sandbox);
     this.context = new ContextManager(this.store, this.sandbox.offloadRoot!, {
@@ -267,20 +267,7 @@ export class AgentRuntime {
         this.catalog,
       );
     this.baseModel = model;
-    const system =
-      buildSystemPrompt(
-        this.options.workspace,
-        model.model,
-        this.options.settings.auth.protocol,
-        this.runOptions,
-        this.options.home,
-      ) +
-      (this.skills.length
-        ? '\n\nAvailable skills:\n' +
-          this.skills
-            .map((skill) => `- ${skill.name}: ${skill.description}`)
-            .join('\n')
-        : '');
+    const system = this.systemPrompt(model.model);
     let tools = buildTools(this.sandbox, {
       jobs: this.jobs,
       todos: (todos) => {
@@ -552,6 +539,8 @@ export class AgentRuntime {
     tools = this.withIntegrationTools(
       tools.filter((tool) => tool.name !== 'wait_jobs'),
     );
+    // A new or resumed session after the integrations loaded keeps their subagents.
+    if (this.integrationsReady) this.describeSubagents(tools);
     const harness = new Harness({
       model: this.extensions.model(model),
       tools,
@@ -635,6 +624,43 @@ export class AgentRuntime {
       ]),
     });
   }
+  /** The main system prompt. Every rebuild goes through here: start, a new or resumed
+   * session, a model switch, /reload, /mcp reload, /extensions reload, /plan and a change
+   * of thinking depth. Skills are read again each time, as 0.5.0 read them whenever it
+   * rebuilt its agent, so the list and the `skill` tool see the same skills. */
+  private systemPrompt(model: string): string {
+    this.skills = discoverSkills(this.options.workspace, this.options.home);
+    return buildSystemPrompt(
+      this.options.workspace,
+      model,
+      this.options.settings.auth.protocol,
+      this.runOptions,
+      this.options.home,
+      { skills: this.skills, extensionTools: this.extensions.tools() },
+    );
+  }
+  private refreshSystemPrompt(): void {
+    this.harness.system = this.systemPrompt(this.harness.model.model);
+  }
+  private describeSubagents(tools: Tool[]): void {
+    const task = tools.find((tool) => tool.name === 'task');
+    if (!task) return;
+    const subagents = new Map<string, string>([
+      ['general-purpose', 'General coding tasks.'],
+      ['explore', 'Read-only project exploration.'],
+    ]);
+    for (const agent of this.extensions.subagents(this.allTools))
+      subagents.set(agent.spec.name, agent.spec.description);
+    task.description =
+      readFileSync(
+        join(import.meta.dirname, 'prompts/tools/task.md'),
+        'utf8',
+      ).trim() +
+      '\n\nAvailable subagents:\n' +
+      [...subagents]
+        .map(([name, description]) => `- ${name}: ${description}`)
+        .join('\n');
+  }
   private withIntegrationTools(tools: Tool[], limits = true): Tool[] {
     const names = new Set<string>();
     return [...tools, ...this.mcp.tools, ...this.extensions.tools()].filter(
@@ -695,31 +721,9 @@ export class AgentRuntime {
         this.harness.tools = this.withIntegrationTools(
           base.filter((tool) => tool.name !== 'wait_jobs'),
         );
-        const subagents = new Map<string, string>([
-          ['general-purpose', 'General coding tasks.'],
-          ['explore', 'Read-only project exploration.'],
-        ]);
-        for (const agent of host.subagents(this.allTools))
-          subagents.set(agent.spec.name, agent.spec.description);
-        const task = this.harness.tools.find((tool) => tool.name === 'task');
-        if (task)
-          task.description =
-            readFileSync(
-              join(import.meta.dirname, 'prompts/tools/task.md'),
-              'utf8',
-            ).trim() +
-            '\n\nAvailable subagents:\n' +
-            [...subagents]
-              .map(([name, description]) => `- ${name}: ${description}`)
-              .join('\n');
+        this.describeSubagents(this.harness.tools);
         this.harness.model = host.model(this.baseModel!);
-        this.harness.system += host.tools().length
-          ? '\n\nExtension tools:\n' +
-            host
-              .tools()
-              .map((tool) => `${tool.name}: ${tool.description}`)
-              .join('\n')
-          : '';
+        this.refreshSystemPrompt();
         host.emit('session_start', {
           workspace: this.options.workspace,
           session_id: this.session.id,
@@ -744,6 +748,8 @@ export class AgentRuntime {
   setPlanMode(enabled: boolean): void {
     if (this.harness.planMode === enabled) return;
     this.harness.planMode = enabled;
+    // /plan between turns rebuilt the agent in 0.5.0; plan_enter and plan_exit run mid-turn.
+    if (!this.busy) this.refreshSystemPrompt();
     this.store.append(this.session.id, [
       {
         id: randomUUID(),
@@ -769,13 +775,7 @@ export class AgentRuntime {
     nextModel.effort = effort;
     this.baseModel = nextModel;
     this.harness.model = this.extensions.model(this.baseModel);
-    this.harness.system = buildSystemPrompt(
-      this.options.workspace,
-      model,
-      this.options.settings.auth.protocol,
-      this.runOptions,
-      this.options.home,
-    );
+    this.refreshSystemPrompt();
   }
   get thinkingLevel(): string {
     return this.baseModel instanceof GatewayModel
@@ -788,6 +788,7 @@ export class AgentRuntime {
       throw new Error('unknown thinking depth');
     if (this.baseModel instanceof GatewayModel) this.baseModel.effort = level;
     this.options.settings.default_thinking = level;
+    this.refreshSystemPrompt();
   }
   stats(): {
     messages: number;

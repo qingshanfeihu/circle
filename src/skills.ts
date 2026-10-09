@@ -1,4 +1,11 @@
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  type Dirent,
+} from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 export interface SkillInfo {
@@ -70,8 +77,33 @@ export function skillSources(
     sources.push([join(workspace, path!), label!]);
   const unique = new Map<string, string>();
   for (const [path, label] of sources)
-    if (existsSync(path)) unique.set(realpathSync(path), label);
+    try {
+      if (statSync(path).isDirectory()) unique.set(realpathSync(path), label);
+    } catch {
+      /* No skills folder here. */
+    }
   return [...unique];
+}
+// The skill folders are read again on every rebuild of the system prompt, so a folder
+// that cannot be read is passed over rather than stopping a model switch or /reload.
+// A linked skill folder counts, as in 0.5.0 (`npx skills add` links them).
+function folders(directory: string): string[] {
+  let found: Dirent[];
+  try {
+    found = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return found
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b))
+    .filter((name) => {
+      try {
+        return statSync(join(directory, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    });
 }
 export function discoverSkills(
   workspace: string,
@@ -81,24 +113,24 @@ export function discoverSkills(
   const byName = new Map<string, SkillInfo>();
   for (const [root, label] of skillSources(workspace, home, userHome)) {
     const directories: string[] = [];
-    for (const child of readdirSync(root, { withFileTypes: true }).sort(
-      (a, b) => a.name.localeCompare(b.name),
-    ))
-      if (child.isDirectory()) {
-        const directory = join(root, child.name);
-        if (existsSync(join(directory, 'SKILL.md')))
-          directories.push(directory);
-        else
-          for (const nested of readdirSync(directory, { withFileTypes: true }))
-            if (
-              nested.isDirectory() &&
-              existsSync(join(directory, nested.name, 'SKILL.md'))
-            )
-              directories.push(join(directory, nested.name));
-      }
+    for (const child of folders(root)) {
+      const directory = join(root, child);
+      if (existsSync(join(directory, 'SKILL.md'))) directories.push(directory);
+      else
+        for (const nested of folders(directory))
+          if (existsSync(join(directory, nested, 'SKILL.md')))
+            directories.push(join(directory, nested));
+    }
     for (const directory of directories) {
-      const path = realpathSync(join(directory, 'SKILL.md'));
-      const { meta } = parseFrontmatter(readFileSync(path, 'utf8'));
+      let path: string;
+      let text: string;
+      try {
+        path = realpathSync(join(directory, 'SKILL.md'));
+        text = readFileSync(path, 'utf8');
+      } catch {
+        continue;
+      }
+      const { meta } = parseFrontmatter(text);
       let name = (meta.name || basename(directory)).toLowerCase().trim();
       if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name))
         name = basename(directory)

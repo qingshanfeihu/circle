@@ -66,23 +66,11 @@ export function discoverContextFiles(workspace: string): [string, string][] {
   }
   return files;
 }
-export function buildSystemPrompt(
-  workspace: string,
-  model: string,
-  protocol: string,
-  options: RunOptions,
-  home?: string,
-): string {
-  const replacementPath = join(workspace, '.circle', 'SYSTEM.md');
-  const base =
-    options.system_prompt ||
-    (existsSync(replacementPath) ? readFileSync(replacementPath, 'utf8') : '');
-  let session =
-    base ||
-    readPrompt('session', selectSessionPromptName(model) + '.md')
-      .replaceAll('{{MODEL_NAME}}', model)
-      .replaceAll('You are circle,', 'You are Circle,')
-      .replaceAll('trained by Meta MSL', 'used by Circle');
+function sessionPrompt(model: string): string {
+  let session = readPrompt('session', selectSessionPromptName(model) + '.md')
+    .replaceAll('{{MODEL_NAME}}', model)
+    .replaceAll('You are circle,', 'You are Circle,')
+    .replaceAll('trained by Meta MSL', 'used by Circle');
   for (const [from, to] of [
     ['TodoWrite', 'write_todos'],
     ['WebFetch', 'webfetch'],
@@ -95,12 +83,66 @@ export function buildSystemPrompt(
     ['`Grep`', '`grep`'],
   ])
     session = session.replaceAll(from!, to!);
-  const sections = [
-    session,
-    ...(base
-      ? []
-      : [readPrompt('circle_guidelines.md'), readPrompt('circle_paths.md')]),
-  ];
+  return session;
+}
+// `.circle/<name>` in the project, else `<name>` in the data folder, as 0.5.0 read them.
+function promptFile(
+  workspace: string,
+  home: string | undefined,
+  name: string,
+): string | undefined {
+  for (const path of [
+    join(workspace, '.circle', name),
+    ...(home ? [join(home, name)] : []),
+  ]) {
+    try {
+      if (statSync(path).isFile()) return readFileSync(path, 'utf8');
+    } catch {
+      /* Missing or unreadable: try the next one. */
+    }
+  }
+  return undefined;
+}
+/** Circle's own instructions replaced, and the text added at the end: what the command
+ * line gave, else SYSTEM.md and APPEND_SYSTEM.md (the project's `.circle` folder first,
+ * then the data folder). */
+export function promptOverrides(
+  workspace: string,
+  home: string | undefined,
+  options: Pick<RunOptions, 'system_prompt' | 'append_system_prompt'>,
+): { base?: string; append: string[] } {
+  const base =
+    options.system_prompt !== undefined
+      ? options.system_prompt
+      : promptFile(workspace, home, 'SYSTEM.md');
+  const append = options.append_system_prompt.length
+    ? options.append_system_prompt
+    : [promptFile(workspace, home, 'APPEND_SYSTEM.md') ?? ''];
+  return {
+    base: base?.trim() ? base.trim() : undefined,
+    append: append.filter((text) => text.trim()).map((text) => text.trim()),
+  };
+}
+export interface PromptCatalog {
+  skills?: { name: string; description: string }[];
+  extensionTools?: { name: string; description: string }[];
+}
+export function buildSystemPrompt(
+  workspace: string,
+  model: string,
+  protocol: string,
+  options: RunOptions,
+  home?: string,
+  catalog: PromptCatalog = {},
+): string {
+  const { base, append } = promptOverrides(workspace, home, options);
+  const sections = base
+    ? [base]
+    : [
+        sessionPrompt(model),
+        readPrompt('circle_guidelines.md'),
+        readPrompt('circle_paths.md'),
+      ];
   const files = options.no_context_files ? [] : discoverContextFiles(workspace);
   if (!options.no_context_files) {
     if (files.length)
@@ -125,9 +167,20 @@ export function buildSystemPrompt(
   sections.push(
     `<env>\n  Working directory: ${workspace}\n  Platform: ${platform()}\n  Today's date: ${new Date().toISOString().slice(0, 10)}\n  Is directory a git repo: ${currentBranch(workspace) ? 'yes' : 'no'}\n  Model: ${model}\n  Protocol: ${protocol}\n</env>`,
   );
-  const appendPath = join(workspace, '.circle', 'APPEND_SYSTEM.md');
-  if (!options.append_system_prompt.length && existsSync(appendPath))
-    sections.push(readFileSync(appendPath, 'utf8'));
-  sections.push(...options.append_system_prompt);
+  sections.push(...append);
+  if (catalog.skills?.length)
+    sections.push(
+      'Available skills:\n' +
+        catalog.skills
+          .map((skill) => `- ${skill.name}: ${skill.description}`)
+          .join('\n'),
+    );
+  if (catalog.extensionTools?.length)
+    sections.push(
+      'Extension tools:\n' +
+        catalog.extensionTools
+          .map((tool) => `${tool.name}: ${tool.description}`)
+          .join('\n'),
+    );
   return sections.join('\n\n');
 }
