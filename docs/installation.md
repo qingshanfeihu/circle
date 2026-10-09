@@ -16,9 +16,9 @@ Windows, in PowerShell:
 irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
 ```
 
-`CIRCLE_VERSION` selects a version; otherwise the installer uses the latest release. `CIRCLE_REPO` selects the release repository. `CIRCLE_PREFIX` changes the installation root; `CIRCLE_BIN_DIR` changes the launcher directory. Windows adds that directory to the user PATH unless `CIRCLE_NO_PATH=1`. macOS/Linux print the directory to add to PATH when it is not on it.
+`CIRCLE_VERSION` selects a version; otherwise the installer uses the latest release. `CIRCLE_REPO` selects the release repository. `CIRCLE_PREFIX` changes the installation root; `CIRCLE_BIN_DIR` changes the launcher directory. When that directory is not on PATH, Windows adds it to the user PATH and macOS/Linux add one line marked `# circle path` to `~/.zshrc` (`~/.bashrc` when the shell is bash); `CIRCLE_NO_PATH=1` turns both off.
 
-The default roots are `~/.local/share/circle` and `%LOCALAPPDATA%\circle`, with the launcher in `~/.local/bin` and `%LOCALAPPDATA%\circle\bin`. Each validated package lives under `versions/<version>/`. `current.ref` selects the running version; `installation.json` records the layout and repository. Existing version directories remain available.
+The default roots are `~/.local/share/circle` and `%LOCALAPPDATA%\circle`, with the launcher in `~/.local/bin` and `%LOCALAPPDATA%\circle\bin`. Each validated package lives under `versions/<version>/`. `current.ref` selects the running version; `installation.json` records the layout and repository. Each installation keeps the newest three versions and the one it replaced, so a session started from an older version goes on running.
 
 The installer checks the archive digest, rejects unsafe entries, verifies every package file and runs the bundled CLI before switching `current.ref`. Configuration, credentials and SQLite sessions stay in `CIRCLE_HOME` (default `~/.circle`). Installation and updates preserve these files.
 

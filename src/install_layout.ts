@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { validVersion } from './version.js';
+import { compareVersions, validVersion } from './version.js';
 export const DEFAULT_REPO = 'qingshanfeihu/circle';
 export const RELEASE_SCHEMA = 'circle-release/v1';
 export const INSTALL_SCHEMA = 'circle-install/v1';
@@ -129,6 +129,31 @@ export function activeVersion(prefix: string): string | undefined {
   if (!validVersion(value))
     throw new Error('invalid installed version pointer');
   return value;
+}
+// Removes installed versions except `keep` and the newest few: a session opened some updates
+// ago still runs from its own folder, and the newest few are what it most likely is.
+export const KEEP_VERSIONS = 3;
+export function pruneVersions(prefix: string, keep: string[]): string[] {
+  const folder = join(resolve(prefix), 'versions');
+  let names: string[];
+  try {
+    names = readdirSync(folder).filter(
+      (name) =>
+        validVersion(name) && existsSync(join(folder, name, 'release.json')),
+    );
+  } catch {
+    return [];
+  }
+  const newest = [...names]
+    .sort((a, b) => compareVersions(b, a))
+    .slice(0, KEEP_VERSIONS);
+  const removed: string[] = [];
+  for (const name of names)
+    if (!keep.includes(name) && !newest.includes(name)) {
+      rmSync(join(folder, name), { recursive: true, force: true });
+      removed.push(name);
+    }
+  return removed;
 }
 export const validRepo = (repo: string): boolean =>
   /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);

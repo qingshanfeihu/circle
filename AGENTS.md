@@ -21,7 +21,7 @@ Never run `install.sh`, `install.ps1` or `src/install_manager.ts` by hand on a r
 
 ## Where things are
 
-`src/` is the program. `src/tui/` and `src/ink/` are the interface, `src/middleware/` and `src/model_guard.ts` are the reliability layers, `src/approvals.ts` is the safety policy. `docs/architecture.md` has the full map.
+`src/` is the program. `src/tui/` and `src/ink/` are the interface, `src/middleware/` and `src/model_guard.ts` are the reliability layers, `src/approvals.ts` is the safety policy. `docs/development/architecture.md` has the full map.
 
 ## Rules for the interface
 

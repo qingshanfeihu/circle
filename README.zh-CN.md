@@ -1,29 +1,95 @@
-# Circle
+<p align="center">
+  <img src="docs/images/logo.svg" width="96" height="96" alt="Circle">
+</p>
 
-使用 TypeScript 编写的终端 AI coding agent，连接你自己的模型端点。
+<h1 align="center">Circle</h1>
+
+<p align="center">接你自己模型端点的终端编程助手。</p>
+
+<p align="center">
+  <a href="docs/index.md">文档</a> ·
+  <a href="docs/quickstart.md">快速开始</a> ·
+  <a href="docs/known-issues.md">已知问题</a> ·
+  <a href="CHANGELOG.md">更新记录</a> ·
+  <a href="README.md">English</a>
+</p>
+
+---
+
+Circle 在你指定的目录里读代码、改文件、跑命令。任何兼容 OpenAI 或 Anthropic 接口的服务或网关都能接。运行命令和改文件之前它会先问你，屏幕上一眼能看出它是在干活，还是在等你。
+
+**Circle 还很早（1.0.0）。** 没有操作系统级沙箱，OAuth 登录不可用。把它用在重要的东西上之前，请先读[已知问题](docs/known-issues.md)和[安全使用](docs/security.md)。文档目前只有英文版。
+
+## 安装
+
+安装预编译版本。它自带 Node.js，不需要先装别的。
+
+**macOS 和 Linux**（x64 或 arm64）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.sh | bash
+```
+
+**Windows**（x64 或 arm64），在 PowerShell 中运行：
+
+```powershell
+irm https://raw.githubusercontent.com/qingshanfeihu/circle/main/install.ps1 | iex
+```
+
+安装器会下载适合当前平台的最新 Release，验证 SHA-256，先启动一次确认能跑，再把 `circle` 加入 PATH。macOS 和 Linux 需要 `bash`、`curl`、`tar`，以及 `sha256sum` 或 `shasum`；Windows 需要 PowerShell 5.1 或更新版本。
+
+安装后重新打开终端，再运行 `circle`；以后用 `circle update` 升级。详见[安装与升级](docs/installation.md)和[发布页面](https://github.com/qingshanfeihu/circle/releases)。
+
+**从 Circle 0.5.0 或更早版本升级？** 那些版本是 Python 写的。运行上面的安装命令即可：它会卸载 Python 版，保留你的设置、密钥、技能和会话，再装上 1.0。旧版的 `circle update` 做不了这一步。Python 扩展需要重写，见[扩展](docs/extensions.md)。
+
+## 运行
+
+```bash
+cd ~/code/my-project
+circle
+```
+
+第一次会让你填 base URL、key 和模型，然后确认信任这个目录。之后输入任务按 `enter` 即可。输入 `/` 看命令，输入 `?` 看快捷键。
+
+```bash
+circle "修好失败的测试"                   # 带着第一句话启动
+circle -c                                # 接着这个目录里上一次的对话
+circle -r                                # 从列表里挑一个对话
+circle -p "总结 README.md"               # 一次提问，答案写到 stdout
+git diff | circle -p "审一下这个改动"
+```
+
+Circle 工作时可以继续打字：`enter` 会插话给正在进行的回合。空输入框连按两次 `esc` 回到对话里更早的位置，`ctrl+l` 换模型，`ctrl+f` 在对话里查找。[CLI](docs/cli.md) 还有给脚本和编辑器用的 JSON 事件流和 RPC 模式。
+
+终端界面使用对话卡片、状态灯，以及跟随终端颜色的 `auto` 主题。如果终端不能报告颜色，可用 `/themes dark` 或 `/themes light` 手动指定。各信号的含义和限制见[界面说明](docs/interface.md)。
+
+## 了解更多
+
+| | |
+|---|---|
+| [快速开始](docs/quickstart.md) | 安装、接模型、跑第一个任务 |
+| [界面](docs/interface.md) | 灯、底色、边框各代表什么 |
+| [安全使用](docs/security.md) | 问什么、拒什么、不保护什么 |
+| [选择模型](docs/models.md) | 网关、切换、思考深度 |
+| [Skills](docs/skills.md)、[自定义命令](docs/custom-commands.md)、[MCP](docs/mcp.md)、[扩展](docs/extensions.md) | 让 Circle 适合你 |
+| [全部文档](docs/index.md) | 指南与参考 |
 
 ## 开发
 
-需要 Node.js 24 或更新版本。编译器与依赖安装在项目内，版本由锁文件固定。
+Circle 用 TypeScript 编写，运行在 Node.js 24 或更新版本上。0.5.0 及之前是 Python 写的，代码在 `v0.5.0` 标签。
 
 ```bash
+git clone https://github.com/qingshanfeihu/circle
+cd circle
 npm ci
-npm run check
-npm run dev -- --version
-```
-
-开发时使用独立数据目录：
-
-```bash
+npm run check                                    # 类型检查、测试、构建
 CIRCLE_HOME=$(mktemp -d) npm run dev -- ~/code/my-project
 ```
 
-首次运行设置 API URL、key 和模型，并确认工作区信任。输入 `/help` 查看命令；界面沿用对话、计划、唯一输入/对话框、状态灯与自动深浅主题的操作风格。
+推送代码不会自动发布新版本：推送 `v*` 标签时发布流程才会运行。见[发布](docs/development/releasing.md)。
 
-`npm run build` 生成 `dist/`；之后使用 `node dist/cli.js`。`npm test` 验证模型与工具循环、实际副作用、取消、持久化和终端组件；`npm run format` 格式化源码。
+参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)，编程助手见 [AGENTS.md](AGENTS.md)，结构见[架构](docs/development/architecture.md)。安全问题按 [SECURITY.md](SECURITY.md) 报告。
 
-## 当前状态
+## 许可
 
-当前是开发版本。已有独立内核、CLI、模型流、文件与命令工具、审批、会话存储与终端界面实现。完整功能兼容、多平台打包、一键安装和首版发布仍在进行中。
-
-见[架构](docs/architecture.md)、[开发说明](docs/development/README.md)和[已知问题](docs/known-issues.md)。
+尚未选择许可证。

@@ -1,67 +1,27 @@
 # Architecture
 
-A map of the code for people who want to change it. For what Circle does, read [How Circle works](../how-circle-works.md) first.
+The application runs on Node.js 24 and uses TypeScript with strict compiler checks. The agent loop is owned by this repository; it does not depend on LangChain, LangGraph or Deep Agents.
 
-Circle is a Python package, `circle/`. It assembles an agent from [deepagents](https://github.com/langchain-ai/deepagents), adds its own tools, middleware and safety policy, and runs it behind a terminal interface it renders itself.
+## Runtime
 
-## Layers
+`src/cli.ts` parses run options and selects terminal, line, print, JSON or RPC mode. `src/runtime.ts` assembles a model, tools, policy, prompts and session. `src/harness.ts` advances model and tool steps, consumes steering messages before the next request, and starts follow-ups after a turn finishes.
 
-| Layer | Where | Job |
-|---|---|---|
-| Entry | `cli.py`, `__main__.py`, `main_session.py`, `headless.py`, `rpc.py`, `run_options.py` | Parse arguments, choose full-screen, print, JSON, RPC or line mode. `headless.py` runs turns without a screen, decides approvals by rule and emits the JSON events; `rpc.py` serves JSON commands; `run_options.py` carries what the command line chose for one run. |
-| Updates | `update.py`, `net.py` | The daily release check and `circle update`. Shares its install layout with `install.sh` and `install.ps1`. `net.py` gives Circle's own HTTPS requests (model discovery, web fetch and search, updates) the system's certificates, or the bundled `certifi` ones where the system's cannot be found, as in the prebuilt program. |
-| Setup | `init_flow.py`, `probe.py`, `oauth.py`, `trust.py`, `trust_flow.py`, `settings.py`, `paths.py`, `keybindings.py` | First run, endpoint probe, settings (yours and a project's) and credentials, workspace trust, your own keys. |
-| Agent assembly | `harness.py`, `model.py`, `model_catalog.py`, `system_prompt.py`, `prompt_features.py`, `prompts/` | Build the model, the system prompt and the deepagents graph. `model_catalog.py` gives each model its context window, output limit and price from the models.dev snapshot (`data/models_dev.json.gz`) or the copy fetched once a day. |
-| Tools | `sandbox.py`, `apply_patch.py`, `lsp_tool.py`, `websearch.py`, `secret_prompt.py`, `mcp_loader.py`, `skills.py`, `commands.py` | What the model can call, and what else Circle loads. `sandbox.py` runs commands with their output in a file, so a command can return while something it started still runs. |
-| Background jobs | `jobs.py`, `job_tools.py`, `job_agents.py`, `middleware/job_notice.py` | `jobs.py` is the session's job registry: process groups, output files, the monitor thread, notices per conversation, watches, and stopping everything when Circle ends. `job_tools.py` replaces deepagents' filesystem middleware by name so `execute` gains `background`, and builds `list_jobs`, `stop_job` and `wait_jobs`. `job_agents.py` gives `task` a `background` flag, reads the compiled subagents out of deepagents' `task` tool, and runs one on its own thread with its own checkpointer, asking the session (or the print-mode rule) when it stops for approval. `job_notice.py` puts finished jobs' notices into a running turn. The registry belongs to the session (`create_harness(jobs=…)`), so it outlives agent rebuilds. See [Background jobs](../background-jobs.md). |
-| Safety | `approvals.py`, `plan_backend.py`, `trust.py` | Sort tool calls into allow, ask and refuse. Enforce read-only mode. |
-| Middleware | `middleware/`, `model_guard.py`, `context_middleware.py`, `compaction.py`, `text_repetition.py`, `tool_recoverable.py` | Retries, stalls, loops, cancellation, repair of tool calls, redaction, pruning, summaries. `compaction.py` is deepagents' summarization reporting each step, and the watcher that shows it as a progress row. |
-| Sessions | `checkpoint_store.py`, `session_index.py`, `session_tree.py`, `events.py`, `session_export.py`, `git_info.py` | Persistent history in SQLite, the list of each folder's sessions (with titles, labels and the point `/tree` went back to), the message tree, the event bus, HTML and JSONL export. Messages written without a turn go through `context_middleware.append_messages`, so `/tree` can branch from them. |
-| Extensions | `extensions.py` | The extension host. See [Build extensions](../extensions.md). |
-| Interface | `tui/`, `ink/` | The full-screen interface. |
+`src/model.ts` adapts OpenAI-compatible and Anthropic-compatible endpoints through protocol SDKs. Text, thinking, tool calls and usage are normalized at this boundary. `src/model_guard.ts` controls per-kind retries, rejected parameters, stalled streams, repetition and missing finish signals. `src/tool_call_compat.ts` repairs unambiguous read-only calls and validates arguments before effects. `src/types.ts` defines the messages and tool contracts used by the runtime.
 
-## The interface
+`src/model_catalog.ts` loads a packaged metadata snapshot or a private account cache, matches the configured endpoint and refreshes stale data without blocking startup. `src/model_profiles.ts` fits known model capabilities from static data. `src/pricing.ts` freezes per-call rates and amounts; summaries and child sessions retain their own receipts. `src/compaction.ts` supplies progress events and terminal labels for automatic and manual summaries.
 
-`circle/ink/` is a small Python port of [Ink](https://github.com/vadimdemedes/ink), the terminal renderer: a tree of nodes, a layout pass, a screen buffer that is diffed and written as escape sequences, plus input parsing, selection and a set of components (`ink/components/`). `theme.py` is the only place colours are defined.
+## Effects and persistence
 
-`circle/tui/` is the Circle interface built on it.
+`src/tools.ts` implements filesystem and command tools. `src/sandbox.ts` resolves host and workspace paths, strips secret environment variables, and terminates command process groups on cancellation. This is a policy boundary, not an operating-system sandbox.
 
-| Module | Job |
-|---|---|
-| `session_app.py` | The session screen: input, keys, commands, cards, mouse. The largest file. |
-| `ink/termio/terminal.py`, `ink/termio/winconsole.py` | Raw input, output and window size. POSIX uses `termios`; Windows switches the console to escape-sequence input and output and reads and writes UTF-16. |
-| `ink/escape_input.py` | Turns a lone ESC into the `esc` key after a short wait, on the setup screens and in the session. |
-| `ink/theme.py`, `ink/theme_watch.py` | The palette, and the watcher that keeps it in step with the terminal's colours while the theme is `auto`. |
-| `controllers.py` | Setup and trust: the questions, and the card each step shows in the session's frame before the session connects. |
-| `ink/components/welcome.py` | The welcome block at the top of every session: the logo, the identity, what the folder brings, the recent sessions. |
-| `harness_bridge.py` | Runs the agent graph on a worker thread and turns its stream into events. |
-| `progress_handler.py`, `reducer.py`, `sink.py`, `message_model.py` | Events in, a snapshot of the conversation out. |
-| `transcript_view.py`, `tool_display.py`, `content_blocks.py` | Draw the snapshot. |
-| `replay.py` | Turn saved messages back into snapshots, for reopened, forked and cloned sessions; copy history into a new thread turn by turn. |
-| `conversation_tree.py` | Read the conversation tree (every branch) from the checkpoints, for `/tree` and `/fork`. |
-| `ink/components/picker.py` | The searchable list behind `/models`, `/effort`, `/resume`, `/tree`, `/fork`, `/settings` and `/jobs`. |
-| `agent_strip.py`, `agent_detail.py` | The subagent strip and record. |
-| `job_rows.py` | Background jobs on screen: their rows in the strip, the `◆` row of a finished job, the line under a call that went to the background, a job's page. |
-| `slash_commands.py`, `input_history.py` | The command table and the history file. |
+`src/approvals.ts` classifies commands, keeps session rules and decides which calls require an answer. Read-only mode blocks tools with write, execution or unknown effects. `src/settings.ts` protects account settings from project overrides and writes credentials separately.
 
-The rules for what is shown where are in [The TUI contract](tui-contract.md). Read them before you change anything on screen.
+`src/checkpoint_store.ts` stores immutable message checkpoints and session branch heads in SQLite. Model summaries are projections; raw messages and tool output stay intact. Append-only context versions attach summary and pruning decisions to checkpoint ancestry, so alternate branches retain their own projections. `src/context_middleware.ts` offloads large results, compacts balanced prefixes and recovers missing artifacts from the unchanged raw history. The native database is `circle.sqlite`. `src/migration.ts` imports indexed legacy sessions read-only with source receipts, retaining the original databases and never replaying tools.
 
-## A turn, in code
+`src/jobs.ts` owns background command processes, subagents, output files and conversation-specific notices. Foreground commands can be promoted without respawning. Notices enter checkpoints before model requests; the TUI, print and RPC runners decide when to resume an idle conversation. Child-owned processes are stopped before the child report completes. `src/tui/interaction_queue.ts` serializes complete approval/question card lifecycles.
 
-1. `session_app.py` takes your text and calls the bridge.
-2. `harness_bridge.py` streams the graph. Middleware wraps every model and tool call.
-3. Events flow through the reducer into a snapshot, and `transcript_view.py` draws it.
-4. A gated tool call raises an interrupt. The bridge shows a card, waits for your answer, and resumes the graph with it.
-5. When the turn ends, the checkpoint in `checkpoints.sqlite` holds the new state.
-6. When a background job ends, the registry queues a notice for its conversation. `JobNoticeMiddleware` hands it to a running turn before the next model call; otherwise the session's run loop (`_maybe_wake_for_jobs`) starts a turn with it, under the app lock. A background subagent that stops for approval calls the session's `ask`, which queues its card behind the turn's own.
+## Terminal
 
-## Other files
+`src/ink/` parses input and terminal colour reports, derives a readable palette, and renders components. `src/tui/` handles drafts, dialogs, pickers, commands, transcript views and model events. Colors come from the shared palette. UI words are short English labels; user and model content are retained as written.
 
-| Path | What |
-|---|---|
-| `tests/` | The test suite. See [Contributing](../../CONTRIBUTING.md). |
-| `scripts/` | `release.py`, `pack_release.py` and `smoke_frozen.py` run in the release workflow (see [Releasing](releasing.md)). The other files are manual and live drivers, not run in CI. |
-| `packaging/circle.spec` | The PyInstaller recipe for release binaries. |
-| `install.sh`, `install.ps1` | The installers attached to releases. They and `update.py` share one layout: `versions/<version>/` and a `current` link. Change the three together. |
-| `.github/workflows/` | `check.yml` runs the tests on every push; `release.yml` builds, smoke-tests and publishes on a tag. |
-| `circle_harness.py` | A compatibility shim that re-exports `circle.harness`. |
+`src/events.ts` isolates subscribers so a display failure cannot interrupt the runtime. The same runtime serves headless entry points. MCP connections are owned by `src/mcp_loader.ts`; each external tool passes through the same policy as built-in tools. `src/extensions.ts` stages registrations atomically, supplies typed model/tool middleware and hosts subagents, commands, renderers and events. `src/lsp_tool.ts` owns stdio language-server processes and bounded JSON-RPC requests. Release modules are added with their platform tests.

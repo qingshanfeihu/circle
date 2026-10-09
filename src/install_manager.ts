@@ -5,11 +5,18 @@
 // the release goes where the Python implementation was installed, else to the default.
 // Copies of the Python implementation are removed after the new release has been checked and
 // before it is selected; if one is still running, nothing changes.
-import { writeFileSync } from 'node:fs';
-import { delimiter, resolve } from 'node:path';
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import { delimiter, join, resolve } from 'node:path';
 import {
   DEFAULT_REPO,
+  activeVersion,
   pointToRelease,
+  pruneVersions,
   stageRelease,
   validRepo,
 } from './install_layout.js';
@@ -52,7 +59,9 @@ for (const copy of copies)
       : `removing the Python circle installed with pip (${copy.script})`,
   );
 removePythonCopies(copies);
+const previous = activeVersion(prefix);
 pointToRelease(manifest, prefix, binDir, repo);
+pruneVersions(prefix, [manifest.version, ...(previous ? [previous] : [])]);
 if (process.env.CIRCLE_INSTALL_RESULT)
   writeFileSync(
     process.env.CIRCLE_INSTALL_RESULT,
@@ -70,9 +79,27 @@ if (process.platform !== 'win32') {
   const onPath = where.path
     .split(delimiter)
     .some((entry) => entry && resolve(entry) === binDir);
-  say(
-    onPath
-      ? `run circle`
-      : `run ${binDir}/circle, or add ${binDir} to PATH and run circle`,
-  );
+  if (onPath)
+    say('start it in a project folder: cd /path/to/project && circle');
+  else if (process.env.CIRCLE_NO_PATH === '1')
+    say(`add ${binDir} to PATH, or run ${binDir}/circle`);
+  else {
+    // As the Python installer did: one marked line in the shell's startup file.
+    const rc = join(
+      where.home,
+      (process.env.SHELL || '').includes('bash') ? '.bashrc' : '.zshrc',
+    );
+    const marked =
+      existsSync(rc) && readFileSync(rc, 'utf8').includes('# circle path');
+    if (!marked) {
+      appendFileSync(
+        rc,
+        `\n# circle path\nexport PATH="${binDir.replaceAll('"', '\\"')}:$PATH"\n`,
+      );
+      say(`added ${binDir} to PATH in ${rc}`);
+    }
+    say(
+      `open a new terminal (or run: source ${rc}), then: cd /path/to/project && circle`,
+    );
+  }
 }

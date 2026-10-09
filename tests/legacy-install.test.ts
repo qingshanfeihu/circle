@@ -5,6 +5,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -13,7 +14,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { activeVersion } from '../src/install_layout.js';
+import { activeVersion, pruneVersions } from '../src/install_layout.js';
 import {
   chooseLocation,
   findPythonCopies,
@@ -365,4 +366,53 @@ test('an explicit prefix and bin folder win over the Python location, which wins
       ? join(base, 'appdata', 'circle', 'bin')
       : join(base, 'home', '.local', 'bin'),
   });
+});
+
+test(
+  'a launcher folder missing from PATH gets one marked line in the shell startup file',
+  {
+    skip: windows,
+  },
+  (t) => {
+    const base = scratch(t);
+    const root = fixture(base, '1.0.0');
+    for (const run of [1, 2]) {
+      const result = runManager(base, root, [], { SHELL: '/bin/bash' });
+      assert.equal(result.status, 0, result.stderr + result.stdout);
+      assert.equal(/added .* to PATH/.test(result.stdout), run === 1);
+    }
+    const rc = readFileSync(join(base, 'home', '.bashrc'), 'utf8');
+    assert.equal(rc.match(/# circle path/g)?.length, 1);
+    assert.match(
+      rc,
+      new RegExp(
+        `export PATH="${join(base, 'home', '.local', 'bin')}:\\$PATH"`,
+      ),
+    );
+    const quiet = runManager(base, root, [], {
+      SHELL: '/bin/zsh',
+      CIRCLE_NO_PATH: '1',
+    });
+    assert.equal(quiet.status, 0, quiet.stderr);
+    assert.equal(existsSync(join(base, 'home', '.zshrc')), false);
+  },
+);
+
+test('installing keeps the newest three versions and the one it replaces', (t) => {
+  const base = scratch(t);
+  const prefix = join(base, 'prefix');
+  for (const version of ['0.9.0', '1.0.0', '1.0.1', '1.0.2', '1.1.0']) {
+    mkdirSync(join(prefix, 'versions', version), { recursive: true });
+    writeFileSync(join(prefix, 'versions', version, 'release.json'), '{}');
+  }
+  // A folder that is not one of ours stays.
+  mkdirSync(join(prefix, 'versions', 'notes'));
+  assert.deepEqual(pruneVersions(prefix, ['1.1.0', '0.9.0']).sort(), ['1.0.0']);
+  assert.deepEqual(readdirSync(join(prefix, 'versions')).sort(), [
+    '0.9.0',
+    '1.0.1',
+    '1.0.2',
+    '1.1.0',
+    'notes',
+  ]);
 });
