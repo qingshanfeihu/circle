@@ -532,7 +532,11 @@ export class SessionApp {
   // The project's .circle/settings.json and `--model` over the saved settings, in memory only.
   // Runs once the folder is trusted, as the Python releases did.
   applyRunSettings(modelOverride?: string): void {
-    const { problems } = applyProjectSettings(this.settings, this.workspace);
+    const { problems } = applyProjectSettings(
+      this.settings,
+      this.workspace,
+      this.home,
+    );
     if (modelOverride) this.settings.auth.model = modelOverride;
     for (const problem of [...this.keyProblems, ...problems])
       this.fail(problem);
