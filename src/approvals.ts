@@ -538,6 +538,10 @@ export class ApprovalStore {
   rules(thread: string): Rule[] {
     return this.load(thread).rules;
   }
+  // Decisions in this session, oldest first: once, always, reject or revoke.
+  log(thread: string): StoreData['log'] {
+    return this.load(thread).log;
+  }
   matchesAny(thread: string, tool: string, patterns: string[]): boolean {
     return this.rules(thread).some(
       (rule) =>

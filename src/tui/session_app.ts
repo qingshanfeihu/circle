@@ -10,13 +10,11 @@ import { execFile, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
-  mkdirSync,
   readFileSync,
   rmSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentRuntime, type RuntimeOptions } from '../runtime.js';
 import type { CircleSettings } from '../settings.js';
@@ -28,7 +26,6 @@ import {
   loadCredentials,
   trustFolder,
   isFolderTrusted,
-  clearCredentials,
   withConnection,
 } from '../settings.js';
 import { defaultAuth } from '../settings.js';
@@ -54,19 +51,27 @@ import {
 import { formatCosts } from '../pricing.js';
 import { SubagentNavigation } from './subagents.js';
 import { currentBranch } from '../git_info.js';
-import { loadRemap, ACTIONS } from '../keybindings.js';
+import { loadRemap } from '../keybindings.js';
 import { emptyUsage, type ToolCall } from '../types.js';
 import { ScreenRenderer } from '../ink/screen.js';
 import { type ApprovalDecision } from '../harness.js';
-import { BUILTIN_SLASH, parseSlash } from './slash_commands.js';
-import { GatewayModel, EFFORT_LEVELS } from '../model.js';
-import { exportKind, toHtml, toMarkdown } from '../session_export.js';
 import {
-  discoverCustomCommands,
-  expandCommandTemplate,
-  splitArguments,
-} from '../commands.js';
-import { loadSkillBody } from '../skills.js';
+  BUILTIN_SLASH,
+  closeMatch,
+  commandWord,
+  knownSlashNames,
+  parseSlash,
+} from './slash_commands.js';
+import {
+  copyToClipboard,
+  cycleThinking,
+  endpointName,
+  runCommand,
+  type CommandHost,
+} from './slash_handlers.js';
+import { UndoHistory, type ScreenSnapshot } from './undo_history.js';
+import { GatewayModel } from '../model.js';
+import { discoverCustomCommands, splitArguments } from '../commands.js';
 import { complete } from '../mentions.js';
 import { VERSION } from '../version.js';
 import {
@@ -132,6 +137,9 @@ export class SessionApp {
   >();
   private frameRows: string[] = [];
   private shared?: string;
+  private undo = new UndoHistory();
+  // The system clipboard; tests put their own in its place.
+  clipboard: (text: string) => Promise<boolean> = copyToClipboard;
   private dataListener = (data: string): void => {
     if (this.externalEditor) return;
     for (const event of this.input.feed(data)) this.handle(event);
@@ -215,7 +223,7 @@ export class SessionApp {
   private repaint(): void {
     if (this.ended || this.externalEditor) return;
     if (this.runtime) {
-      this.state.messages = this.runtime.harness.messages;
+      this.state.messages = this.undo.visible(this.runtime.harness.messages);
       this.state.userShells = this.runtime.userShells.views.filter(
         (shell) => shell.sessionId === this.runtime!.session.id,
       );
@@ -349,13 +357,13 @@ export class SessionApp {
     this.frameRows = rows;
     this.screen.render(rows);
   }
-  private flash(text: string): void {
+  private flash(text: string, ttl = 1800): void {
     this.state.flash = text;
     if (this.flashTimer) clearTimeout(this.flashTimer);
     this.flashTimer = setTimeout(() => {
       this.state.flash = '';
       this.repaint();
-    }, 1800);
+    }, ttl);
     this.repaint();
   }
   private notice(text: string): void {
@@ -581,7 +589,7 @@ export class SessionApp {
       if (event.kind === 'run_start') {
         this.plan.follow();
         this.state.started = Date.now();
-        this.state.hiddenTurns = 0;
+        this.undo.push(this.screenBefore(event.payload.message));
         this.state.scroll = 0;
       } else if (event.kind === 'llm_start') {
         this.state.streaming = '';
@@ -1036,7 +1044,11 @@ export class SessionApp {
       this.repaint();
       return;
     }
-    if (this.state.picker && !['ctrl+c', 'ctrl+d'].includes(key)) {
+    if (
+      this.state.picker &&
+      key !== 'ctrl+c' &&
+      (key !== 'ctrl+d' || this.state.picker.options.keys?.['ctrl+d'])
+    ) {
       this.state.picker.handle(key, char);
       this.repaint();
       return;
@@ -1092,13 +1104,11 @@ export class SessionApp {
     else if (key === 'ctrl+p')
       void this.cycleModel().catch((error) => this.fail(error));
     else if (key === 'shift+tab' && this.runtime) {
-      const current = EFFORT_LEVELS.indexOf(
-        this.runtime.thinkingLevel as (typeof EFFORT_LEVELS)[number],
-      );
-      void this.command(
-        'effort',
-        EFFORT_LEVELS[(current + 1) % EFFORT_LEVELS.length]!,
-      ).catch((error) => this.fail(error));
+      try {
+        cycleThinking(this.commandHost());
+      } catch (error) {
+        this.fail(error);
+      }
     } else if (key === 'alt+up' && this.runtime) {
       const queue = this.runtime.harness.clearQueue();
       const messages = [...queue.steering, ...queue.followUp];
@@ -1125,11 +1135,12 @@ export class SessionApp {
       } else void this.submit(message).catch((error) => this.fail(error));
     } else if (key === 'shift+enter' || key === 'ctrl+j') this.insert('\n');
     else if (key === 'enter') {
-      const message = this.state.draft.trim();
+      const raw = this.state.draft;
+      const message = raw.trim();
       if (message) {
         this.setDraft('');
         this.history.add(message);
-        void this.submit(message).catch((error) => this.fail(error));
+        void this.submit(message, raw).catch((error) => this.fail(error));
       }
     } else if (key === 'tab') this.completeDraft();
     else if (key === 'backspace') {
@@ -1188,18 +1199,40 @@ export class SessionApp {
       }
     }
   }
-  async submit(message: string): Promise<void> {
-    if (message === '?') {
+  // `raw` is the box as it was sent: with a space before it, a mistyped /command goes to the
+  // model as text. `plain` text (from /init or a custom command) is never read as a command.
+  async submit(message: string, raw = message, plain = false): Promise<void> {
+    if (!plain && message === '?') {
       await this.command('hotkeys', '');
       return;
     }
-    const slash = parseSlash(message);
-    if (slash) {
-      await this.command(slash.name, slash.args);
-      return;
+    if (!plain && message.startsWith('/')) {
+      const extra = new Set([
+        ...discoverCustomCommands(this.workspace, this.home).map(
+          (command) => command.name,
+        ),
+        ...(this.runtime?.extensions.commands().keys() ?? []),
+      ]);
+      const slash = parseSlash(message, extra);
+      if (slash) {
+        await this.command(slash.name, slash.args);
+        return;
+      }
+      const word = commandWord(raw);
+      if (word) {
+        // Not sent: the text comes back to the box to fix.
+        const close = closeMatch(word, [...knownSlashNames(), ...extra]);
+        this.setDraft(raw);
+        this.flash(
+          `Unknown command /${word}` +
+            (close ? ` · did you mean /${close}?` : ' · /help lists them'),
+          4000,
+        );
+        return;
+      }
     }
     if (!this.runtime) return;
-    if (message.startsWith('!')) {
+    if (!plain && message.startsWith('!')) {
       try {
         await this.runtime.userShells.run(
           message.slice(message.startsWith('!!') ? 2 : 1),
@@ -1265,6 +1298,73 @@ export class SessionApp {
     );
     this.repaint();
   }
+  // What the commands in slash_handlers.ts use of the session.
+  private commandHost(): CommandHost {
+    const app = this;
+    return {
+      runtime: this.runtime!,
+      home: this.home,
+      workspace: this.workspace,
+      get settings() {
+        return app.settings;
+      },
+      set settings(value) {
+        app.settings = value;
+      },
+      state: this.state,
+      undo: this.undo,
+      get shared() {
+        return app.shared;
+      },
+      set shared(value) {
+        app.shared = value;
+      },
+      get previousSession() {
+        return app.previousSession;
+      },
+      set previousSession(value) {
+        app.previousSession = value;
+      },
+      notice: (text) => this.notice(text),
+      flash: (text, ttl) => this.flash(text, ttl),
+      fail: (error) => this.fail(error),
+      repaint: () => this.repaint(),
+      picker: (title, items, choose, options) =>
+        this.picker(title, items, choose, options),
+      closePicker: () => {
+        this.state.picker = undefined;
+        this.repaint();
+      },
+      askChoice: (title, body, options) => this.askChoice(title, body, options),
+      askText: (title, body, initial) => this.askText(title, body, initial),
+      setDraft: (text) => this.setDraft(text),
+      snoozeJobs: () => {
+        this.jobWakeSnoozed = true;
+      },
+      send: (text) => this.submit(text, text, true),
+      command: (name, args) => this.command(name, args),
+      setTheme: (mode) => {
+        this.theme.mode = mode;
+        this.theme.apply();
+        this.repaint();
+      },
+      trustWorkspace: () => this.trustWorkspace(),
+      clipboard: (text) => this.clipboard(text),
+    };
+  }
+  // The screen before a turn, which /undo goes back to. The turn's own message is saved
+  // before the turn starts, so it is left out.
+  private screenBefore(prompt: unknown): ScreenSnapshot {
+    const runtime = this.runtime!;
+    const messages = runtime.harness.messages;
+    return this.undo.snapshot(
+      runtime.session.id,
+      prompt !== undefined && messages.at(-1)?.role === 'user'
+        ? messages.slice(0, -1)
+        : messages,
+      this.state.notices,
+    );
+  }
   private scopedModels(): string[] {
     const runtime = this.runtime!;
     this.runScopeOnly ??= Boolean(runtime.runOptions.models.length);
@@ -1291,7 +1391,10 @@ export class SessionApp {
   }
   private async cycleModel(): Promise<void> {
     if (!this.runtime) return;
-    if (this.runtime.busy) throw new Error('a turn is running');
+    if (this.runtime.busy) {
+      this.flash('Busy · switch models when the turn has finished');
+      return;
+    }
     if (
       !this.knownModels ||
       this.knownModelsEndpoint !==
@@ -1307,254 +1410,31 @@ export class SessionApp {
     await this.command('models', scope[(current + 1) % scope.length]!);
   }
   async command(name: string, args: string): Promise<void> {
+    if (!this.runtime) return;
+    if (await runCommand(this.commandHost(), name, args, () => this.exit(0)))
+      return;
+    try {
+      await this.ownCommand(name, args);
+    } catch (error) {
+      this.fail(
+        `/${name} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  // The commands that open SessionApp's own lists and dialogs.
+  private async ownCommand(name: string, args: string): Promise<void> {
     const runtime = this.runtime;
     if (!runtime) return;
-    if (name === 'exit') {
-      this.exit(0);
-      return;
-    }
-    if (name === 'jobs') {
-      const jobs = runtime.jobs.list();
-      if (args) {
-        const job = runtime.jobs.get(args.trim());
-        if (!job) throw new Error('unknown job');
-        this.state.jobDetail = job;
-        this.repaint();
-      } else if (!jobs.length) this.notice('No background jobs');
-      else
-        this.picker(
-          'Jobs',
-          jobs.map((job) => ({
-            key: job.id,
-            label: `${job.id} · ${job.status} · ${job.title}`,
-          })),
-          async (item) => {
-            this.state.jobDetail = runtime.jobs.get(item.key);
-            this.repaint();
-          },
-        );
-      return;
-    }
-    if (name === 'help') {
-      this.notice(
-        BUILTIN_SLASH.map(
-          (command) => `/${command.name}  ${command.description}`,
-        ).join('\n'),
-      );
-      return;
-    }
-    if (name === 'hotkeys') {
-      this.notice(
-        Object.entries(ACTIONS)
-          .map(([action, key]) => `${key.padEnd(14)} ${action}`)
-          .join('\n'),
-      );
-      return;
-    }
-    if (name === 'plan') {
-      runtime.setPlanMode(
-        args === 'on' || (args !== 'off' && !runtime.harness.planMode),
-      );
-      this.notice(
-        runtime.harness.planMode ? 'Read-only mode on' : 'Read-only mode off',
-      );
-      return;
-    }
-    if (name === 'yolo') {
-      runtime.policy.setYolo(runtime.session.id, args !== 'off');
-      this.notice(args === 'off' ? 'Auto mode off' : 'Auto mode on');
-      return;
-    }
-    if (name === 'thinking' && !args) {
-      this.state.showThinking = !this.state.showThinking;
-      this.repaint();
-      return;
-    }
-    if (name === 'details') {
-      this.state.showTools = !this.state.showTools;
-      this.repaint();
-      return;
-    }
-    if (name === 'themes') {
-      if (!args) {
-        this.notice(`Theme: ${this.settings.theme}`);
-        return;
-      }
-      if (!['auto', 'dark', 'light'].includes(args))
-        throw new Error('use /themes auto|dark|light');
-      const theme = args as CircleSettings['theme'];
-      this.settings.theme = theme;
-      saveSettingsChange(this.home, (saved) => {
-        saved.theme = theme;
-      });
-      this.theme.mode = this.settings.theme;
-      this.theme.apply();
-      this.repaint();
-      return;
-    }
-    if (name === 'name') {
-      runtime.store.rename(runtime.session.id, args);
-      this.notice('Session renamed');
-      return;
-    }
-    if (name === 'session') {
-      const session = runtime.store.get(runtime.session.id)!;
-      this.notice(
-        `${session.id}\n${session.title}\n${this.workspace}\n${runtime.harness.model.model}\n${runtime.harness.messages.length} messages`,
-      );
-      return;
-    }
-    if (name === 'approvals') {
-      if (args.startsWith('revoke '))
-        runtime.policy.store.revoke(
-          runtime.session.id,
-          Number(args.slice(7)) - 1,
-        );
-      this.notice(
-        runtime.policy.store
-          .rules(runtime.session.id)
-          .map((rule, index) => `${index + 1}. ${rule.tool}: ${rule.label}`)
-          .join('\n') || 'No session rules',
-      );
-      return;
-    }
-    if (name === 'mcp' || name === 'extensions') {
-      if (args === 'reload') {
-        if (runtime.harness.busy) {
-          this.flash(
-            `reload ${name === 'mcp' ? 'MCP' : 'extensions'} after the current turn`,
-          );
-          return;
-        }
-        await runtime.reloadIntegrations();
-      }
-      this.notice(
-        name === 'mcp' ? runtime.mcp.describe() : runtime.extensions.describe(),
-      );
-      return;
-    }
-    if (name === 'trust') {
-      this.trustWorkspace();
-      this.notice('Folder trusted');
-      return;
-    }
-    if (name === 'undo') {
-      this.state.hiddenTurns = Math.min(40, this.state.hiddenTurns + 1);
-      this.repaint();
-      return;
-    }
-    if (name === 'redo') {
-      this.state.hiddenTurns = Math.max(0, this.state.hiddenTurns - 1);
-      this.repaint();
-      return;
-    }
-    if (name === 'new') {
-      this.previousSession = runtime.session.id;
-      await runtime.newSession();
-      this.state.notices = [];
-      this.state.hiddenTurns = 0;
-      this.state.usage = emptyUsage();
-      this.repaint();
-      return;
-    }
-    if (name === 'continue') {
-      if (!this.previousSession) throw new Error('no previous session');
-      const current = runtime.session.id;
-      await runtime.switchSession(this.previousSession);
-      this.previousSession = current;
-      this.repaint();
-      return;
-    }
-    if (name === 'resume') {
-      const sessions = runtime.store.list(this.workspace);
-      const choose = async (id: string): Promise<void> => {
-        this.previousSession = runtime.session.id;
-        await runtime.switchSession(id);
-        this.state.hiddenTurns = 0;
-        this.state.notices = [];
-      };
-      if (args)
-        await choose(
-          /^\d+$/.test(args) ? sessions[Number(args) - 1]?.id || '' : args,
-        );
-      else
-        this.picker(
-          'sessions',
-          sessions.map((session) => ({
-            key: session.id,
-            label: session.title || session.id,
-            meta: session.id,
-            current: session.id === runtime.session.id,
-          })),
-          (item) => choose(item.key),
-        );
-      return;
-    }
-    if (name === 'tree' || name === 'fork') {
-      this.jobWakeSnoozed = true;
-      if (runtime.harness.busy) throw new Error('a turn is running');
-      const tree = runtime.store.tree(runtime.session.id);
-      const choices = tree
-        .filter((checkpoint) => !checkpoint.message.internal)
-        .filter(
-          (checkpoint) => name !== 'fork' || checkpoint.message.role === 'user',
-        )
-        .filter(
-          (checkpoint) =>
-            !args ||
-            checkpoint.message.content
-              .toLowerCase()
-              .includes(args.toLowerCase()),
-        );
-      this.picker(
-        name,
-        choices.map((checkpoint) => ({
-          key: checkpoint.id,
-          label: `${checkpoint.message.role}: ${checkpoint.message.display || checkpoint.message.content || '(tool call)'}`,
-          current:
-            checkpoint.id === runtime.store.get(runtime.session.id)?.head,
-        })),
-        async (item) => {
-          const checkpoint = runtime.store.checkpoint(item.key)!;
-          if (!checkpoint.message)
-            throw new Error('selected entry has no message');
-          const head =
-            checkpoint.message.role === 'user'
-              ? checkpoint.parent
-              : checkpoint.id;
-          if (name === 'fork') {
-            const session = runtime.store.fork(
-              runtime.session.id,
-              this.workspace,
-              head,
-            );
-            await runtime.switchSession(session.id);
-          } else runtime.store.select(runtime.session.id, head);
-          if (checkpoint.message.role === 'user')
-            this.setDraft(
-              checkpoint.message.display || checkpoint.message.content,
-            );
-          this.state.notices = [];
-          this.state.hiddenTurns = 0;
-        },
-      );
-      return;
-    }
-    if (name === 'clone') {
-      if (runtime.harness.busy) throw new Error('a turn is running');
-      const session = runtime.store.fork(runtime.session.id, this.workspace);
-      await runtime.switchSession(session.id);
-      this.repaint();
-      return;
-    }
     if (name === 'models') {
-      if (runtime.busy) throw new Error('a turn is running');
       const choose = (model: string): void => {
         if (runtime.harness.busy) throw new Error('a turn is running');
         runtime.setModel(model);
-        this.notice(`Model → ${model}`);
+        this.flash(
+          `Model → ${model} · this session (ctrl+s in /models saves it)`,
+          4000,
+        );
       };
-      if (args) choose(args);
+      if (args.trim()) choose(args.trim());
       else {
         const models = await this.loadModels();
         this.scopedModels();
@@ -1575,17 +1455,23 @@ export class SessionApp {
               .filter(Boolean)
               .join(' · '),
           }));
-        this.picker('models', rows(), (item) => choose(item.key), {
-          hint: 'enter uses · ctrl+s saves default · tab changes ctrl+p scope',
+        this.picker('Model', rows(), (item) => choose(item.key), {
+          hint:
+            'enter uses it in this session · ctrl+s also makes it the default · ' +
+            'tab adds it to ctrl+p or takes it out',
+          empty:
+            'No model matches · /models <id> uses an id the endpoint does not list',
+          focusKey: runtime.harness.model.model,
           keys: {
             'ctrl+s': (item) => {
               if (!item) return;
-              choose(item.key);
+              runtime.setModel(item.key);
               this.settings.auth.model = item.key;
               saveSettingsChange(this.home, (saved) => {
                 saved.auth.model = item.key;
               });
               this.state.picker = undefined;
+              this.notice(`Model → ${item.key} · saved as the default`);
             },
             tab: (item) => {
               if (!item) return;
@@ -1606,8 +1492,9 @@ export class SessionApp {
               this.state.picker?.setItems(rows());
               this.flash(
                 next.length
-                  ? `ctrl+p goes through ${next.length} models`
+                  ? `ctrl+p goes through ${next.length} model${next.length === 1 ? '' : 's'}`
                   : 'ctrl+p goes through every listed model',
+                2000,
               );
             },
           },
@@ -1615,220 +1502,89 @@ export class SessionApp {
       }
       return;
     }
-    if (name === 'effort' || name === 'thinking') {
-      const choose = (effort: string): void => {
-        if (!(EFFORT_LEVELS as readonly string[]).includes(effort))
-          throw new Error('unknown thinking depth');
-        runtime.setThinkingLevel(effort);
-        this.notice(`Thinking → ${effort}`);
-      };
-      if (args) choose(args);
-      else
-        this.picker(
-          'thinking depth',
-          EFFORT_LEVELS.map((level) => ({ key: level, label: level })),
-          (item) => choose(item.key),
-          {
-            hint: 'enter uses · ctrl+s saves default',
-            keys: {
-              'ctrl+s': (item) => {
-                if (!item) return;
-                choose(item.key);
-                this.settings.default_thinking = item.key;
-                saveSettingsChange(this.home, (saved) => {
-                  saved.default_thinking = item.key;
-                });
-                this.state.picker = undefined;
-              },
-            },
-          },
-        );
-      return;
-    }
-    if (name === 'skill' || name.startsWith('skill:')) {
-      const value = name.startsWith('skill:')
-        ? name.slice(6)
-        : args.split(/\s+/)[0];
-      if (!value)
-        this.notice(
-          runtime.skills
-            .map((skill) => `${skill.name}  ${skill.description}`)
-            .join('\n') || 'No skills found',
-        );
-      else
-        await this.submit(loadSkillBody(value, runtime.skills) + '\n' + args);
-      return;
-    }
-    if (name === 'compact') {
-      if (runtime.busy) throw new Error('a turn is running');
-      const result = await runtime.compact(args);
-      if (result === 'Nothing to compact yet') this.notice(result);
-      this.repaint();
-      return;
-    }
-    if (name === 'init') {
-      await runtime.harness.run(
-        'Read the repository and write an AGENTS.md contributor guide. ' + args,
-      );
-      return;
-    }
-    if (name === 'export' || name === 'share') {
-      const kind = name === 'share' ? 'md' : exportKind(args);
-      const directory = join(
-        this.home,
-        name === 'share' ? 'shares' : 'exports',
-      );
-      mkdirSync(directory, { recursive: true });
-      const path =
-        args && !['html', 'jsonl', 'md'].includes(args)
-          ? resolve(this.workspace, args)
-          : join(directory, runtime.session.id + '.' + kind);
-      const session = runtime.store.get(runtime.session.id)!;
-      const meta = {
-        thread_id: session.id,
-        title: session.title,
-        workspace: session.workspace,
-        model: runtime.harness.model.model,
-      };
-      const messages = runtime.harness.messages;
-      writeFileSync(
-        path,
-        kind === 'html'
-          ? toHtml(messages, meta)
-          : kind === 'jsonl'
-            ? runtime.exportSession()
-            : toMarkdown(messages, meta),
-      );
-      if (name === 'share') {
-        this.shared = path;
-        await this.copy(path);
-      }
-      this.notice(`Exported ${path}`);
-      return;
-    }
-    if (name === 'unshare') {
-      if (this.shared && existsSync(this.shared)) unlinkSync(this.shared);
-      this.shared = undefined;
-      this.notice('Local share removed');
-      return;
-    }
-    if (name === 'import') {
-      if (!args) throw new Error('use /import <path>');
-      const text = readFileSync(resolve(this.workspace, args), 'utf8');
-      if (args.endsWith('.jsonl')) await runtime.importSession(text);
-      else {
-        await runtime.newSession();
-        runtime.store.append(runtime.session.id, [
-          {
-            id: crypto.randomUUID(),
-            role: 'user',
-            content: text.slice(0, 8000),
-            display: text,
-          },
-        ]);
-      }
-      this.repaint();
-      return;
-    }
-    if (name === 'copy') {
-      await this.copy(
-        runtime.harness.messages
-          .filter((message) => message.role === 'assistant' && message.content)
-          .at(-1)?.content || '',
-      );
-      this.flash('Copied answer');
-      return;
-    }
     if (name === 'editor') {
       await this.editor();
-      return;
-    }
-    if (name === 'settings') {
-      this.notice(JSON.stringify(this.settings, null, 2));
-      return;
-    }
-    if (name === 'logout') {
-      if (runtime.harness.busy) await runtime.harness.cancel();
-      clearCredentials(this.home);
-      this.settings.initialized = false;
-      saveSettingsChange(this.home, (saved) => {
-        saved.initialized = false;
-      });
-      this.exit(0);
+      this.flash('Loaded from the editor · enter sends');
       return;
     }
     if (name === 'login') {
-      if (args === 'anthropic' || args === 'openai')
-        throw new Error('OAuth sign-in is not available yet');
-      if (runtime.harness.busy) throw new Error('a turn is running');
-      if (await this.initialize(true)) {
-        this.applyRunSettings(runtime.options.modelOverride);
-        runtime.options.settings = this.settings;
-        runtime.setModel(this.settings.auth.model);
+      const provider = args.trim().toLowerCase();
+      if (provider) {
+        // OAuth is not implemented: there is nothing to sign in to.
+        this.fail(
+          ['anthropic', 'openai'].includes(provider)
+            ? `${provider} OAuth sign-in is not available yet · use API URL + KEY`
+            : `Unknown provider '${provider}' · choose anthropic, openai`,
+        );
+        return;
       }
+      // The ways in, then setup's questions. Nothing is saved before a model is given.
+      const auth = this.settings.auth;
+      const methods = (): void =>
+        this.picker(
+          'Sign in',
+          [
+            {
+              key: 'api_key',
+              label: 'API URL + KEY',
+              current: auth.mode === 'api_key',
+            },
+            {
+              key: 'oauth',
+              label: 'OAuth sign-in',
+              current: auth.mode === 'oauth',
+              meta: 'not available yet',
+            },
+          ],
+          async (item) => {
+            if (item.key === 'oauth') {
+              methods();
+              this.flash(
+                'OAuth sign-in is not available yet · use API URL + KEY',
+                3000,
+              );
+              return;
+            }
+            if (!(await this.initialize(true))) return;
+            this.applyRunSettings(runtime.options.modelOverride);
+            runtime.options.settings = this.settings;
+            runtime.setModel(this.settings.auth.model);
+            this.notice(
+              `Signed in to ${endpointName(this.settings.auth.base_url)} · model ${this.settings.auth.model}`,
+            );
+          },
+          {
+            hint: !this.settings.initialized
+              ? 'not signed in'
+              : `now ${auth.mode === 'oauth' ? `oauth · ${auth.oauth_provider}` : `api key · ${endpointName(auth.base_url)}`} · ${auth.model}`,
+            focusKey: auth.mode === 'oauth' ? 'oauth' : 'api_key',
+          },
+        );
+      methods();
       return;
     }
     if (name === 'reload') {
-      if (runtime.harness.busy) throw new Error('a turn is running');
-      await runtime.reloadIntegrations();
       const keys = loadRemap(this.home);
       this.remap = keys.remap;
       for (const problem of keys.problems) this.fail(problem);
+      try {
+        await runtime.reloadIntegrations();
+      } catch (error) {
+        this.fail(
+          `Reload partly failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
       this.settings = runtime.options.settings;
       runtime.setModel(this.settings.auth.model);
-      this.notice('Settings and integrations reloaded');
+      if (this.theme.mode !== this.settings.theme) {
+        this.theme.mode = this.settings.theme;
+        this.theme.apply();
+      }
+      this.notice('Reloaded settings and the model');
       return;
     }
-    const custom = discoverCustomCommands(this.workspace, this.home).find(
-      (command) => command.name === name,
-    );
-    if (custom) {
-      const prompt = await expandCommandTemplate(
-        custom.template,
-        args,
-        runtime.sandbox,
-        new AbortController().signal,
-      );
-      await this.submit(prompt);
-      return;
-    }
-    const extensionCommand = runtime.extensions.commands().get(name);
-    if (extensionCommand) {
-      await extensionCommand.handler(args, {
-        workspace: this.workspace,
-        toast: (message) => this.notice(message),
-        append: (message) => {
-          runtime.store.append(runtime.session.id, [
-            { id: crypto.randomUUID(), role: 'assistant', content: message },
-          ]);
-          this.repaint();
-        },
-        sendUserMessage: (message) => {
-          void this.submit(message).catch((error) => this.fail(error));
-        },
-      });
-      return;
-    }
-    throw new Error(`command not available: /${name}`);
-  }
-  private async copy(text: string): Promise<void> {
-    const program =
-      process.platform === 'darwin'
-        ? 'pbcopy'
-        : process.platform === 'win32'
-          ? 'clip'
-          : 'wl-copy';
-    await new Promise<void>((resolveCopy) => {
-      const child = spawn(program, [], { stdio: ['pipe', 'ignore', 'ignore'] });
-      child.once('error', () => {
-        const path = join(this.home, 'exports', 'clipboard.txt');
-        mkdirSync(join(this.home, 'exports'), { recursive: true });
-        writeFileSync(path, text);
-        resolveCopy();
-      });
-      child.once('close', () => resolveCopy());
-      child.stdin.end(text);
-    });
+    this.flash(`Unknown command /${name} · try /help`);
   }
   private async editor(): Promise<void> {
     if (this.externalEditor) throw new Error('an editor is already running');
