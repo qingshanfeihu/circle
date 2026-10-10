@@ -1,0 +1,80 @@
+name: Desktop workbench
+on:
+  push:
+    paths:
+      - 'apps/**'
+      - 'src/tui/slash_commands.ts'
+      - 'src/ink/theme.ts'
+      - 'docs/workbench/**'
+      - '.github/workflows/workbench.yml'
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'src/tui/slash_commands.ts'
+      - 'src/ink/theme.ts'
+      - 'docs/workbench/**'
+      - '.github/workflows/workbench.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: workbench-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            apps/workbench/package-lock.json
+            apps/desktop/package-lock.json
+      - run: npm --prefix apps/workbench ci
+      - run: npm --prefix apps/desktop ci
+      - run: npm --prefix apps/workbench run format:check
+      - run: npm --prefix apps/desktop run format:check
+      - run: npm --prefix apps/workbench test
+      - run: npm --prefix apps/desktop test
+      - run: npm --prefix apps/desktop run build
+      - run: npm --prefix apps/desktop run test:desktop
+      - run: npm --prefix apps/desktop run test:interface
+      - run: npm --prefix apps/desktop run package
+      - name: Check the packaged application
+        shell: bash
+        run: |
+          app_path="$(find apps/desktop/out -maxdepth 2 -name 'Circle Workbench.app' -print -quit)"
+          export CIRCLE_DESKTOP_APP_PATH="$GITHUB_WORKSPACE/$app_path"
+          export CIRCLE_DESKTOP_EXECUTABLE="$CIRCLE_DESKTOP_APP_PATH/Contents/MacOS/Circle Workbench"
+          npm --prefix apps/desktop run test:desktop
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: circle-desktop-macos-development
+          path: |
+            apps/desktop/out/*.dmg
+            apps/desktop/out/artifact-receipt.json
+            apps/desktop/artifacts/
+          if-no-files-found: error
+  package-other-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: npm --prefix apps/workbench ci
+      - run: npm --prefix apps/desktop ci
+      - run: npm --prefix apps/desktop run package
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: circle-desktop-${{ matrix.os }}-development
+          path: apps/desktop/out/
+          if-no-files-found: error

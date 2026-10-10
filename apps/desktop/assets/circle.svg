@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Circle">
+  <title>Circle</title>
+  <!-- The composer frame's rainbow, closed into a ring: blue, purple, red, orange, back to blue.
+       Colours are the stops in circle/ink/components/dialog_frame.py. -->
+  <defs>
+    <linearGradient id="a" gradientUnits="userSpaceOnUse" x1="64" y1="20" x2="108" y2="64">
+      <stop offset="0" stop-color="#0894ff"/><stop offset="1" stop-color="#c959dd"/>
+    </linearGradient>
+    <linearGradient id="b" gradientUnits="userSpaceOnUse" x1="108" y1="64" x2="64" y2="108">
+      <stop offset="0" stop-color="#c959dd"/><stop offset="1" stop-color="#ff2e54"/>
+    </linearGradient>
+    <linearGradient id="c" gradientUnits="userSpaceOnUse" x1="64" y1="108" x2="20" y2="64">
+      <stop offset="0" stop-color="#ff2e54"/><stop offset="1" stop-color="#ff9004"/>
+    </linearGradient>
+    <linearGradient id="d" gradientUnits="userSpaceOnUse" x1="20" y1="64" x2="64" y2="20">
+      <stop offset="0" stop-color="#ff9004"/><stop offset="1" stop-color="#0894ff"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-width="14">
+    <path d="M64 20 A44 44 0 0 1 108 64" stroke="url(#a)"/>
+    <path d="M108 64 A44 44 0 0 1 64 108" stroke="url(#b)"/>
+    <path d="M64 108 A44 44 0 0 1 20 64" stroke="url(#c)"/>
+    <path d="M20 64 A44 44 0 0 1 64 20" stroke="url(#d)"/>
+  </g>
+</svg>

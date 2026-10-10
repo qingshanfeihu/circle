@@ -1,0 +1,32 @@
+{
+  "name": "@circle/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Circle desktop workbench with isolated frontend preview services",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "npm run typecheck && npm --prefix ../workbench run build && node scripts/build.mjs",
+    "start": "electron .",
+    "dev": "npm run build && npm start",
+    "package": "npm run build && node scripts/package.mjs",
+    "test": "node --test test/policy.test.ts",
+    "test:desktop": "node test/desktop.mjs",
+    "format:check": "prettier --check src test scripts package.json tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test:interface": "node test/interface.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "@electron/packager": "20.3.0",
+    "esbuild": "0.28.2",
+    "@resvg/resvg-js": "2.6.2",
+    "prettier": "3.9.10",
+    "typescript": "5.9.3",
+    "@types/node": "24.19.1",
+    "playwright": "1.64.0"
+  }
+}

@@ -78,3 +78,10 @@ What you may notice afterwards:
 - [Registering Circle in skills.sh](development/skills-registry.md)
 - [Security policy](../SECURITY.md)
 - [Changelog](../CHANGELOG.md)
+
+## Desktop frontend
+
+- [Run and package the native workbench](../apps/desktop/README.md)
+- [Frontend coverage and runtime limits](workbench/coverage.md)
+- [Application and plugin architecture](workbench/architecture.md)
+- [Native checks and application receipts](workbench/validation.md)
