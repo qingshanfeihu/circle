@@ -4,7 +4,7 @@ Inspected on 2026-10-11 against Circle 1.0.4 and workbench commit `738ba94ddaf3d
 
 ## What current evidence proves
 
-The native application, named host capabilities and bundled UI components are implemented. The current GitHub head passed the CLI Check workflow, native macOS checks, Windows/Linux desktop packaging and all six existing CLI distribution builds. The distribution publish step was skipped. PR #24 remains a draft and has not merged.
+The native application, named host capabilities and bundled UI components are implemented. The inspected revision passed the CLI Check workflow, native macOS checks, Windows/Linux desktop packaging and all six existing CLI distribution builds. The distribution publish step was skipped. PR #24 remains a draft and has not merged.
 
 [Native receipts](validation.md) bind the checked frontend sources, bundled resources and packaged ASAR. They prove the stated native/frontend behaviors. They do not prove that a model ran, that an extension tool reached a platform service or that a device operation completed.
 
@@ -27,6 +27,8 @@ The native application, named host capabilities and bundled UI components are im
 | GitHub delivery is reviewable | Current source, checks, artifacts and limits point to the same revision | PR #24 and receipts available; merge and release are separate actions |
 
 The full goal is therefore incomplete. Installing a bundled page is not proof that its runtime capability or authoritative service is available.
+
+The complete runtime/plugin work is tracked separately in [issue #25](https://github.com/qingshanfeihu/circle/issues/25). The earlier frontend-only scope remains in force until the user expands it; this audit and issue do not authorize production access, deployment or real-model spending.
 
 ## Existing core interfaces that can be reused
 
