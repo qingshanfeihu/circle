@@ -1,0 +1,85 @@
+{
+  "inspectedAt": "2026-10-10T19:36:02.107039+00:00",
+  "sourceHead": "738ba94ddaf3d53a431b9d5ae06797c9d88127e0",
+  "scope": "static source and current GitHub checks; no runtime/service/model/device execution",
+  "sources": [
+    {
+      "path": "package.json",
+      "sha256": "4ebc6a9cbc70a295e618f1b0eae2e344f09437ac5faacdd2c9c60a7bc2bcaaa0"
+    },
+    {
+      "path": "src/runtime.ts",
+      "sha256": "4281ff218fa962edfaa511fb5637abb7e9a5e1ff7afd641b8e5639448a212771"
+    },
+    {
+      "path": "src/harness.ts",
+      "sha256": "8315d882cc0495d3efef55cffdc120fc1ad789aaf6ba40947aa8e4ab34558d89"
+    },
+    {
+      "path": "src/events.ts",
+      "sha256": "d75727d782418e40b10c266896bdba4d703c2e52c8ec629d1d85e6aa02f45b71"
+    },
+    {
+      "path": "src/extensions.ts",
+      "sha256": "6df070ce6f82d40a3fdf51cbea867f31de8cb949405989fa6a2e9eb0cca9dcea"
+    },
+    {
+      "path": "src/tui/session_app.ts",
+      "sha256": "2068cafc45c65bef868da941fd899e9d64d6f06c0b0dde1490d8091f9dd02026"
+    },
+    {
+      "path": "docs/rpc.md",
+      "sha256": "a1ddb916b6c75f8d3bfaff4dc1e3690403e00d3fa0866c997d107bd2a2b3770c"
+    },
+    {
+      "path": "apps/workbench/src/model/types.ts",
+      "sha256": "987aae30f983883fc88c1047d8e8ce2dbcda7c213e70b52d546409ea4c27a3c2"
+    },
+    {
+      "path": "apps/workbench/src/model/state.ts",
+      "sha256": "ceeebc5f1c66963e8fda16e519f0275502ac9eeb49b78eee74ed8c2b516abadb"
+    },
+    {
+      "path": "apps/workbench/src/plugins/types.ts",
+      "sha256": "c1522595b05a2b9e45d15a8187005ef6c52ac59ff3ea27afd1414128d372eeab"
+    },
+    {
+      "path": "apps/workbench/src/plugins/builtins.tsx",
+      "sha256": "a53ccb4867deefd39cdc807316dda528cc3383fc299bee09f39cbf86be21311f"
+    },
+    {
+      "path": "apps/workbench/src/plugins/platform/store.ts",
+      "sha256": "87b57928a41a136a9dc4f4f095f337ad34094b8733717d94b732b14267a16d7f"
+    },
+    {
+      "path": "apps/desktop/src/main.ts",
+      "sha256": "fb19e56192dc2e5dd0d0a72038682f68e7cca6eddbeb2ef266d1b6706a899017"
+    },
+    {
+      "path": "apps/desktop/src/contracts.ts",
+      "sha256": "83e316472202317b9551d144ecd240237720318d1ee70a68214317f1f1d3b73d"
+    },
+    {
+      "path": "apps/desktop/src/browser.ts",
+      "sha256": "c58112fa5b3dc207df437b1818115e27abb262fccaa163e7b1c7099a853ff611"
+    }
+  ],
+  "findings": {
+    "desktopRuntimeConnected": false,
+    "runtimePortMode": "preview",
+    "interactiveCoreCallbacks": [
+      "approve",
+      "question",
+      "secret"
+    ],
+    "headlessSkipsIntegrations": true,
+    "pairedRuntimePluginPackagesConnected": false
+  },
+  "ciAtSourceHead": {
+    "check": "success",
+    "desktopWorkbench": "success",
+    "cliDistributionBuilds": "six successful",
+    "publish": "skipped"
+  },
+  "goalComplete": false
+}

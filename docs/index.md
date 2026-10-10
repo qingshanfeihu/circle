@@ -85,3 +85,4 @@ What you may notice afterwards:
 - [Frontend coverage and runtime limits](workbench/coverage.md)
 - [Application and plugin architecture](workbench/architecture.md)
 - [Native checks and application receipts](workbench/validation.md)
+- [Full runtime and plugin integration gaps](workbench/integration-audit.md)
