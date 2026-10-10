@@ -7,6 +7,8 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 ### Changed
 
 - **Circle is open source under the MIT License.** The release package carries `LICENSE` next to `README.md`.
+- **`/login` asks for the URL straight away.** Circle signs in only with an API URL and key, so the first list, where OAuth sign-in was marked `not available yet`, is gone. `esc` on the key goes back to the URL, and `esc` on the URL leaves. `/login anthropic` and `/login openai` open the same questions as `/login`.
+- **`settings.json` no longer has `auth.mode` or `auth.oauth_provider`.** Circle drops them the next time it saves the settings; the Python releases read a missing `mode` as `api_key`.
 
 ## 1.0.4 - 2026-10-09
 

@@ -84,10 +84,10 @@
 | 你停的任务、你的 `!` 命令在后台结束、别的对话的任务结束 | 发生 | 转录淡色一行（`j3 stopped`、`j4 done · exit 0 · 12s`） |
 | 计划清单 | 计划存在 | 计划区 |
 | 审批 / question / 机密 | 中断到达，你停手后 | 对话框 |
-| setup（连接方式、URL、key、查模型、选模型）与 trust（写明会加载文件夹里的什么，有扩展时黄色提醒它会执行代码） | 没设置过或 `--init`；文件夹没信任过 | 对话框，会话连接之前；欢迎块随答随填 |
+| setup（URL、key、查模型、选模型）与 trust（写明会加载文件夹里的什么，有扩展时黄色提醒它会执行代码） | 没设置过或 `--init`；文件夹没信任过 | 对话框，会话连接之前；欢迎块随答随填 |
 | `/approvals` 规则 | 无参数 | 弹窗 |
 | 模型、思考深度、会话、会话树、fork 的列表 | `/models` `/effort` `/resume` `/tree` `/fork` 无参数，ctrl+l，空框 esc esc | 弹窗 |
-| 登录方式，接着 URL、key（圆点）、模型，问法同 setup（`SessionApp.initialize`）；没做好的方式列出来、标 `not available yet`、选不动 | `/login` 无参数 | 弹窗；选完模型才保存，成了进转录淡色一行 |
+| URL、key（圆点）、模型，问法同 setup（`SessionApp.initialize`），一打开就问 URL；key 上 esc 回到 URL，URL 上 esc 离开。0.5.0 先问 API URL + KEY 还是 OAuth，Circle 不做 OAuth，这一步去掉了 | `/login` | 弹窗；选完模型才保存，成了进转录淡色一行 |
 | key 被端点拒（401 / 403） | 回合失败 | 转录，红色 `✖` 行尾加 `· /login to change the key` |
 | 等着被读的插话 `steering: …`、回合后才发的 `follow-up: …` | 回合进行中你按了 enter | 常驻，输入框上方，淡色一行一条；读到后进转录 |
 | 压缩进行中 `auto-compacting · ████░░░░ summarizing · 12s`（`/compact` 为 `compacting`；不写触发条件；自动的那种随回合被 esc 中止，行撤下、不落失败行） | 压缩开始到结束 | 常驻，输入框上方，排在插话之前；结束撤下，转录落一条淡色 `auto-compacted · …` 或 `compacted · …`（失败红色 `✖`），回合进行中则等回合结束、落在用量行之下 |
@@ -122,4 +122,3 @@
 - 耗时格式统一：忙碌词 `12.3s`，在途条与回合用量 `12s`；思考行在转录里是 `6.3s`，在子代理页面里是 `2s`（0.5.0 的子代理页面也是 `2s`）。
 - 后台任务行在在途条里不能被选中（↓ 只选子代理）；任务经 `/jobs` 打开。
 - 后台子代理从 `/jobs` 打开的页面只有它的步骤文字（任务输出文件），不是本回合子代理那样的完整记录卡。
-- setup 没有「连接方式」一步，直接从 URL 问起（0.5.0 先问 API URL + KEY 还是 OAuth，后者标 `not available yet`、选不动）；`/login` 有这一步。

@@ -138,7 +138,7 @@ export async function runLineInit(
     }
     let savedUrl = '';
     let savedKey = '';
-    if (previous.initialized && previous.auth.mode === 'api_key') {
+    if (previous.initialized) {
       savedUrl = previous.auth.base_url;
       try {
         savedKey =

@@ -9,12 +9,10 @@ Read [Before you edit by hand](#before-you-edit-by-hand) first.
   "version": 1,
   "initialized": true,
   "auth": {
-    "mode": "api_key",
     "protocol": "openai",
     "base_url": "https://gateway.example/v1",
     "model": "my-model",
-    "api_key_ref": "api_key",
-    "oauth_provider": ""
+    "api_key_ref": "api_key"
   },
   "trusted_folders": ["/Users/me/code/my-project"],
   "theme": "auto",
@@ -31,12 +29,10 @@ Read [Before you edit by hand](#before-you-edit-by-hand) first.
 |---|---|---|---|
 | `version` | number | `1` | Settings format. Not used yet. |
 | `initialized` | boolean | `false` | Set by setup. `/logout` sets it back to `false`, and the next start shows setup. |
-| `auth.mode` | string | `"api_key"` | `api_key` or `oauth`. Only `api_key` works today. See [Models](models.md#oauth). |
 | `auth.protocol` | string | `"openai"` | `openai` or `anthropic`. It decides which client talks to the endpoint. Circle never guesses it from the model name. |
 | `auth.base_url` | string | `""` | The endpoint. For OpenAI style, include `/v1`. For Anthropic style, give the gateway root; a `/v1` at its end is left out. |
 | `auth.model` | string | `""` | The model id sent to the endpoint, the default for new sessions. `ctrl+s` in `/models` sets it. |
 | `auth.api_key_ref` | string | `"api_key"` | The name of the key in `credentials.json`. |
-| `auth.oauth_provider` | string | `""` | `anthropic` or `openai` when `mode` is `oauth`. |
 | `default_thinking` | string | `""` | The thinking depth to start with: `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. Empty means the protocol's default. `CIRCLE_REASONING_EFFORT` wins over it. `ctrl+s` in `/effort` sets it. See [Models](models.md#thinking-depth). |
 | `enabled_models` | list of strings | `[]` | The models `ctrl+p` switches between. Each entry is a model id or a pattern such as `step-*`, matched against what the endpoint lists. Empty means every listed model. |
 | `double_escape` | string | `"tree"` | What `esc` twice on an empty input box opens: `tree` (the session tree), `fork` (the fork list) or `none`. `/settings` changes it. |

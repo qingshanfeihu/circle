@@ -56,7 +56,7 @@ Several agents and people may work in this checkout at once.
 
 ## Things that are easy to get wrong
 
-- `circle --init` and `/login` are not safe places to experiment: `--init` replaces the saved endpoint, key and model, and OAuth is not implemented.
+- `circle --init` and `/login` are not safe places to experiment: both replace the saved endpoint, key and model.
 - The version is in `package.json`, `package-lock.json` and `src/version.ts`. Change all three; `tests/version.test.ts` fails if they differ. Do not tag or publish a release unless the user asked.
 - `install.sh`, `install.ps1`, `src/install_layout.ts`, `src/install_manager.ts`, `src/legacy_install.ts` and `src/update.ts` share one install layout (`versions/<version>/`, `current.ref`, `installation.json`) and one asset naming (`circle-<version>-<os>-<arch>`). Change them together; `tests/install-layout.test.ts`, `tests/legacy-install.test.ts` and `npm run release:smoke` pin it.
 - Asset names must never match `circle-<os>-<arch>.tar.gz` or `.zip` without a version: that is what `circle update` in the Python releases looks for.

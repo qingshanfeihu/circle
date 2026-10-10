@@ -25,6 +25,7 @@ interface Asked {
   done: (text: string) => void | Promise<void>;
   mask: boolean;
   keys: string;
+  cancel?: () => void;
 }
 function dropLast(text: string): string {
   return Array.from(text).slice(0, -1).join('');
@@ -80,12 +81,13 @@ export class Picker {
     );
   }
   /** A line of text in place of the search: enter hands it to `done`, esc cancels. `mask`
-   * shows what is typed or pasted as dots, as setup shows a key. */
+   * shows what is typed or pasted as dots, as setup shows a key. `cancel` runs after esc, in
+   * place of going back to the list (/login's URL leaves, its key goes back to the URL). */
   ask(
     label: string,
     text: string,
     done: (text: string) => void | Promise<void>,
-    options: { mask?: boolean; keys?: string } = {},
+    options: { mask?: boolean; keys?: string; cancel?: () => void } = {},
   ): void {
     this.confirming = undefined;
     this.asked = {
@@ -94,6 +96,7 @@ export class Picker {
       done,
       mask: Boolean(options.mask),
       keys: options.keys ?? 'enter saves · esc cancels',
+      cancel: options.cancel,
     };
   }
   /** A yes or no in place of the search: enter runs `done`, esc cancels. */
@@ -122,8 +125,10 @@ export class Picker {
       if (key === 'enter') {
         this.asked = undefined;
         this.settle(() => asked.done(asked.text));
-      } else if (key === 'escape' || key === 'ctrl+c') this.asked = undefined;
-      else if (key === 'backspace') asked.text = dropLast(asked.text);
+      } else if (key === 'escape' || key === 'ctrl+c') {
+        this.asked = undefined;
+        asked.cancel?.();
+      } else if (key === 'backspace') asked.text = dropLast(asked.text);
       else if (key === 'ctrl+u') asked.text = '';
       else asked.text += printable(key, char);
       return true;

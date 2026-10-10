@@ -12,6 +12,7 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { stripAnsi } from '../src/ink/string_width.js';
+import type { Picker } from '../src/ink/components/picker.js';
 import { SessionApp } from '../src/tui/session_app.js';
 import { parseSlash, closeMatch } from '../src/tui/slash_commands.js';
 import { ScriptedModel } from '../src/testing.js';
@@ -640,7 +641,7 @@ test('/logout clears the key and the connection and keeps the session open', asy
   settings.theme = 'dark';
   saveSettings(settings, home);
   saveCredentials({ api_key: 'secret' }, home);
-  const { app, ui } = await session(t, [], {
+  const { app, ui, key } = await session(t, [], {
     home,
     settings: structuredClone(settings),
   });
@@ -655,16 +656,17 @@ test('/logout clears the key and the connection and keeps the session open', asy
     app.state.notices.at(-1),
     'Signed out · credentials cleared · /login or `circle --init` before the next turn',
   );
+  // /login takes no provider (Circle signs in only with an API URL and key): it asks for
+  // the URL, with nothing saved to fill in
   await app.submit('/login openai');
-  assert.equal(
-    app.state.notices.at(-1),
-    '✖ openai OAuth sign-in is not available yet · use API URL + KEY',
-  );
-  await app.submit('/login github');
-  assert.equal(
-    app.state.notices.at(-1),
-    "✖ Unknown provider 'github' · choose anthropic, openai",
-  );
+  const rows = app.state.picker!.rows(120).map((row) => stripAnsi(row).trim());
+  assert.deepEqual(rows, [
+    'Sign in',
+    'base url: ▏  enter continues · esc closes',
+    'not signed in',
+  ]);
+  await key('escape');
+  assert.equal(app.state.picker, undefined);
 });
 
 test('/tree, /fork, /clone, /new, /continue and /resume move between branches and sessions', async (t) => {
@@ -875,42 +877,24 @@ test("/login asks for the URL and the key on its list, lists the endpoint's mode
   const typed = async (text: string): Promise<void> => {
     for (const char of text) await key(char, char);
   };
+  // The URL straight away, on the list's own line with the saved one filled in; under it,
+  // what is in use now. esc there leaves /login.
+  const open = (): Picker | undefined => app.state.picker;
+  const row = (index: number): string =>
+    stripAnsi(open()!.rows(120)[index]!).trim();
+  const line = (): string => row(1);
   await app.submit('/login');
-  const picker = app.state.picker!;
-  assert.equal(picker.title, 'Sign in');
-  assert.equal(
-    picker.options.hint,
-    'now api key · gateway.example/v1 · saved-model',
-  );
-  assert.deepEqual(
-    picker.items.map((item) => [item.label, item.meta ?? '']),
-    [
-      ['API URL + KEY', ''],
-      ['OAuth sign-in', 'not available yet'],
-    ],
-  );
-  // OAuth is listed but cannot be chosen
-  picker.focus = 1;
-  await key('enter');
-  assert.equal(
-    app.state.flash,
-    'OAuth sign-in is not available yet · use API URL + KEY',
-  );
-  assert.equal(app.state.picker, picker);
-  assert.ok(!picker.asking);
-  // The URL on the list's own line, the saved one filled in; esc goes back to the ways in
-  const line = (): string => stripAnsi(app.state.picker!.rows(120)[1]!).trim();
-  picker.focus = 0;
-  await key('enter');
+  assert.equal(open()!.title, 'Sign in');
   assert.equal(app.state.dialog, undefined);
   assert.equal(
     line(),
-    'base url: https://gateway.example/v1/▏  enter continues · esc goes back',
+    'base url: https://gateway.example/v1/▏  enter continues · esc closes',
   );
+  assert.equal(row(2), 'now gateway.example/v1 · saved-model');
   await key('escape');
-  assert.equal(app.state.picker, picker);
-  assert.ok(!picker.asking);
-  await key('enter');
+  assert.equal(open(), undefined);
+  await app.submit('/login');
+  const picker = open()!;
   await key('ctrl+u');
   await typed('nonsense');
   await key('enter');
@@ -919,7 +903,7 @@ test("/login asks for the URL and the key on its list, lists the endpoint's mode
     picker.title,
     'Sign in · use an http(s) API base URL without credentials, query or fragment',
   );
-  assert.equal(line(), 'base url: nonsense▏  enter continues · esc goes back');
+  assert.equal(line(), 'base url: nonsense▏  enter continues · esc closes');
   await key('ctrl+u');
   ui.handle({ type: 'paste', text: base });
   await key('enter');
@@ -928,6 +912,12 @@ test("/login asks for the URL and the key on its list, lists the endpoint's mode
     line(),
     'api key (enter keeps the saved one): ▏  enter continues · esc goes back',
   );
+  // esc on the key goes back to the URL as it was given
+  await key('escape');
+  assert.equal(app.state.picker, picker);
+  assert.equal(picker.title, 'Sign in');
+  assert.equal(line(), `base url: ${base}▏  enter continues · esc closes`);
+  await key('enter');
   ui.handle({ type: 'paste', text: 'new-key' });
   assert.equal(
     line(),

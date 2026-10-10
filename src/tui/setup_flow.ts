@@ -62,7 +62,7 @@ export class SetupFlow {
   ) {
     try {
       const previous = loadSettings(home);
-      if (previous.initialized && previous.auth.mode === 'api_key') {
+      if (previous.initialized) {
         this.savedUrl = previous.auth.base_url;
         this.savedKey =
           loadCredentials(home)[previous.auth.api_key_ref || 'api_key'] || '';

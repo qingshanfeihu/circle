@@ -20,6 +20,7 @@ import {
   loadCredentials,
   applyProjectSettings,
   withoutProjectSettings,
+  isReady,
 } from '../src/settings.js';
 import { EventBus, getDefaultBus, withEventBus } from '../src/events.js';
 import {
@@ -76,6 +77,30 @@ test('settings preserve unknown keys, credentials merge, and project cannot repl
   assert.equal(withoutProjectSettings(settings, changed).theme, 'auto');
   settings.theme = 'dark';
   assert.equal(withoutProjectSettings(settings, changed).theme, 'dark');
+});
+test('the auth mode and OAuth provider an older release wrote are dropped; without a URL Circle is not set up', (t) => {
+  const root = scratch(t);
+  const path = join(root, 'settings.json');
+  writeFileSync(
+    path,
+    JSON.stringify({
+      initialized: true,
+      auth: { mode: 'oauth', oauth_provider: 'openai', model: 'gpt-x' },
+    }),
+  );
+  const settings = loadSettings(root);
+  assert.deepEqual(settings.auth, {
+    protocol: 'openai',
+    base_url: '',
+    model: 'gpt-x',
+    api_key_ref: 'api_key',
+  });
+  // Circle signs in only with an API URL and key
+  assert.equal(isReady(settings), false);
+  settings.auth.base_url = 'https://gateway.test/v1';
+  assert.equal(isReady(settings), true);
+  saveSettings(settings, root);
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).auth, settings.auth);
 });
 test('event subscribers are isolated and async bus identity stays scoped', async () => {
   const one = new EventBus('one');

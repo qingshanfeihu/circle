@@ -104,13 +104,11 @@ export class WelcomeState {
     if (model && (EFFORT_LEVELS as readonly string[]).includes(depth))
       model += ` • ${depth}`;
     let endpoint = '';
-    if (settings.auth.mode === 'oauth') endpoint = settings.auth.oauth_provider;
-    else
-      try {
-        endpoint = new URL(settings.auth.base_url).hostname;
-      } catch {
-        endpoint = settings.auth.base_url;
-      }
+    try {
+      endpoint = new URL(settings.auth.base_url).hostname;
+    } catch {
+      endpoint = settings.auth.base_url;
+    }
     return {
       version: input.version,
       model,

@@ -9,10 +9,6 @@ This page lists what does not work as you might expect in the current version, w
 - **Stopping commands on Windows has not been tried on a real machine.** `esc`, `ctrl+b`, a timeout, `/jobs` and leaving end a command with `taskkill /T /F`. Processes a command leaves running are not turned into a [background job](background-jobs.md) on Windows: Circle cannot see them.
 - **On Windows the model's commands run in `cmd.exe`**, not in bash. The approval rules recognise the common Windows delete, format and elevation commands, but they were written for a POSIX shell and are less tested against `cmd.exe` and PowerShell syntax. Read each command on the card.
 
-## Setup and sign-in
-
-- **OAuth sign-in is not available.** `/login` lists it as `not available yet`, and `/login anthropic|openai` says the same. Use an API URL and key. See [Choose a model](models.md#oauth).
-
 ## Sessions
 
 - **Going back with `/tree` does not undo file changes.** It changes what the model remembers, not your files.

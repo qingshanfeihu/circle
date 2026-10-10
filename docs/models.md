@@ -37,7 +37,7 @@ A model cannot be switched while a turn runs. The footer shows cost and context 
 
 ## Change the endpoint or the key
 
-Type `/login` in a session and choose **API URL + KEY**. It asks the same questions as setup, on the list's own line, with the saved URL filled in to keep or edit and an empty `enter` keeping the saved key. The session switches to the new model at once, and the connection is saved as with setup. `esc` leaves `/login`; nothing is saved before a model is given.
+Type `/login` in a session. It asks the same questions as setup, on its list's own line, with the saved URL filled in to keep or edit and an empty `enter` keeping the saved key. The session switches to the new model at once, and the connection is saved as with setup. `esc` on the key goes back to the URL; anywhere else it leaves `/login`. Nothing is saved before a model is given.
 
 Outside a session, `circle --init` runs the same setup. Both keep your other settings. See [CLI](cli.md#setting-up-again).
 
@@ -45,7 +45,7 @@ Outside a session, `circle --init` runs the same setup. Both keep your other set
 
 ## OAuth
 
-Setup lists only the API URL and key. `/login` lists **OAuth sign-in** marked `not available yet`, and it cannot be chosen; `/login anthropic` and `/login openai` say the same. Use an API URL and key.
+Circle signs in only with an API URL and key. It has no OAuth sign-in, so a ChatGPT, Claude or other subscription account cannot be used in place of a key.
 
 ## Thinking depth
 

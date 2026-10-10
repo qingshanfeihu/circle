@@ -1885,16 +1885,6 @@ export class SessionApp {
       return;
     }
     if (name === 'login') {
-      const provider = args.trim().toLowerCase();
-      if (provider) {
-        // OAuth is not implemented: there is nothing to sign in to.
-        this.fail(
-          ['anthropic', 'openai'].includes(provider)
-            ? `${provider} OAuth sign-in is not available yet · use API URL + KEY`
-            : `Unknown provider '${provider}' · choose anthropic, openai`,
-        );
-        return;
-      }
       this.login();
       return;
     }
@@ -1921,9 +1911,10 @@ export class SessionApp {
     }
     this.flash(`Unknown command /${name} · try /help`);
   }
-  // /login: how Circle reaches the model, then setup's questions asked in the list, the URL
-  // and the key (as dots) on its search line (0.5.0's _open_login_picker). Nothing is saved
-  // before a model is chosen; esc on a question goes back to the ways in, esc there leaves.
+  // /login: setup's questions asked in a list, the URL and the key (as dots) on its search
+  // line (0.5.0's _open_login_picker, without its first choice between an API key and OAuth:
+  // Circle signs in only with an API URL and key). Nothing is saved before a model is chosen;
+  // esc on the key goes back to the URL, esc on the URL leaves.
   private login(): void {
     const runtime = this.runtime!;
     const flow = new SetupFlow(this.home);
@@ -1933,7 +1924,6 @@ export class SessionApp {
     const leave = (): void => {
       if (this.loginFlow === flow) this.loginFlow = undefined;
     };
-    const steps = 'enter continues · esc goes back';
     const askUrl = (list: Picker, text: string): void => {
       list.title = title();
       list.ask(
@@ -1945,7 +1935,7 @@ export class SessionApp {
           if (flow.step === 'url') askUrl(list, typed);
           else askKey(list);
         },
-        { keys: steps },
+        { keys: 'enter continues · esc closes', cancel: () => list.close() },
       );
     };
     const askKey = (list: Picker): void => {
@@ -1958,50 +1948,31 @@ export class SessionApp {
           if (flow.step === 'key') askKey(list);
           else next();
         },
-        { mask: true, keys: steps },
+        {
+          mask: true,
+          keys: 'enter continues · esc goes back',
+          cancel: () => {
+            flow.restart();
+            askUrl(list, flow.baseUrl);
+          },
+        },
       );
     };
-    const methods = (): void => {
+    // The list the URL and the key are asked on; under them, what is in use now.
+    const ask = (): void => {
       const auth = this.settings.auth;
       const list = this.picker(
         title(),
-        [
-          {
-            key: 'api_key',
-            label: 'API URL + KEY',
-            current: auth.mode === 'api_key',
-          },
-          {
-            key: 'oauth',
-            label: 'OAuth sign-in',
-            current: auth.mode === 'oauth',
-            meta: 'not available yet',
-          },
-        ],
+        [],
         () => {},
         {
-          hint: !this.settings.initialized
-            ? 'not signed in'
-            : `now ${auth.mode === 'oauth' ? `oauth · ${auth.oauth_provider}` : `api key · ${endpointName(auth.base_url)}`} · ${auth.model}`,
-          focusKey: auth.mode === 'oauth' ? 'oauth' : 'api_key',
-          keys: {
-            // The list stays: the questions are asked on its search line
-            enter: (item) => {
-              if (!item) return;
-              if (item.key === 'oauth') {
-                this.flash(
-                  'OAuth sign-in is not available yet · use API URL + KEY',
-                  3000,
-                );
-                return;
-              }
-              flow.restart();
-              askUrl(list, flow.savedUrl);
-            },
-          },
+          empty: this.settings.initialized
+            ? `now ${endpointName(auth.base_url)} · ${auth.model}`
+            : 'not signed in',
         },
         leave,
       );
+      askUrl(list, flow.savedUrl);
     };
     // The list for the step the answers have reached; at the end, sign in with them.
     const next = (): void => {
@@ -2071,9 +2042,9 @@ export class SessionApp {
           },
           leave,
         );
-      } else methods();
+      } else ask();
     };
-    methods();
+    ask();
   }
   /** pbcopy, wl-copy or xclip (clip on Windows); false when none took the text. */
   private async copy(text: string): Promise<boolean> {

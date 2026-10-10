@@ -15,13 +15,13 @@ import {
   normalizeWorkspace,
 } from './paths.js';
 
+// Circle signs in only with an API URL and key. A `mode` or `oauth_provider` that older
+// releases wrote is dropped on load; the Python releases read a missing `mode` as `api_key`.
 export interface ModelAuth {
-  mode: string;
   protocol: string;
   base_url: string;
   model: string;
   api_key_ref: string;
-  oauth_provider: string;
 }
 export interface CircleSettings {
   version: number;
@@ -41,12 +41,10 @@ export interface CircleSettings {
   [key: string]: unknown;
 }
 export const defaultAuth = (): ModelAuth => ({
-  mode: 'api_key',
   protocol: 'openai',
   base_url: '',
   model: '',
   api_key_ref: 'api_key',
-  oauth_provider: '',
 });
 export const defaultSettings = (): CircleSettings => ({
   version: 1,
@@ -185,12 +183,7 @@ export function clearCredentials(home = circleHome()): string {
 export function isReady(settings: CircleSettings): boolean {
   return (
     settings.initialized &&
-    Boolean(
-      settings.auth.model &&
-      (settings.auth.mode === 'oauth'
-        ? settings.auth.oauth_provider
-        : settings.auth.base_url),
-    )
+    Boolean(settings.auth.model && settings.auth.base_url)
   );
 }
 export function isFolderTrusted(
