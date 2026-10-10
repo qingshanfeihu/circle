@@ -113,6 +113,7 @@ export function App() {
       await readNativeFile(runtime, path);
       setFile(path);
       setAgent(null);
+      if (narrow) setInspectorOpen(false);
       onSessionRoute();
     } catch (error) {
       notify(

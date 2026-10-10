@@ -23,6 +23,8 @@ The app loads packaged resources through `circle://workbench`. Node integration 
 
 User-selected folder reads use opaque handles. Exports use the native save dialog. The native browser has a separate sandboxed WebContents and a stable per-session identity; it has no workbench preload bridge. Remote permissions, popups, local-file navigation and downloads are restricted in this phase.
 
+Browser observations include image hash, source identity, time and retry details. The [capture API](https://www.electronjs.org/docs/latest/api/web-contents#contentscapturepagerect-options) supplies actual native images; empty or persistently unavailable frames remain errors. The browser's own inspector is a display container, while another active dialog hides the native view.
+
 These choices follow Electron's [security recommendations](https://www.electronjs.org/docs/latest/tutorial/security) and [WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view) API. The checks cover the implemented boundary, not a general security certification or third-party plugin sandbox.
 
 ## Plugins

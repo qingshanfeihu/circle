@@ -33,7 +33,22 @@ const page = await application.firstWindow();
 page.setDefaultTimeout(10000);
 const errors = [];
 observePage(page, errors);
+await page
+  .getByRole('heading', { name: 'Fix the reconnect race', exact: true })
+  .waitFor({ timeout: 30000 });
+if (process.env.CIRCLE_DESKTOP_CHECK_NARROW) {
+  await page.waitForURL(/^circle:\/\/workbench/);
+  await application.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].setContentSize(1024, 650),
+  );
+  await page.waitForFunction(() => innerWidth <= 1024 && innerHeight <= 650);
+  await page.reload();
+}
 const checks = [];
+const viewport = await page.evaluate(() => ({
+  width: innerWidth,
+  height: innerHeight,
+}));
 const sourceCommands = (await import('../../../src/tui/slash_commands.ts'))
   .BUILTIN_SLASH;
 const state = () =>
@@ -188,6 +203,14 @@ try {
   );
   checks.push('connection secret excluded from stored state');
   await reset();
+  if (
+    !(await page
+      .getByRole('button', { name: 'activity panel', exact: true })
+      .isVisible())
+  )
+    await page
+      .getByRole('button', { name: 'toggle inspector', exact: true })
+      .click();
   await page
     .getByRole('button', { name: 'activity panel', exact: true })
     .click();
@@ -288,6 +311,7 @@ try {
         sourceFiles: await sourceEvidence(),
         buildFiles: await rendererEvidence(root),
         commands: sourceCommands.length,
+        viewport,
         checks,
         errors,
         scope:

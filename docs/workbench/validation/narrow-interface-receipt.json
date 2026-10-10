@@ -1,12 +1,5 @@
 {
-  "testedAt": "2026-10-10T18:56:24.795Z",
-  "electron": "44.7.0",
-  "platform": "darwin",
-  "appPackaged": true,
-  "viewport": {
-    "width": 1440,
-    "height": 885
-  },
+  "testedAt": "2026-10-10T18:54:35.478Z",
   "sourceFiles": [
     {
       "path": "apps/desktop/package-lock.json",
@@ -311,42 +304,59 @@
       "sha256": "c9e7ac3c8cc08f2a922cc340e0eaa93dbcc849f4c1a807dbc9c2c4ccfcaeb6d8"
     }
   ],
-  "packagedAsarSha256": "4fde58a00cf623c26558727db536abf6b028cdf1166e2e1545ecc0e34d34455f",
+  "commands": 38,
+  "viewport": {
+    "width": 1024,
+    "height": 650
+  },
   "checks": [
-    "native application origin, isolated data and restricted renderer",
-    "native browser stays visible in its own inspector and hides under other dialogs",
-    "sandboxed native browser keeps one session identity across panel switches",
-    "native window in light and dark palettes",
-    "native host reads selected file into conversation",
-    "clipboard through restricted native IPC",
-    "native export writes selected destination and rejects invalid names",
-    "native workspace listing, scoped reading and denied unknown handles",
-    "native application menu dispatches into the session UI",
-    "all four platform plugins installed and independently toggled",
-    "platform pause intent does not fabricate remote stop",
-    "knowledge revision attaches to the selected Circle session",
-    "method loading leaves publication state unchanged",
-    "application restart preserves the conversation and pinned input"
+    "/help",
+    "/hotkeys",
+    "/login",
+    "/logout",
+    "/init",
+    "/trust",
+    "/settings",
+    "/themes",
+    "/mcp",
+    "/extensions",
+    "/approvals",
+    "/jobs",
+    "/new",
+    "/resume",
+    "/continue",
+    "/name",
+    "/session",
+    "/models",
+    "/compact",
+    "/plan",
+    "/skill",
+    "/tree",
+    "/fork",
+    "/clone",
+    "/undo",
+    "/redo",
+    "/thinking",
+    "/effort",
+    "/details",
+    "/copy",
+    "/export",
+    "/import",
+    "/share",
+    "/unshare",
+    "/editor",
+    "/reload",
+    "/yolo",
+    "/exit",
+    "plan folds in place without changing its records",
+    "draft persistence and separate queues",
+    "connection secret excluded from stored state",
+    "approval records do not fabricate execution success",
+    "viewing older knowledge keeps pinned context",
+    "platform plugins can be removed from the UI while retaining data",
+    "custom key binding invokes its configured action",
+    "native window resizing keeps a bounded layout"
   ],
   "errors": [],
-  "frameOrigin": "circle://workbench",
-  "isolation": {
-    "contextIsolation": true,
-    "nodeIntegration": false,
-    "sandbox": true,
-    "webSecurity": true
-  },
-  "browserIdentity": {
-    "id": 2,
-    "sandbox": true,
-    "nodeIntegration": false,
-    "contextIsolation": true
-  },
-  "browserCapture": {
-    "sha256": "f5538058bf69f98926817c1e2fe864a984318b4b496a673e3862fe21f615fc05",
-    "attempts": 1,
-    "retryErrors": []
-  },
-  "scope": "native frontend and isolated preview services; no Circle model or production service connected",
-  "exportSha256": "580aeec748ea6bc962395f42847cc1401841d30b4b34d33f74886ac46640f9bb"
+  "scope": "native desktop UI and local preview behavior; no model or external platform service"
 }

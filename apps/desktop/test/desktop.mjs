@@ -65,10 +65,25 @@ try {
   page.setDefaultTimeout(10000);
   observePage(page, errors);
   await page
+    .getByRole('heading', { name: 'Fix the reconnect race', exact: true })
+    .waitFor({ timeout: 30000 });
+  if (process.env.CIRCLE_DESKTOP_CHECK_NARROW) {
+    await page.waitForURL(/^circle:\/\/workbench/);
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1024, 650),
+    );
+    await page.waitForFunction(() => innerWidth <= 1024 && innerHeight <= 650);
+    await page.reload();
+  }
+  await page
     .getByRole('heading', { name: 'Fix the reconnect race' })
     .waitFor({ timeout: 30000 });
   assert.ok(page.url().startsWith('circle://workbench/index.html'));
   const info = await page.evaluate(() => window.circleDesktop.info());
+  const viewport = await page.evaluate(() => ({
+    width: innerWidth,
+    height: innerHeight,
+  }));
   assert.equal(info.kind, 'desktop');
   assert.equal(info.frontendOnly, true);
   assert.equal(info.runtimeConnected, false);
@@ -102,6 +117,14 @@ try {
   checks.push(
     'native application origin, isolated data and restricted renderer',
   );
+  if (
+    !(await page
+      .getByRole('button', { name: 'browser panel', exact: true })
+      .isVisible())
+  )
+    await page
+      .getByRole('button', { name: 'toggle inspector', exact: true })
+      .click();
   await page
     .getByRole('button', { name: 'browser panel', exact: true })
     .click();
@@ -119,12 +142,60 @@ try {
   const browserState = await page.evaluate(() =>
     window.circleDesktop.browserState('session1'),
   );
+  const browserIdentity = await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    const view = window.contentView.children.find(
+      (view) => view.webContents && view.webContents !== window.webContents,
+    );
+    const prefs = view.webContents.getLastWebPreferences();
+    return {
+      id: view.webContents.id,
+      sandbox: prefs.sandbox,
+      nodeIntegration: prefs.nodeIntegration,
+      contextIsolation: prefs.contextIsolation,
+      preload: prefs.preload,
+    };
+  });
+  assert.equal(browserIdentity.sandbox, true);
+  assert.equal(browserIdentity.nodeIntegration, false);
+  assert.equal(browserIdentity.contextIsolation, true);
+  assert.ok(!browserIdentity.preload);
   assert.equal(browserState.url, siteUrl + '/');
   const firstCapture = await page.evaluate(() =>
     window.circleDesktop.browserCapture('session1'),
   );
   assert.match(firstCapture.dataUrl, /^data:image\/png;base64,/);
   assert.equal(firstCapture.sha256.length, 64);
+  assert.ok(firstCapture.attempts >= 1 && firstCapture.attempts <= 3);
+  const png = Buffer.from(firstCapture.dataUrl.split(',')[1], 'base64');
+  assert.ok(png.readUInt32BE(16) > 0 && png.readUInt32BE(20) > 0);
+  const waitVisible = (expected) =>
+    app.evaluate(async ({ BrowserWindow }, expected) => {
+      for (let i = 0; i < 100; i++) {
+        const window = BrowserWindow.getAllWindows()[0];
+        const view = window.contentView.children.find(
+          (view) => view.webContents && view.webContents !== window.webContents,
+        );
+        if (view?.getVisible() === expected) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw Error('native browser visibility did not become ' + expected);
+    }, expected);
+  await waitVisible(true);
+  await app.evaluate(({ Menu }) =>
+    Menu.getApplicationMenu()
+      .items.find((item) => item.label === 'view')
+      .submenu.items.find((item) => item.label === 'session tree')
+      .click(),
+  );
+  const tree = page.getByRole('dialog', { name: 'session tree', exact: true });
+  await tree.waitFor();
+  await waitVisible(false);
+  await tree.getByRole('button', { name: 'close dialog', exact: true }).click();
+  await waitVisible(true);
+  checks.push(
+    'native browser stays visible in its own inspector and hides under other dialogs',
+  );
   await page.getByRole('button', { name: 'files panel', exact: true }).click();
   await page
     .getByRole('button', { name: 'browser panel', exact: true })
@@ -134,6 +205,15 @@ try {
     (await page.evaluate(() => window.circleDesktop.browserState('session1')))
       .sessionId,
     browserState.sessionId,
+  );
+  assert.equal(
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      return window.contentView.children.find(
+        (view) => view.webContents && view.webContents !== window.webContents,
+      ).webContents.id;
+    }),
+    browserIdentity.id,
   );
   await assert.rejects(
     () =>
@@ -155,6 +235,14 @@ try {
   await route('/session/session1');
   await page.screenshot({ path: join(output, 'desktop-dark.png') });
   checks.push('native window in light and dark palettes');
+  if (
+    await page
+      .getByRole('button', { name: 'close inspector', exact: true })
+      .isVisible()
+  )
+    await page
+      .getByRole('button', { name: 'close inspector', exact: true })
+      .click();
   await page.getByRole('button', { name: 'attach files', exact: true }).click();
   await page.getByRole('button', { name: 'note.md', exact: true }).waitFor();
   const attached = await page.evaluate(
@@ -202,6 +290,14 @@ try {
   await page
     .getByRole('heading', { name: 'new session', exact: true })
     .waitFor();
+  if (
+    !(await page
+      .getByRole('button', { name: 'files panel', exact: true })
+      .isVisible())
+  )
+    await page
+      .getByRole('button', { name: 'toggle inspector', exact: true })
+      .click();
   await page.getByRole('button', { name: 'hello.ts', exact: true }).click();
   await page
     .getByText('export const hello = "native workspace";', { exact: true })
@@ -346,6 +442,7 @@ try {
         electron: await app.evaluate(({ app }) => process.versions.electron),
         platform: process.platform,
         appPackaged: info.packaged,
+        viewport,
         sourceFiles: await sourceEvidence(),
         buildFiles: await rendererEvidence(root),
         packagedAsarSha256: process.env.CIRCLE_DESKTOP_APP_PATH
@@ -369,6 +466,12 @@ try {
         errors,
         frameOrigin: 'circle://workbench',
         isolation: preferences,
+        browserIdentity,
+        browserCapture: {
+          sha256: firstCapture.sha256,
+          attempts: firstCapture.attempts,
+          retryErrors: firstCapture.retryErrors,
+        },
         scope:
           'native frontend and isolated preview services; no Circle model or production service connected',
         exportSha256: createHash('sha256')

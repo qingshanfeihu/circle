@@ -10,7 +10,7 @@
     "start": "electron .",
     "dev": "npm run build && npm start",
     "package": "npm run build && node scripts/package.mjs",
-    "test": "node --test test/policy.test.ts",
+    "test": "node --test test/policy.test.ts test/capture.test.ts",
     "test:desktop": "node test/desktop.mjs",
     "format:check": "prettier --check src test scripts package.json tsconfig.json",
     "typecheck": "tsc --noEmit",

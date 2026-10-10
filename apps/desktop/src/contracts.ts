@@ -54,11 +54,7 @@ export interface DesktopBridge {
     visible: boolean,
   ) => Promise<BrowserState>;
   browserHide: (sessionId: string) => Promise<void>;
-  browserCapture: (
-    sessionId: string,
-  ) => Promise<
-    BrowserState & { dataUrl: string; sha256: string; observedAt: string }
-  >;
+  browserCapture: (sessionId: string) => Promise<BrowserCapture>;
   onAction: (listener: (action: DesktopAction) => void) => () => void;
 }
 
@@ -75,4 +71,11 @@ export interface BrowserState {
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+}
+export interface BrowserCapture extends BrowserState {
+  dataUrl: string;
+  sha256: string;
+  observedAt: string;
+  attempts: number;
+  retryErrors: string[];
 }

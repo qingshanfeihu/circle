@@ -3,18 +3,17 @@ import { Camera, Globe, ArrowUpRight } from 'lucide-react';
 import { desktopHost } from '../host';
 import { useRuntime } from '../app/context';
 import { currentSession } from '../model/state';
-import type { BrowserState } from '../../../desktop/src/contracts';
+import type {
+  BrowserState,
+  BrowserCapture,
+} from '../../../desktop/src/contracts';
 import { Button, IconButton, Status } from '../components/common';
 export function NativeBrowser() {
   const { snapshot, notify } = useRuntime();
   const id = currentSession(snapshot).id;
   const [url, setUrl] = useState('');
   const [state, setState] = useState<BrowserState | null>(null);
-  const [capture, setCapture] = useState<{
-    dataUrl: string;
-    sha256: string;
-    observedAt: string;
-  } | null>(null);
+  const [capture, setCapture] = useState<BrowserCapture | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const active = useRef(false);
   const host = desktopHost()!;
@@ -22,8 +21,14 @@ export function NativeBrowser() {
     const update = () => {
       const rect = viewport.current?.getBoundingClientRect();
       if (!rect || rect.width < 1 || rect.height < 1) return;
+      const ownDialog = viewport.current?.closest('[role="dialog"]');
+      const blockingDialog = [
+        ...document.querySelectorAll('[role="dialog"]'),
+      ].some((dialog) => !dialog.contains(viewport.current));
       const visible =
-        active.current && !document.querySelector('[role="dialog"]');
+        active.current &&
+        !blockingDialog &&
+        ownDialog?.getAttribute('data-state') !== 'closed';
       void host
         .browserBounds(
           id,
@@ -124,6 +129,9 @@ export function NativeBrowser() {
           />
           <code>{capture.sha256}</code>
           <p className="panel-note">{capture.observedAt}</p>
+          <pre className="code-block">
+            {JSON.stringify({ ...capture, dataUrl: undefined }, null, 2)}
+          </pre>
         </details>
       )}
       <p className="panel-note">

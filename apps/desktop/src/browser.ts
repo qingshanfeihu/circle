@@ -1,6 +1,7 @@
 import { BrowserWindow, WebContentsView } from 'electron';
 import { createHash } from 'node:crypto';
 import { safeExternalUrl } from './policy';
+import { captureFrame } from './capture';
 import type { BrowserState, BrowserBounds } from './contracts';
 /** One sandboxed native browser per Circle session; UI and future tools share its identity. */
 export class BrowserSessions {
@@ -100,13 +101,23 @@ export class BrowserSessions {
     const id = this.validId(idValue);
     const view = this.views.get(id);
     if (!view) throw Error('browser session not created');
-    const image = await view.webContents.capturePage();
+    const before = this.state(id);
+    const { image, attempts, retryErrors } = await captureFrame(() =>
+      view.webContents.capturePage(undefined, {
+        stayAwake: true,
+        stayHidden: !view.getVisible(),
+      }),
+    );
+    if (this.views.get(id) !== view || this.state(id).url !== before.url)
+      throw Error('browser changed during capture');
     const bytes = image.toPNG();
     return {
-      ...this.state(id),
+      ...before,
       dataUrl: image.toDataURL(),
       sha256: createHash('sha256').update(bytes).digest('hex'),
       observedAt: new Date().toISOString(),
+      attempts,
+      retryErrors,
     };
   }
   close() {

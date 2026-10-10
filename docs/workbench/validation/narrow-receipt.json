@@ -1,11 +1,11 @@
 {
-  "testedAt": "2026-10-10T18:56:24.795Z",
+  "testedAt": "2026-10-10T18:54:31.891Z",
   "electron": "44.7.0",
   "platform": "darwin",
-  "appPackaged": true,
+  "appPackaged": false,
   "viewport": {
-    "width": 1440,
-    "height": 885
+    "width": 1024,
+    "height": 650
   },
   "sourceFiles": [
     {
@@ -311,7 +311,7 @@
       "sha256": "c9e7ac3c8cc08f2a922cc340e0eaa93dbcc849f4c1a807dbc9c2c4ccfcaeb6d8"
     }
   ],
-  "packagedAsarSha256": "4fde58a00cf623c26558727db536abf6b028cdf1166e2e1545ecc0e34d34455f",
+  "packagedAsarSha256": null,
   "checks": [
     "native application origin, isolated data and restricted renderer",
     "native browser stays visible in its own inspector and hides under other dialogs",
@@ -343,7 +343,7 @@
     "contextIsolation": true
   },
   "browserCapture": {
-    "sha256": "f5538058bf69f98926817c1e2fe864a984318b4b496a673e3862fe21f615fc05",
+    "sha256": "746d66e3535ddd8dafa120ef8d25f47ca4017a51777ca331f67950f2b5c2b01f",
     "attempts": 1,
     "retryErrors": []
   },

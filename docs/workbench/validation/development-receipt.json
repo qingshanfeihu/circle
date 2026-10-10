@@ -1,8 +1,12 @@
 {
-  "testedAt": "2026-10-10T18:13:23.312Z",
+  "testedAt": "2026-10-10T18:56:18.951Z",
   "electron": "44.7.0",
   "platform": "darwin",
   "appPackaged": false,
+  "viewport": {
+    "width": 1440,
+    "height": 885
+  },
   "sourceFiles": [
     {
       "path": "apps/desktop/package-lock.json",
@@ -10,7 +14,7 @@
     },
     {
       "path": "apps/desktop/package.json",
-      "sha256": "8c9ba079c2189c82f5df907990f893ecf953482d60169e0be42145e2aa033e1e"
+      "sha256": "bc19ea07f48cebdb66c44e1cbaf3803d47cb4dc95ec9ccd59b3fd50e0e74b2de"
     },
     {
       "path": "apps/desktop/scripts/build.mjs",
@@ -26,11 +30,15 @@
     },
     {
       "path": "apps/desktop/src/browser.ts",
-      "sha256": "c8ffae30e5e9a625eae371ec3bf3a2061f0db79cf4d8ec759e64b5231168d3bb"
+      "sha256": "c58112fa5b3dc207df437b1818115e27abb262fccaa163e7b1c7099a853ff611"
+    },
+    {
+      "path": "apps/desktop/src/capture.ts",
+      "sha256": "7bba304541ff1d46de2b40beca20cc57c1182863d4926d22b5769ea6c55e5588"
     },
     {
       "path": "apps/desktop/src/contracts.ts",
-      "sha256": "2d1c10314b8908d6de079cbf5700cb1fc8f175c0b397f20540f4bea697c40ec2"
+      "sha256": "83e316472202317b9551d144ecd240237720318d1ee70a68214317f1f1d3b73d"
     },
     {
       "path": "apps/desktop/src/files.ts",
@@ -49,8 +57,16 @@
       "sha256": "191f1476b519c8ccaaf34c41c696e92fb20742d4494cac6d23636d324b9b44d4"
     },
     {
+      "path": "apps/desktop/test/capture.test.ts",
+      "sha256": "d55430b2f6ad39c500b65376f306edd8f9d3414e7d562c3a6b76d10aca57881c"
+    },
+    {
       "path": "apps/desktop/test/desktop.mjs",
-      "sha256": "5be0d6be76bb441986ca216636df954c289cc0a9b27150c0cc558bdd17ca7b06"
+      "sha256": "d1f5d58024128f6216f232b8e6763ff8cffed5cd4183480fb25c674bdf8f5299"
+    },
+    {
+      "path": "apps/desktop/test/helpers/diagnostics.mjs",
+      "sha256": "a1f0a9ca695c72d905d67f48e9e5de0b01840f8bcaf523ecaa0305ef43d52f27"
     },
     {
       "path": "apps/desktop/test/helpers/evidence.mjs",
@@ -58,7 +74,7 @@
     },
     {
       "path": "apps/desktop/test/interface.mjs",
-      "sha256": "40581e77797cc89c9644984d1d6e7ee2ee1d8ab085d1d77eb425bcb88fff12e2"
+      "sha256": "cffe8f6e1bec439e98cdd86548587091c81543d961e1102ed144855c35b1cfd4"
     },
     {
       "path": "apps/desktop/test/policy.test.ts",
@@ -82,7 +98,7 @@
     },
     {
       "path": "apps/workbench/src/app/App.tsx",
-      "sha256": "5912f33a3c0e97d9cad1ae941e8cb386a35b27a283782d1b4dc60e6c6fbba7c5"
+      "sha256": "44804ed00c97bead947c173cff6620096b4e4d8d34da0a3c6327d66fcc7834d6"
     },
     {
       "path": "apps/workbench/src/app/context.tsx",
@@ -122,7 +138,7 @@
     },
     {
       "path": "apps/workbench/src/features/NativeBrowser.tsx",
-      "sha256": "47d4e91b4aeae60ea2910e99cc37c8e230768acf1b7139d7052b688c587cf2d4"
+      "sha256": "7187dacc97c4b8c89c107733b94a4a7b00caee4d8e0a90f656037b8dabce48df"
     },
     {
       "path": "apps/workbench/src/features/Pages.tsx",
@@ -260,7 +276,7 @@
     },
     {
       "path": "main.cjs",
-      "sha256": "01b1c6c71ef4686f362269ad8bd6d2ed8612562a8f94752f8964170b4238c21e"
+      "sha256": "a6090e8fc722fe7a269e346cef84f55871fce7213299f9e33634ceb74db71a90"
     },
     {
       "path": "preload.cjs",
@@ -275,8 +291,8 @@
       "sha256": "5165a4914c1b625224a76cd4f5c7ab4eebfbeaf1318443e19de7bc5f7a71ec44"
     },
     {
-      "path": "renderer/assets/index-DcBAj5H1.js",
-      "sha256": "0866c6c191eeffc4c9acfa9d181b3ae7427e82aff1e2f7ef34c549d43f87628f"
+      "path": "renderer/assets/index-CO7gBbvY.js",
+      "sha256": "020a57bd730fa06f167ec8cc68e7bad1b9133c323ac8dc69202b8899c66b85c3"
     },
     {
       "path": "renderer/assets/markdown-B8KhlitW.js",
@@ -292,12 +308,13 @@
     },
     {
       "path": "renderer/index.html",
-      "sha256": "7d3372438055eb4816334ebc34263cb04fd372a6137424f485a1f9a8ce0aaf75"
+      "sha256": "c9e7ac3c8cc08f2a922cc340e0eaa93dbcc849f4c1a807dbc9c2c4ccfcaeb6d8"
     }
   ],
   "packagedAsarSha256": null,
   "checks": [
     "native application origin, isolated data and restricted renderer",
+    "native browser stays visible in its own inspector and hides under other dialogs",
     "sandboxed native browser keeps one session identity across panel switches",
     "native window in light and dark palettes",
     "native host reads selected file into conversation",
@@ -318,6 +335,17 @@
     "nodeIntegration": false,
     "sandbox": true,
     "webSecurity": true
+  },
+  "browserIdentity": {
+    "id": 2,
+    "sandbox": true,
+    "nodeIntegration": false,
+    "contextIsolation": true
+  },
+  "browserCapture": {
+    "sha256": "f5538058bf69f98926817c1e2fe864a984318b4b496a673e3862fe21f615fc05",
+    "attempts": 1,
+    "retryErrors": []
   },
   "scope": "native frontend and isolated preview services; no Circle model or production service connected",
   "exportSha256": "580aeec748ea6bc962395f42847cc1401841d30b4b34d33f74886ac46640f9bb"

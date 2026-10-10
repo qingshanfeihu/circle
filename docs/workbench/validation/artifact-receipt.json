@@ -1,5 +1,5 @@
 {
-  "builtAt": "2026-10-10T18:13:21.359Z",
+  "builtAt": "2026-10-10T18:50:05.462Z",
   "version": "0.1.0",
   "electron": "44.7.0",
   "platform": "darwin",
@@ -7,11 +7,11 @@
   "artifacts": [
     {
       "path": "Circle Workbench-darwin-arm64/Circle Workbench.app/Contents/Resources/app.asar",
-      "sha256": "23e2c02ec8700578e41a0172d35ff258555636ddcd7b74bbf48a0d2d4af832f7"
+      "sha256": "4fde58a00cf623c26558727db536abf6b028cdf1166e2e1545ecc0e34d34455f"
     },
     {
       "path": "Circle-Workbench-0.1.0-arm64.dmg",
-      "sha256": "c21c46562b9220b7f10f8ad6a07a927187887c1d9fc5c608220405c5ce2d09cb"
+      "sha256": "46148208d99013dd68269c18ea80d53dafe5148e17aa406d14fb04f9998c4f4d"
     }
   ]
 }
