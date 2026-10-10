@@ -93,3 +93,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) for coding agents
 ## License
 
 Circle is released under the [MIT License](LICENSE). The model catalogs in `src/data/` carry metadata from models.dev under its own MIT license; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Desktop workbench preview
+
+Circle also has a native desktop frontend under [apps/desktop](apps/desktop/README.md). It combines the conversation interface, session history, files and diffs, approvals, jobs, models and extensions in one application. Knowledge, long-running work, execution resources and methods are available as independently enabled component plugins.
+
+```bash
+npm --prefix apps/workbench ci
+npm --prefix apps/desktop ci
+npm --prefix apps/desktop run dev
+```
+
+The application loads bundled resources and has native menus, file/folder selection, clipboard, export and a sandboxed browser pane. This is the frontend preview: model execution and production platform services are not connected. See [coverage and limits](docs/workbench/coverage.md) and [desktop architecture](docs/workbench/architecture.md).

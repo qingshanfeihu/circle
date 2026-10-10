@@ -62,3 +62,13 @@ Several agents and people may work in this checkout at once.
 - Asset names must never match `circle-<os>-<arch>.tar.gz` or `.zip` without a version: that is what `circle update` in the Python releases looks for.
 - The data folder is shared with the Python releases. Keep `settings.json` and `credentials.json` readable by them, and never write values that were given for one run only (`-m`, `--thinking`) into `settings.json`.
 - `docs/development/port-inventory.json`, `baseline.json` and `upstream-updates.json` are working notes from the port, not proof that something matches.
+
+## Desktop workbench
+
+The graphical application lives in `apps/desktop`; `apps/workbench` is its shared renderer. Start the native app with `npm --prefix apps/desktop run dev`. The browser layout server is development tooling, not the application deliverable.
+
+This phase implements the desktop frontend and first-party B/C/D/E component plugins. The Circle model runtime and production platform services remain separate integration work. Native menus, user-selected files, clipboard, export and browser views are actual host operations; local preview requests do not prove model/tool execution or remote effects.
+
+Use `CIRCLE_WORKBENCH_DATA_DIR` and synthetic resources for native checks. Do not open real Circle user data. Keep the renderer sandboxed and the preload bridge restricted; workspace file access uses granted handles. Validate both the development app and the packaged app.
+
+Run the application package checks in addition to the CLI checks when changing these files. Do not tag a desktop release or install into Applications unless requested.
