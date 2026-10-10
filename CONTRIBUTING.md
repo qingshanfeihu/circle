@@ -1,6 +1,6 @@
 # Contributing to Circle
 
-Thanks for helping. This page is what you need to make a change that can be merged.
+Thanks for helping. This page is what you need to make a change that can be merged. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Before you start
 
@@ -73,3 +73,7 @@ One short imperative sentence in English, capitalised, with no prefix and no ful
 ## Security
 
 Do not open a public issue for a vulnerability. See [SECURITY.md](SECURITY.md).
+
+## License
+
+Circle is released under the [MIT License](LICENSE). By contributing, you agree that your contributions are released under it too.

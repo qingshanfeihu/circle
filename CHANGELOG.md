@@ -4,6 +4,10 @@ All notable changes to Circle are listed here, newest first. Circle follows [Sem
 
 ## Unreleased
 
+### Changed
+
+- **Circle is open source under the MIT License.** The release package carries `LICENSE` next to `README.md`.
+
 ## 1.0.4 - 2026-10-09
 
 ### Changed

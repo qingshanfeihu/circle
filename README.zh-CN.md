@@ -18,7 +18,7 @@
 
 Circle 在你指定的目录里读代码、改文件、跑命令。任何兼容 OpenAI 或 Anthropic 接口的服务或网关都能接。运行命令和改文件之前它会先问你，屏幕上一眼能看出它是在干活，还是在等你。
 
-**Circle 还很早（1.0.0）。** 没有操作系统级沙箱，OAuth 登录不可用。把它用在重要的东西上之前，请先读[已知问题](docs/known-issues.md)和[安全使用](docs/security.md)。文档目前只有英文版。
+**Circle 还很早。** 没有操作系统级沙箱，OAuth 登录不可用。把它用在重要的东西上之前，请先读[已知问题](docs/known-issues.md)和[安全使用](docs/security.md)。文档目前只有英文版。
 
 ## 安装
 
@@ -88,8 +88,8 @@ CIRCLE_HOME=$(mktemp -d) npm run dev -- ~/code/my-project
 
 推送代码不会自动发布新版本：推送 `v*` 标签时发布流程才会运行。见[发布](docs/development/releasing.md)。
 
-参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)，编程助手见 [AGENTS.md](AGENTS.md)，结构见[架构](docs/development/architecture.md)。安全问题按 [SECURITY.md](SECURITY.md) 报告。
+参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)，编程助手见 [AGENTS.md](AGENTS.md)，结构见[架构](docs/development/architecture.md)。安全问题按 [SECURITY.md](SECURITY.md) 报告。参与者请遵守[行为准则](CODE_OF_CONDUCT.md)。
 
 ## 许可
 
-尚未选择许可证。
+Circle 以 [MIT 许可证](LICENSE)发布。`src/data/` 里的模型目录含有来自 models.dev 的元数据，适用它自己的 MIT 许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

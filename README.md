@@ -18,7 +18,7 @@
 
 Circle reads and edits the code in a folder you choose, and runs commands there. It works with any service or gateway that speaks the OpenAI or Anthropic API. It asks before it runs a command or changes a file, and the screen shows at a glance whether it is working or waiting for you.
 
-**Circle is early software (1.0.0).** There is no operating-system sandbox and OAuth sign-in is not available. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
+**Circle is early software.** There is no operating-system sandbox and OAuth sign-in is not available. Read [Known issues](docs/known-issues.md) and [Run Circle safely](docs/security.md) before you point it at anything you care about.
 
 ## Install
 
@@ -88,8 +88,8 @@ CIRCLE_HOME=$(mktemp -d) npm run dev -- ~/code/my-project
 
 Code pushes do not publish a new version: the release workflow publishes when a `v*` tag is pushed. See [Releasing](docs/development/releasing.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) for coding agents, and the [architecture](docs/development/architecture.md). Report security problems as described in [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) for coding agents, and the [architecture](docs/development/architecture.md). Report security problems as described in [SECURITY.md](SECURITY.md). Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-No license has been chosen yet.
+Circle is released under the [MIT License](LICENSE). The model catalogs in `src/data/` carry metadata from models.dev under its own MIT license; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -4,7 +4,7 @@
 
 ## How it was checked
 
-- [ ] `python -m pytest -q` passes
+- [ ] `npm run check` and `npm run format:check` pass
 - [ ] Behaviour you can see in the terminal: tried it in a real `circle` session (say what you did)
 - [ ] User-facing change: the relevant page under `docs/` is updated
 
