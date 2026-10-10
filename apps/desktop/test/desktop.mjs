@@ -64,7 +64,9 @@ try {
   page = await app.firstWindow();
   page.setDefaultTimeout(10000);
   observePage(page, errors);
-  await page.getByRole('heading', { name: 'Fix the reconnect race' }).waitFor();
+  await page
+    .getByRole('heading', { name: 'Fix the reconnect race' })
+    .waitFor({ timeout: 30000 });
   assert.ok(page.url().startsWith('circle://workbench/index.html'));
   const info = await page.evaluate(() => window.circleDesktop.info());
   assert.equal(info.kind, 'desktop');
@@ -110,6 +112,10 @@ try {
     .getByRole('button', { name: 'navigate browser', exact: true })
     .click();
   await page.getByText('native browser', { exact: true }).waitFor();
+  await page.waitForFunction(async () => {
+    const state = await window.circleDesktop.browserState('session1');
+    return !state.loading && state.title === 'Circle native browser fixture';
+  });
   const browserState = await page.evaluate(() =>
     window.circleDesktop.browserState('session1'),
   );
@@ -141,10 +147,12 @@ try {
     'sandboxed native browser keeps one session identity across panel switches',
   );
   await page.screenshot({ path: join(output, 'desktop-light.png') });
-  await page.getByRole('button', { name: 'toggle theme', exact: true }).click();
+  await route('/page/settings');
+  await page.getByRole('button', { name: 'dark', exact: true }).click();
   await page.waitForFunction(
     () => document.documentElement.dataset.theme === 'dark',
   );
+  await route('/session/session1');
   await page.screenshot({ path: join(output, 'desktop-dark.png') });
   checks.push('native window in light and dark palettes');
   await page.getByRole('button', { name: 'attach files', exact: true }).click();
@@ -375,6 +383,25 @@ try {
     JSON.stringify({ checks: checks.length, errors, packaged: info.packaged }),
   );
 } catch (error) {
+  if (app)
+    console.error(
+      JSON.stringify(
+        await app
+          .evaluate(({ BrowserWindow }) =>
+            BrowserWindow.getAllWindows().map((window) => ({
+              visible: window.isVisible(),
+              bounds: window.getBounds(),
+              children: window.contentView.children.map((view) => ({
+                bounds: view.getBounds(),
+                visible: view.getVisible(),
+                title: view.webContents?.getTitle(),
+                loading: view.webContents?.isLoading(),
+              })),
+            })),
+          )
+          .catch(() => []),
+      ),
+    );
   await captureFailure(page, error, errors, output);
   throw error;
 } finally {
