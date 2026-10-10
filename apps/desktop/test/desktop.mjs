@@ -1,4 +1,5 @@
 import { sourceEvidence, rendererEvidence } from './helpers/evidence.mjs';
+import { observePage, captureFailure } from './helpers/diagnostics.mjs';
 import { createServer } from 'node:http';
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
@@ -62,7 +63,7 @@ try {
   });
   page = await app.firstWindow();
   page.setDefaultTimeout(10000);
-  page.on('pageerror', (error) => errors.push(error.message));
+  observePage(page, errors);
   await page.getByRole('heading', { name: 'Fix the reconnect race' }).waitFor();
   assert.ok(page.url().startsWith('circle://workbench/index.html'));
   const info = await page.evaluate(() => window.circleDesktop.info());
@@ -373,6 +374,9 @@ try {
   console.log(
     JSON.stringify({ checks: checks.length, errors, packaged: info.packaged }),
   );
+} catch (error) {
+  await captureFailure(page, error, errors, output);
+  throw error;
 } finally {
   if (app) {
     if (originalClipboard !== undefined)

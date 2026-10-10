@@ -41,6 +41,7 @@ jobs:
       - run: npm --prefix apps/desktop test
       - run: npm --prefix apps/desktop run build
       - run: npm --prefix apps/desktop run test:desktop
+      - run: cp apps/desktop/artifacts/desktop/receipt.json apps/desktop/artifacts/desktop/development-receipt.json
       - run: npm --prefix apps/desktop run test:interface
       - run: npm --prefix apps/desktop run package
       - name: Check the packaged application
@@ -50,7 +51,9 @@ jobs:
           export CIRCLE_DESKTOP_APP_PATH="$GITHUB_WORKSPACE/$app_path"
           export CIRCLE_DESKTOP_EXECUTABLE="$CIRCLE_DESKTOP_APP_PATH/Contents/MacOS/Circle Workbench"
           npm --prefix apps/desktop run test:desktop
+          cp apps/desktop/artifacts/desktop/receipt.json apps/desktop/artifacts/desktop/packaged-receipt.json
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
         with:
           name: circle-desktop-macos-development
           path: |

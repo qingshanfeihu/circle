@@ -1,4 +1,5 @@
 import { sourceEvidence, rendererEvidence } from './helpers/evidence.mjs';
+import { observePage, captureFailure } from './helpers/diagnostics.mjs';
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -31,7 +32,7 @@ const application = await electron.launch({
 const page = await application.firstWindow();
 page.setDefaultTimeout(10000);
 const errors = [];
-page.on('pageerror', (error) => errors.push(error.message));
+observePage(page, errors);
 const checks = [];
 const sourceCommands = (await import('../../../src/tui/slash_commands.ts'))
   .BUILTIN_SLASH;
@@ -303,6 +304,9 @@ try {
       errors,
     }),
   );
+} catch (error) {
+  await captureFailure(page, error, errors, output);
+  throw error;
 } finally {
   if (clipboard !== undefined)
     await application
