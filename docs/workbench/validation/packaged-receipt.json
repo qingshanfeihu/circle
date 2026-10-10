@@ -1,5 +1,5 @@
 {
-  "testedAt": "2026-10-10T18:56:24.795Z",
+  "testedAt": "2026-10-10T19:07:39.683Z",
   "electron": "44.7.0",
   "platform": "darwin",
   "appPackaged": true,
@@ -74,7 +74,7 @@
     },
     {
       "path": "apps/desktop/test/interface.mjs",
-      "sha256": "cffe8f6e1bec439e98cdd86548587091c81543d961e1102ed144855c35b1cfd4"
+      "sha256": "b24189cbde737e7b290f31ae341635b098aee012be3c3622fec3046df0b6de04"
     },
     {
       "path": "apps/desktop/test/policy.test.ts",
@@ -98,7 +98,7 @@
     },
     {
       "path": "apps/workbench/src/app/App.tsx",
-      "sha256": "44804ed00c97bead947c173cff6620096b4e4d8d34da0a3c6327d66fcc7834d6"
+      "sha256": "b87f404171a56c455e9b98d19f61efdf33bda877898d5d501ec7e925cc9ea31d"
     },
     {
       "path": "apps/workbench/src/app/context.tsx",
@@ -291,8 +291,8 @@
       "sha256": "5165a4914c1b625224a76cd4f5c7ab4eebfbeaf1318443e19de7bc5f7a71ec44"
     },
     {
-      "path": "renderer/assets/index-CO7gBbvY.js",
-      "sha256": "020a57bd730fa06f167ec8cc68e7bad1b9133c323ac8dc69202b8899c66b85c3"
+      "path": "renderer/assets/index-gPkAujmd.js",
+      "sha256": "944f76c392321d1037a8d353232cab078484b1d3daef6ff4e218e74b9ceb2d95"
     },
     {
       "path": "renderer/assets/markdown-B8KhlitW.js",
@@ -308,10 +308,10 @@
     },
     {
       "path": "renderer/index.html",
-      "sha256": "c9e7ac3c8cc08f2a922cc340e0eaa93dbcc849f4c1a807dbc9c2c4ccfcaeb6d8"
+      "sha256": "0099258a5021dd396e544e794259a0cc71dc618c6a05cd858032d2a88992dc07"
     }
   ],
-  "packagedAsarSha256": "4fde58a00cf623c26558727db536abf6b028cdf1166e2e1545ecc0e34d34455f",
+  "packagedAsarSha256": "91159fe120f1ada33285826d9859dfbc51fb16636be3cb53ec68fb59c939c17b",
   "checks": [
     "native application origin, isolated data and restricted renderer",
     "native browser stays visible in its own inspector and hides under other dialogs",

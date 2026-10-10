@@ -294,6 +294,9 @@ try {
     BrowserWindow.getAllWindows()[0].setContentSize(800, 650),
   );
   await page.waitForFunction(() => innerWidth <= 800);
+  await page
+    .getByRole('dialog', { name: 'inspector', exact: true })
+    .waitFor({ state: 'hidden' });
   await page.keyboard.press('Escape');
   assert.ok(
     await page.evaluate(

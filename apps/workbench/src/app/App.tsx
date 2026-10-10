@@ -80,6 +80,9 @@ export function App() {
   const narrow = useNarrow();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(!narrow);
+  useEffect(() => {
+    if (narrow) setInspectorOpen(false);
+  }, [narrow]);
   const [panel, setPanel] = useState<PanelId>('files');
   const [selection, setSelection] = useState('');
   const [terminalOpen, setTerminalOpen] = useState(false);
