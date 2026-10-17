@@ -24,6 +24,7 @@ import {
 } from '../src/workspace/operation-ledger.ts';
 import { WorkspaceDocuments } from '../src/workspace/documents.ts';
 import { UserShellPreflightError } from '../../../src/user_shell.ts';
+import { patience } from './helpers/patience.mjs';
 const exec = promisify(execFile);
 const paramsHash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
@@ -61,7 +62,7 @@ async function bytes(directory: string): Promise<Buffer[]> {
   return result;
 }
 async function until(check: () => Promise<boolean>) {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + patience(5000);
   while (!(await check())) {
     if (Date.now() > deadline) throw Error('effect did not settle');
     await new Promise((resolve) => setTimeout(resolve, 10));

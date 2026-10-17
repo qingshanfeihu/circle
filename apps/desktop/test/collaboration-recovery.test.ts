@@ -11,6 +11,7 @@ import {
 } from '../src/workspace/collaboration.js';
 import { TaskStore } from '../src/workspace/task-store.js';
 import { cleanup, scratch } from '../../../tests/helpers.js';
+import { patience } from './helpers/patience.mjs';
 const exec = promisify(execFile);
 async function repository(path: string) {
   const git = (...args: string[]) => exec('git', ['-C', path, ...args]);
@@ -49,7 +50,7 @@ function gate() {
   return { promise, resolve };
 }
 async function until(check: () => boolean) {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + patience(5000);
   while (!check()) {
     if (Date.now() > deadline) throw Error('recovery fixture did not settle');
     await delay(5);

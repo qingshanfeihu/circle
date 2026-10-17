@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { patience } from './patience.mjs';
 export const interactionFile = 'editor-keyboard-interactions.ts';
 export const interactionSource =
   'const referenceTarget = 1;\nconsole.log(referenceTarget);\nexport {};\n';
@@ -17,7 +18,7 @@ export async function runNativeEditorInteractions({ page, workspace, output }) {
   const disk = () => readFile(join(workspace, interactionFile), 'utf8');
   const observed = {};
   const until = async (predicate, label) => {
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + patience(15000);
     while (Date.now() < deadline) {
       if (await predicate()) return;
       await page.waitForTimeout(30);

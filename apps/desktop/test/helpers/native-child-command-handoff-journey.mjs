@@ -1,4 +1,4 @@
-import { runsUnder } from './process-tree.mjs';
+import { commandLineOf, runsUnder } from './process-tree.mjs';
 import assert from 'node:assert/strict';
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -138,15 +138,9 @@ export async function createNativeChildCommandHandoffFixture(
 }
 const save = (output, name, value) =>
   writeFile(join(output, name), JSON.stringify(value, null, 2));
-const gone = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    if (error.code === 'ESRCH') return true;
-    throw error;
-  }
-};
+// Windows soon gives a finished process's id to a new process, so a live id
+// is the old child only while that process still runs the fixture's script.
+const gone = async (pid) => !(await commandLineOf(pid))?.includes(files.source);
 const optionalRead = (workspace, file) =>
   readFile(join(workspace, file), 'utf8').catch((error) => {
     if (error.code === 'ENOENT') return '';
@@ -418,7 +412,7 @@ export async function runNativeChildCommandHandoffJourney({
       return (
         result.available &&
         end &&
-        gone(pid) &&
+        (await gone(pid)) &&
         end.managedCommand.completion.rootExit &&
         end.managedCommand.completion.controlledGroupEmpty &&
         end.managedCommand.completion.transportAndLogClosed
@@ -572,7 +566,7 @@ export async function runNativeChildCommandAfterRestart({
   };
   const returnDraft = await composer(page).inputValue();
   try {
-    assert(gone(previous.pid), 'the original child process remains gone');
+    assert(await gone(previous.pid), 'the original child process remains gone');
     await selectParent(page, previous.ownerId, state, until);
     assert.equal(await composer(page).inputValue(), previous.parentDraft);
     const opened = await openAgent(
@@ -657,7 +651,7 @@ export async function runNativeChildCommandAfterRestart({
       await optionalRead(previous.childWorktree, previous.paths.input),
       childCommandInput,
     );
-    assert(gone(previous.pid));
+    assert(await gone(previous.pid));
     assert(
       !(await state()).jobs.some(
         (job) =>

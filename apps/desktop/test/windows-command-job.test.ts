@@ -7,6 +7,7 @@ import {
   loadWindowsJobApi,
   type WindowsJobApi,
 } from '../src/workspace/windows-command-job.ts';
+import { patience } from './helpers/patience.mjs';
 
 function fake(overrides: Partial<WindowsJobApi> = {}) {
   const calls: string[] = [];
@@ -139,7 +140,7 @@ test(
     await new Promise<void>((resolve) =>
       child.once('message', () => resolve()),
     );
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + patience(5000);
     while (job.members().length < 2 && Date.now() < deadline) await delay(10);
     assert.equal(
       job.members().length,

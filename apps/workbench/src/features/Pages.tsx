@@ -1719,10 +1719,11 @@ function SettingsPage({ onDialog }: { onDialog: Props['onDialog'] }) {
         <h2>{t('appearance')}</h2>
         <div className="setting-row">
           <span>{t('theme')}</span>
-          <div className="segmented">
+          <div className="segmented" role="group" aria-label={t('theme')}>
             {(['auto', 'light', 'dark'] as const).map((theme) => (
               <button
                 key={theme}
+                aria-pressed={settings.theme === theme}
                 className={settings.theme === theme ? 'active' : ''}
                 onClick={() =>
                   save((value) => {

@@ -41,6 +41,7 @@ import { syncBuiltinESMExports } from 'node:module';import assert from 'node:ass
   const args = runtimeTestArguments(tsx, files, { ci: true });
   assert.deepEqual(args.slice(-3), files);
   assert.ok(args.includes('--test-concurrency=2'));
+  assert.ok(args.includes('--test-timeout=240000'));
   let output = '';
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
@@ -73,6 +74,12 @@ import { syncBuiltinESMExports } from 'node:module';import assert from 'node:ass
   assert.equal(live.size, 0);
   assert.equal(
     runtimeTestArguments(tsx, files).includes('--test-reporter=tap'),
+    false,
+  );
+  assert.equal(
+    runtimeTestArguments(tsx, files).some((arg) =>
+      arg.startsWith('--test-timeout'),
+    ),
     false,
   );
 });
@@ -164,18 +171,22 @@ import { syncBuiltinESMExports } from 'node:module';import assert from 'node:ass
     { event: 'start', id: 1 },
     { event: 'end', id: 1 },
   ]);
+  // On CI only the failing test runs a second time; it fails again.
   for (const id of [0, 1, 2]) {
     assert.equal(
       entries.filter((entry) => entry.id === id && entry.event === 'start')
         .length,
-      1,
+      id === 1 ? 2 : 1,
     );
     assert.equal(
       entries.filter((entry) => entry.id === id && entry.event === 'end')
         .length,
-      1,
+      id === 1 ? 2 : 1,
     );
   }
+  assert.equal(result.receipts[0]!.attempts.length, 2);
+  assert.equal(result.receipts[0]!.flaky, undefined);
+  assert.equal(result.receipts[1]!.attempts.length, 1);
   assert.equal(
     JSON.parse(
       await readFile(
@@ -252,4 +263,57 @@ test('stage receipts flush a writable descriptor before rename under Windows-sty
     flush.mock.restore();
     syncBuiltinESMExports();
   }
+});
+
+test('on CI a test that fails once runs again alone, and the stage passes as flaky', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'circle-runtime-rerun-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const runs = join(directory, 'runs.jsonl');
+  const file = join(directory, 'rerun.test.mjs');
+  await writeFile(
+    file,
+    `import test from 'node:test';import {appendFileSync,existsSync,writeFileSync} from 'node:fs';
+const log=name=>appendFileSync(${JSON.stringify(runs)},name+'\\n');
+test('steady',()=>log('steady'));
+test('flaky',()=>{log('flaky');const mark=${JSON.stringify(join(directory, 'failed-once'))};if(!existsSync(mark)){writeFileSync(mark,'');throw Error('first attempt fails');}});`,
+  );
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const ci = runRuntimeTestGroups({
+    executable: process.execPath,
+    tsxPath: tsx,
+    groups: [{ name: 'all', files: [file] }],
+    env,
+    ci: true,
+    receiptDirectory: join(directory, 'ci'),
+    stdio: 'pipe',
+  });
+  assert.equal(ci.exitCode, 0);
+  assert.equal(ci.receipts[0]!.flaky, true);
+  assert.deepEqual(
+    ci.receipts[0]!.attempts.map((attempt) => attempt.exitCode),
+    [1, 0],
+  );
+  assert.deepEqual((await readFile(runs, 'utf8')).trim().split('\n'), [
+    'steady',
+    'flaky',
+    'flaky',
+  ]);
+  // Outside CI nothing runs twice.
+  await rm(join(directory, 'failed-once'));
+  await rm(runs);
+  const local = runRuntimeTestGroups({
+    executable: process.execPath,
+    tsxPath: tsx,
+    groups: [{ name: 'all', files: [file] }],
+    env,
+    receiptDirectory: join(directory, 'local'),
+    stdio: 'pipe',
+  });
+  assert.equal(local.exitCode, 1);
+  assert.equal(local.receipts[0]!.attempts.length, 1);
+  assert.deepEqual((await readFile(runs, 'utf8')).trim().split('\n'), [
+    'steady',
+    'flaky',
+  ]);
 });

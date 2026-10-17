@@ -51,5 +51,8 @@
   },
   "allowScripts": {
     "fsevents": true
+  },
+  "overrides": {
+    "dompurify": "3.4.16"
   }
 }

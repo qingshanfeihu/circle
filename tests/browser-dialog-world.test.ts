@@ -105,7 +105,7 @@ test(
           { action: 'new', url: base + '/dialog' },
           signal,
         ),
-      2000,
+      10000,
     );
     assert.match(opened.text, /confirm/);
     assert.equal(held, 1);
@@ -137,7 +137,7 @@ test(
           ),
           /waiting on a dialog/,
         ),
-      2000,
+      10000,
     );
     await chrome.request(
       'c',

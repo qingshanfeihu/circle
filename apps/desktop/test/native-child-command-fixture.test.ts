@@ -39,6 +39,7 @@ import type {
   TerminalSnapshot,
   TerminalReplay,
 } from '../src/workspace/terminal.ts';
+import { patience } from './helpers/patience.mjs';
 interface Fixture {
   files: string[];
   source: string;
@@ -63,7 +64,7 @@ const gone = (pid: number) => {
   }
 };
 async function until(check: () => boolean | Promise<boolean>, label: string) {
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + patience(8000);
   while (!(await check())) {
     if (Date.now() > deadline) throw Error('native child fixture: ' + label);
     await delay(10);

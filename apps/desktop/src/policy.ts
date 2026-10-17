@@ -1,4 +1,4 @@
-import { resolve, relative, isAbsolute } from 'node:path';
+import { resolve, relative, isAbsolute, extname } from 'node:path';
 export const APP_ORIGIN = 'circle://workbench';
 export const MAX_FILE_BYTES = 4_000_000;
 // Pictures and PDFs go to the model whole, as the core takes them
@@ -16,6 +16,27 @@ export function trustedAppUrl(value: string) {
   } catch {
     return false;
   }
+}
+// The media types of the window's own files. A module script, a worker and a
+// stylesheet are refused under any other type.
+const ASSET_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.ttf': 'font/ttf',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm',
+};
+export function assetType(path: string): string {
+  return ASSET_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream';
 }
 export function assetPath(root: string, value: string) {
   const url = new URL(value);

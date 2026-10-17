@@ -30,6 +30,7 @@ import {
   saveSettingsChange,
 } from '../../../src/settings.ts';
 import type { WorkspaceServiceEvent } from '../src/workspace-protocol.ts';
+import { patience } from './helpers/patience.mjs';
 
 // Windows refuses to rename a folder while anything holds a handle in it, such
 // as a watcher that is closing or a virus scan, so retry for a short while.
@@ -51,7 +52,7 @@ const assistant = (content: string, calls?: any[]) => ({
   tool_calls: calls,
 });
 async function wait(check: () => boolean) {
-  const until = Date.now() + 8000;
+  const until = Date.now() + patience(8000);
   while (!check()) {
     if (Date.now() > until) throw Error('fixture timed out');
     await delay(10);
@@ -1177,7 +1178,7 @@ test('controller task verification executes a pinned project oracle in an isolat
   );
   assert.equal(started.ok, true, started.error);
   let task: any;
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + patience(15000);
   while (Date.now() < deadline) {
     for (const interaction of f.controller
       .snapshot()
@@ -1603,8 +1604,8 @@ if(process.argv[2]==='--ipc'){
     }
     // A wall-clock bound for the whole scenario, not a product target. Two real
     // cycles take about 6 s on Apple silicon; the work is CPU-bound and the
-    // Intel macOS runner needed 33 s, so the bound leaves room for that runner.
-    const end = Date.now() + 60000;
+    // Intel macOS runner needed 33 s and once more than 60 s, so the bound leaves room for that runner.
+    const end = Date.now() + 150000;
     const final = new Map<string, any>();
     const observedAt = new Map<string, number>();
     const timeline: unknown[] = [];

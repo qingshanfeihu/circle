@@ -53,9 +53,10 @@ import type {
   RuntimeCommandName,
   RuntimeUpdate,
 } from '../src/runtime-protocol.ts';
+import { patience } from './helpers/patience.mjs';
 
 async function wait(check: () => boolean, description: string) {
-  const end = Date.now() + 8000;
+  const end = Date.now() + patience(8000);
   while (!check()) {
     if (Date.now() > end) throw Error(`timed out: ${description}`);
     await delay(10);
@@ -5681,7 +5682,7 @@ test('cold start reports a discovery failure and an explicit reload can recover 
 
 test(
   'closing cold start cancels an MCP transport waiting for headers without hiding the first frame or leaking its socket',
-  { timeout: 5000 },
+  { timeout: patience(5000) },
   async (t) => {
     const sockets = new Set<Socket>();
     let requested!: () => void;
@@ -5727,7 +5728,7 @@ test(
 
 test(
   'closing cold start aborts an async extension registration and never installs its closed host',
-  { timeout: 5000 },
+  { timeout: patience(5000) },
   async (t) => {
     const f = await coldStartFixture(t, 'scratch', async (home) => {
       const folder = join(home, 'extensions', 'waiting');
@@ -5766,7 +5767,7 @@ test(
 for (const mode of ['released', 'bounded'] as const)
   test(
     `closing cold start owns a late hub token read through ${mode} drain without recreating data or publishing`,
-    { timeout: 8000 },
+    { timeout: patience(8000) },
     async (t) => {
       let release!: () => void;
       const barrier = new Promise<void>((resolve) => {

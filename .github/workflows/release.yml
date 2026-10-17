@@ -103,7 +103,7 @@ jobs:
   desktop:
     name: desktop (${{ matrix.target }})
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

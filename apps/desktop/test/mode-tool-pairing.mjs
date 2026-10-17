@@ -17,6 +17,7 @@ import {
   pairingRows,
 } from '../../../tests/tool-pairing-fixture.ts';
 import { waitDesktopReady } from './helpers/desktop-readiness.mjs';
+import { patience } from './helpers/patience.mjs';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url))),
   require = createRequire(import.meta.url);
 const output = resolve(
@@ -82,7 +83,7 @@ for (const protocol of ['anthropic', 'openai']) {
       timeout: 45000,
     });
     page = await app.firstWindow();
-    page.setDefaultTimeout(15000);
+    page.setDefaultTimeout(patience(15000));
     page.on('pageerror', (e) => errors.push(String(e)));
     await page.waitForFunction(() => Boolean(window.circleDesktop));
   };

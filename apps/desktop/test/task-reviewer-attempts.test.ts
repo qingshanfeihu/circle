@@ -17,7 +17,8 @@ const git = (path: string, ...args: string[]) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8' }).trim();
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 async function until(check: () => boolean) {
-  const deadline = Date.now() + 10000;
+  // Worktrees and Git are slow on Windows and Intel macOS runners.
+  const deadline = Date.now() + 30000;
   while (!check()) {
     if (Date.now() > deadline) throw Error('reviewer fixture did not settle');
     await delay(5);

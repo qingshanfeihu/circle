@@ -137,6 +137,23 @@ export async function captureNativeFailure(page, error, events, output) {
       probe('dom', () =>
         page.evaluate(() => ({
           readyState: document.readyState,
+          // How far the window's own start-up got (main.tsx), and which of
+          // its files loaded: a file named below but not loaded is pending.
+          boot: document.documentElement.dataset.boot ?? null,
+          files: [
+            ...Array.from(document.scripts, (node) => node.src),
+            ...Array.from(
+              document.querySelectorAll('link[href]'),
+              (node) => node.href,
+            ),
+          ]
+            .filter(Boolean)
+            .map((url) => url.split('/').pop())
+            .slice(0, 20),
+          loaded: performance
+            .getEntriesByType('resource')
+            .slice(0, 40)
+            .map((entry) => entry.name.split('/').pop()),
           rootChildren:
             document.getElementById('root')?.childElementCount ?? null,
           dialogs: document.querySelectorAll('[role="dialog"]').length,

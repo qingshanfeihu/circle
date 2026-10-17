@@ -13,6 +13,7 @@ import {
   saveSettings,
   trustFolder,
 } from '../../../src/settings.ts';
+import { patience } from './helpers/patience.mjs';
 
 test('one snapshot reads each root tree once while preserving branch selection, labels and real tool history across later appends', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'circle-snapshot-tree-'));
@@ -118,7 +119,7 @@ test('one snapshot reads each root tree once while preserving branch selection, 
       payload: { text: 'continue selected branch' },
     });
     assert.equal(reply.ok, true, reply.error);
-    const deadline = Date.now() + 8000;
+    const deadline = Date.now() + patience(8000);
     while (
       !store.messages('history').some((m) => m.id === 'actual-fresh-response')
     ) {

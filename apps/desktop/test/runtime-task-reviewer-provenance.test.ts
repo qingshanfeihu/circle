@@ -33,13 +33,14 @@ import type {
   RuntimeUpdate,
 } from '../src/runtime-protocol';
 import { TaskStore, type TaskRecord } from '../src/workspace/task-store';
+import { patience } from './helpers/patience.mjs';
 
 const assistant = (
   content: string,
   tool_calls?: Message['tool_calls'],
 ): Message => ({ id: randomUUID(), role: 'assistant', content, tool_calls });
 async function until(check: () => boolean | Promise<boolean>) {
-  const until = Date.now() + 8000;
+  const until = Date.now() + patience(8000);
   while (!(await check())) {
     if (Date.now() > until) throw Error('reviewer fixture timed out');
     await delay(10);

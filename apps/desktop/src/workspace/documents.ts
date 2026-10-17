@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   constants,
   realpathSync,
@@ -100,6 +101,10 @@ export interface WorkspaceDocumentsOptions {
   maxDepth?: number;
   ignoredDirectories?: string[];
 }
+
+const TORN_READ_ATTEMPTS = 5;
+const TORN_READ_PAUSE_MS = 20;
+export class TornReadError extends Error {}
 
 export class DocumentConflictError extends Error {
   readonly code = 'DOCUMENT_CONFLICT';
@@ -293,7 +298,56 @@ export class WorkspaceDocuments {
     return id;
   }
 
+  // What a save just put on disk. Another program can write the file between
+  // our rename and this read. Reporting its version as ours would let the
+  // editor take that write for the saved file and overwrite it on the next
+  // save. Then describe our own write with a revision no read can produce: the
+  // next read shows the change, and a save before it meets a conflict.
+  private async readWritten(
+    full: string,
+    path: string,
+    content: string,
+  ): Promise<WorkspaceDocument> {
+    const written = decode.decode(Buffer.from(content, 'utf8'));
+    try {
+      const document = await this.readTarget(full, path);
+      if (document.content === written) return document;
+    } catch (error) {
+      if (!(error instanceof TornReadError)) throw error;
+    }
+    return {
+      id: this.identity(path),
+      path,
+      content: written,
+      revision: createHash('sha256')
+        .update(`overwritten:${randomUUID()}:`)
+        .update(written)
+        .digest('hex'),
+      mtime: Date.now(),
+      size: Buffer.byteLength(written, 'utf8'),
+    };
+  }
+
+  // A file written while it is read (by the agent, a formatter or Git) gives a
+  // torn read. Read it again a few times before telling the person, since the
+  // next read normally sees the whole new file.
   private async readTarget(
+    full: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceDocument> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.readTargetOnce(full, path, signal);
+      } catch (error) {
+        if (!(error instanceof TornReadError) || attempt >= TORN_READ_ATTEMPTS)
+          throw error;
+        await delay(TORN_READ_PAUSE_MS * attempt, undefined, { signal });
+      }
+    }
+  }
+
+  private async readTargetOnce(
     full: string,
     path: string,
     signal?: AbortSignal,
@@ -319,7 +373,9 @@ export class WorkspaceDocuments {
         before.ctimeNs !== after.ctimeNs ||
         before.size !== after.size
       )
-        throw Error(`file changed while reading: ${path}; read it again`);
+        throw new TornReadError(
+          `file changed while reading: ${path}; read it again`,
+        );
       const content = decode.decode(bytes);
       if (content.includes('\0'))
         throw Error('binary files cannot be edited as text');
@@ -454,7 +510,7 @@ export class WorkspaceDocuments {
         await this.check(edit, options.signal);
         options.signal?.throwIfAborted();
         await rename(staged.temporary, staged.full);
-        return await this.readTarget(staged.full, path);
+        return await this.readWritten(staged.full, path, content);
       } finally {
         await rm(staged.temporary, { force: true });
       }
@@ -510,7 +566,13 @@ export class WorkspaceDocuments {
           committedPaths.push(edit.path);
           // Once replacement happened, report it even if cancellation arrives.
           if (edit.content !== null)
-            applied.push(await this.readTarget(staged[index]!.full, edit.path));
+            applied.push(
+              await this.readWritten(
+                staged[index]!.full,
+                edit.path,
+                edit.content,
+              ),
+            );
         }
         result = {
           status: 'applied',

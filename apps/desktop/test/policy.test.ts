@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   assetPath,
+  assetType,
   boundedText,
   safeExternalUrl,
   trustedAppUrl,
@@ -220,4 +221,27 @@ test('chosen pictures and PDFs go whole up to 20 MB, other files up to 4 MB', as
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('the window serves its own files under the types a module, worker and stylesheet need', () => {
+  assert.equal(
+    assetType('/r/assets/index-abc.js'),
+    'text/javascript; charset=utf-8',
+  );
+  assert.equal(
+    assetType('/r/assets/editor.worker-abc.js'),
+    'text/javascript; charset=utf-8',
+  );
+  assert.equal(assetType('/r/index.html'), 'text/html; charset=utf-8');
+  assert.equal(assetType('/r/assets/index-abc.css'), 'text/css; charset=utf-8');
+  assert.equal(assetType('/r/assets/codicon-abc.ttf'), 'font/ttf');
+  assert.equal(
+    assetType('/r/assets/index-abc.js.map'),
+    'application/json; charset=utf-8',
+  );
+  assert.equal(
+    assetType('/r/ASSETS/LOUD.JS'),
+    'text/javascript; charset=utf-8',
+  );
+  assert.equal(assetType('/r/assets/unknown.bin'), 'application/octet-stream');
 });

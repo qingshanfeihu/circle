@@ -13,5 +13,7 @@ export default defineConfig({
     ['list'],
     ['html', { outputFolder: '../../artifacts/visual/report', open: 'never' }],
   ],
-  expect: { toMatchSnapshot: { threshold: 0.1, maxDiffPixels: 0 } },
+  // Text anti-aliasing differs by up to about a hundred pixels between two runs
+  // on the same runner; a moved or restyled control changes far more than this.
+  expect: { toMatchSnapshot: { threshold: 0.1, maxDiffPixelRatio: 0.0005 } },
 });

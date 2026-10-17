@@ -23,12 +23,11 @@ import {
   safeStorage,
 } from 'electron';
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import originalFs from 'original-fs';
 import { join, dirname, basename } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { WorkspaceGrants, nativeFile } from './files';
 import { selectedFolder } from './folder-dialog';
 import { attention } from './attention';
@@ -40,6 +39,7 @@ import {
 } from './native-text';
 import {
   assetPath,
+  assetType,
   boundedText,
   MAX_EXPORT_BYTES,
   MAX_FILE_BYTES,
@@ -510,20 +510,21 @@ app
       } catch (error) {
         process.stderr.write('circle: no dock icon: ' + String(error) + '\n');
       }
+    // The window's own files, read whole by Node, which also reads them from
+    // the application archive, rather than streamed through Chromium's file
+    // loader: the window's start must never wait on a stream of its files.
     protocol.handle('circle', async (request) => {
       try {
         const path = assetPath(rendererRoot, request.url);
         if (!(await stat(path)).isFile())
           return new Response('not found', { status: 404 });
-        const response = await net.fetch(pathToFileURL(path).href);
-        const headers = new Headers(response.headers);
-        headers.set(
-          'Content-Security-Policy',
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'",
-        );
-        return new Response(response.body, {
-          status: response.status,
-          headers,
+        return new Response(await readFile(path), {
+          status: 200,
+          headers: {
+            'Content-Type': assetType(path),
+            'Content-Security-Policy':
+              "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'",
+          },
         });
       } catch {
         return new Response('not found', { status: 404 });

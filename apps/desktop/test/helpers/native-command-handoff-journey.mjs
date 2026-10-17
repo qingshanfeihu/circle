@@ -209,6 +209,8 @@ export async function runNativeCommandHandoffJourney({
     const textarea = surface.locator(
       '.xterm-helper-textarea:visible:not([readonly])',
     );
+    // The command's input opens once its capabilities arrive.
+    await textarea.first().waitFor();
     assert.equal(
       await textarea.count(),
       1,

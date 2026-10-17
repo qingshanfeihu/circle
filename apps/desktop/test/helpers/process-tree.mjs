@@ -33,3 +33,27 @@ export async function runsUnder(pid, root, depth = 4) {
   }
   return false;
 }
+
+/** The command line of the process that has `pid` now, or undefined if none has. */
+export async function commandLineOf(pid) {
+  if (process.platform === 'win32') {
+    const { stdout } = await run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`,
+      ],
+      { windowsHide: true },
+    );
+    return stdout.trim() || undefined;
+  }
+  try {
+    const { stdout } = await run('ps', ['-o', 'command=', '-p', String(pid)]);
+    return stdout.trim() || undefined;
+  } catch (error) {
+    // ps exits 1 when no process has the id.
+    if (error.code === 1) return undefined;
+    throw error;
+  }
+}

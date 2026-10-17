@@ -12,6 +12,7 @@ import {
   captureSessionFailure,
   cleanupSessionTest,
 } from './helpers/session-failure.mjs';
+import { patience } from './helpers/patience.mjs';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const require = createRequire(import.meta.url);
 const temp = await mkdtemp(join(tmpdir(), 'circle-session-management-'));
@@ -127,7 +128,7 @@ try {
     }).observe(document, { childList: true, subtree: true });
   });
   let page = await app.firstWindow();
-  page.setDefaultTimeout(12000);
+  page.setDefaultTimeout(patience(12000));
   page.on('pageerror', (error) => errors.push(String(error)));
   const state = () =>
     page.evaluate(
@@ -147,7 +148,7 @@ try {
       { name, payload },
     );
   const until = async (predicate, label) => {
-    const end = Date.now() + 12000;
+    const end = Date.now() + patience(12000);
     while (!(await predicate())) {
       assert(Date.now() < end, label);
       await new Promise((done) => setTimeout(done, 20));
@@ -529,7 +530,7 @@ try {
     env,
   });
   page = await app.firstWindow();
-  page.setDefaultTimeout(12000);
+  page.setDefaultTimeout(patience(12000));
   page.on('pageerror', (error) => errors.push(String(error)));
   await page
     .getByRole('button', { name: 'restore conversation', exact: true })

@@ -21,6 +21,7 @@ import {
   parseModelRequestFrames,
   readModelRequests,
 } from './helpers/model-requests.mjs';
+import { patience } from './helpers/patience.mjs';
 
 // The conversation's browser, driven by a scripted model and by the person, against local
 // HTTPS sites with a self-signed certificate: everything a page asks for reaches both.
@@ -465,7 +466,7 @@ const state = async () =>
 const browserState = (sessionId) =>
   page.evaluate((id) => window.circleDesktop.browserState(id), sessionId);
 async function waitFor(check, name) {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + patience(20_000);
   while (!(await check())) {
     if (Date.now() > deadline) throw Error(`timed out: ${name}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -533,7 +534,7 @@ async function launch() {
   // Playwright answers a page's dialogs itself unless something listens: let Circle do it
   app.context().on('page', (nativePage) => nativePage.on('dialog', () => {}));
   page = await app.firstWindow();
-  page.setDefaultTimeout(20_000);
+  page.setDefaultTimeout(patience(20_000));
   page.on('pageerror', (error) => errors.push(String(error)));
   await page.getByRole('textbox', { name: 'message', exact: true }).waitFor();
   // Wide enough for the panel beside the conversation, as a window made on a small

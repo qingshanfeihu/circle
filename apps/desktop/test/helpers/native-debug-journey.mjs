@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
+import { patience } from './patience.mjs';
 const program = 'native-debug-interaction.cjs';
 const marker = '.circle-native-debug-interaction.json';
 const source = [
@@ -103,7 +104,7 @@ export async function runNativeDebugJourney({
   const wait =
     until ??
     (async (predicate, label) => {
-      const deadline = Date.now() + 15000;
+      const deadline = Date.now() + patience(15000);
       while (Date.now() < deadline) {
         if (await predicate()) return;
         await page.waitForTimeout(30);

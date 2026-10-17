@@ -19,6 +19,7 @@ import {
   saveSettings,
   trustFolder,
 } from '../../../src/settings.js';
+import { patience } from './helpers/patience.mjs';
 
 const helper = await import(
   new URL('./helpers/native-task-fixture.mjs', import.meta.url).href
@@ -27,7 +28,7 @@ const nativeTaskJourneyFixture = helper.nativeTaskJourneyFixture as (
   requestsPath: string,
 ) => RuntimeFixture;
 async function until(check: () => boolean | Promise<boolean>, label: string) {
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + patience(10000);
   while (!(await check())) {
     if (Date.now() > deadline) throw Error(`fixture timed out: ${label}`);
     await delay(5);

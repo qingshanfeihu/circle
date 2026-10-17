@@ -13,6 +13,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { patience } from './helpers/patience.mjs';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const appPath = resolve(process.env.CIRCLE_DESKTOP_APP_PATH ?? root);
 const require = createRequire(import.meta.url);
@@ -40,7 +41,7 @@ const application = await electron.launch({
   env,
 });
 const page = await application.firstWindow();
-page.setDefaultTimeout(10000);
+page.setDefaultTimeout(patience(10000));
 const errors = [];
 observePage(page, errors);
 await page

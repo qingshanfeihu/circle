@@ -22,9 +22,10 @@ import {
   saveSettingsChange,
 } from '../../../src/settings';
 import type { RuntimeCommandName } from '../src/runtime-protocol';
+import { patience } from './helpers/patience.mjs';
 
 async function wait(check: () => boolean) {
-  const until = Date.now() + 8000;
+  const until = Date.now() + patience(8000);
   while (!check()) {
     if (Date.now() > until) throw Error('archive scope fixture timed out');
     await delay(10);

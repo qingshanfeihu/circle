@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WorkspaceDebugService } from '../src/workspace/debug.ts';
+import { patience } from './helpers/patience.mjs';
 
 const nodeExecutable = process.env.CIRCLE_JS_DEBUG_NODE ?? process.execPath;
 const adapterPath =
@@ -16,7 +17,7 @@ const adapterPath =
 test(
   'Node project launch hits breakpoint, inspects locals, steps and stops',
   {
-    timeout: 40000,
+    timeout: patience(40000),
     skip:
       !existsSync(adapterPath) &&
       'set CIRCLE_JS_DEBUG_ADAPTER to the pinned standalone adapter',
@@ -38,7 +39,7 @@ test(
     try {
       await service.handle('setBreakpoints', { path: file, lines: [2] });
       await service.handle('launch', { program: file });
-      const deadline = Date.now() + 15000;
+      const deadline = Date.now() + patience(15000);
       while (service.snapshot().status !== 'paused' && Date.now() < deadline)
         await new Promise((r) => setTimeout(r, 30));
       assert.equal(
@@ -104,7 +105,7 @@ test('rejects sources outside workspace and malformed launches without spawning'
 test(
   'PTY callback launches owned debuggee and adapter stop kills it',
   {
-    timeout: 15000,
+    timeout: patience(15000),
     skip: !existsSync(adapterPath) && 'set CIRCLE_JS_DEBUG_ADAPTER',
   },
   async () => {
@@ -140,7 +141,7 @@ test(
         program: 'fixture.cjs',
         stopOnEntry: true,
       });
-      const until = Date.now() + 5000;
+      const until = Date.now() + patience(5000);
       while (service.snapshot().status !== 'paused' && Date.now() < until)
         await new Promise((r) => setTimeout(r, 20));
       assert.equal(service.snapshot().status, 'paused');
@@ -168,7 +169,7 @@ test(
 test(
   'attach pauses existing local process and detaches without killing owner',
   {
-    timeout: 15000,
+    timeout: patience(15000),
     skip: !existsSync(adapterPath) && 'set CIRCLE_JS_DEBUG_ADAPTER',
   },
   async () => {
@@ -202,7 +203,7 @@ test(
     });
     try {
       await service.handle('attach', { port });
-      const until = Date.now() + 5000;
+      const until = Date.now() + patience(5000);
       let threads: any;
       do {
         threads = await service.handle('threads');
@@ -213,7 +214,7 @@ test(
       await service.handle('pause');
       // DAP acknowledges the request separately from the eventual stopped event.
       // Assert the real debugger effect, without assuming a 100ms scheduling window.
-      const pausedDeadline = Date.now() + 5000;
+      const pausedDeadline = Date.now() + patience(5000);
       while (
         service.snapshot().status !== 'paused' &&
         Date.now() < pausedDeadline
@@ -238,7 +239,7 @@ test(
 test(
   'TypeScript source maps bind original source breakpoint',
   {
-    timeout: 15000,
+    timeout: patience(15000),
     skip: !existsSync(adapterPath) && 'set CIRCLE_JS_DEBUG_ADAPTER',
   },
   async () => {
@@ -271,7 +272,7 @@ test(
         lines: [2],
       });
       await service.handle('launch', { program: 'fixture.js' });
-      const until = Date.now() + 5000;
+      const until = Date.now() + patience(5000);
       while (service.snapshot().status !== 'paused' && Date.now() < until)
         await new Promise((r) => setTimeout(r, 20));
       assert.equal(service.snapshot().status, 'paused');
@@ -322,7 +323,7 @@ test('DAP frames survive split headers and reject pending requests on close', as
 test(
   'step in and out preserve project stack and evaluate paused locals',
   {
-    timeout: 15000,
+    timeout: patience(15000),
     skip: !existsSync(adapterPath) && 'set CIRCLE_JS_DEBUG_ADAPTER',
   },
   async () => {
@@ -339,7 +340,7 @@ test(
       adapterPath,
     });
     const paused = async () => {
-      const until = Date.now() + 5000;
+      const until = Date.now() + patience(5000);
       while (service.snapshot().status !== 'paused' && Date.now() < until)
         await new Promise((r) => setTimeout(r, 10));
       assert.equal(service.snapshot().status, 'paused');
@@ -405,7 +406,7 @@ test('adapter launch rejection cleans up and leaves a recoverable failed state',
 
 test(
   'initialized coalesced with initialize response cannot deadlock launch configuration',
-  { timeout: 5000 },
+  { timeout: patience(5000) },
   async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), 'circle-debug-initialized-'),
@@ -443,7 +444,7 @@ test(
 test(
   'launch arguments stay literal and entry pause is explicitly opt-in',
   {
-    timeout: 30000,
+    timeout: patience(30000),
     skip: !existsSync(adapterPath) && 'set CIRCLE_JS_DEBUG_ADAPTER',
   },
   async () => {
@@ -484,7 +485,7 @@ test(
         args,
         stopOnEntry: true,
       });
-      const until = Date.now() + 10000;
+      const until = Date.now() + patience(10000);
       while (service.snapshot().status !== 'paused' && Date.now() < until)
         await new Promise((r) => setTimeout(r, 20));
       assert.equal(service.snapshot().status, 'paused');
@@ -504,7 +505,7 @@ test(
       });
       try {
         await fallback.handle('launch', { program: 'args.cjs', args });
-        const deadline = Date.now() + 10000;
+        const deadline = Date.now() + patience(10000);
         while (
           !fallback.snapshot().output.includes(JSON.stringify(args)) &&
           Date.now() < deadline
@@ -528,7 +529,7 @@ test(
 test(
   'a breakpoint configured after natural termination keeps its requested position on the next launch',
   {
-    timeout: 30000,
+    timeout: patience(30000),
     skip: !existsSync(adapterPath) && 'set CIRCLE_JS_DEBUG_ADAPTER',
   },
   async () => {
@@ -550,7 +551,7 @@ test(
         'const value=41;\nconsole.log(value+1);\nsetInterval(()=>{},1000);\n',
       );
       await service.handle('launch', { program: 'first.cjs' });
-      let deadline = Date.now() + 10000;
+      let deadline = Date.now() + patience(10000);
       while (service.snapshot().status !== 'stopped' && Date.now() < deadline)
         await new Promise((r) => setTimeout(r, 20));
       assert.equal(service.snapshot().status, 'stopped');
@@ -568,7 +569,7 @@ test(
       );
       assert.ok(configured.breakpoints[0].source.path.endsWith('second.cjs'));
       await service.handle('launch', { program: 'second.cjs' });
-      deadline = Date.now() + 10000;
+      deadline = Date.now() + patience(10000);
       while (service.snapshot().status !== 'paused' && Date.now() < deadline)
         await new Promise((r) => setTimeout(r, 20));
       assert.equal(
@@ -588,7 +589,7 @@ test(
 
 test(
   'old persisted DAP output cannot overwrite a restarted debug generation',
-  { timeout: 5000 },
+  { timeout: patience(5000) },
   async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), 'circle-debug-output-generation-'),
@@ -682,7 +683,7 @@ test('adding a breakpoint keeps the file’s others, whatever spelling of the pa
 
 test(
   'an adapter that writes a lot to stdout and stderr after listening does not stall',
-  { timeout: 10000 },
+  { timeout: patience(10000) },
   async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'circle-debug-chatty-'));
     const adapter = path.join(root, 'adapter.cjs');

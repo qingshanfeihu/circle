@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { readModelRequests } from './helpers/model-requests.mjs';
+import { patience } from './helpers/patience.mjs';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const require = createRequire(import.meta.url);
 const temp = await mkdtemp(join(tmpdir(), 'circle-ui-issues-'));
@@ -96,7 +97,7 @@ try {
     timeout: 45000,
   });
   const page = await application.firstWindow();
-  page.setDefaultTimeout(12000);
+  page.setDefaultTimeout(patience(12000));
   page.on('pageerror', (error) => errors.push(String(error)));
   const state = () =>
     page.evaluate(
@@ -116,7 +117,7 @@ try {
       { name, payload },
     );
   const until = async (check, label) => {
-    const deadline = Date.now() + 12000;
+    const deadline = Date.now() + patience(12000);
     while (!(await check())) {
       assert(Date.now() < deadline, label);
       await new Promise((resolve) => setTimeout(resolve, 20));

@@ -21,6 +21,7 @@ import { defaultSettings } from '../../../src/settings.ts';
 import { ScriptedModel } from '../../../src/testing.ts';
 import { installExitGuard } from '../../../src/exit_guard.ts';
 import { createWindowsProcessObserver } from './helpers/windows-process-observation.ts';
+import { patience } from './helpers/patience.mjs';
 
 const windows = {
   skip:
@@ -50,7 +51,7 @@ function describe(error: unknown): unknown {
     : { message: String(error) };
 }
 async function until(check: () => Promise<boolean>) {
-  const end = Date.now() + 5000;
+  const end = Date.now() + patience(5000);
   while (!(await check())) {
     assert(
       Date.now() < end,

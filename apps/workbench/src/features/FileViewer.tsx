@@ -922,14 +922,36 @@ export function FileViewer({
         if (selected()) {
           setDocument(doc);
           const external = flight.latest.get(buffer.uri);
-          if (
+          // The save checked the revision it wrote over, so a change seen
+          // during it landed after it. Refresh as for any change on disk: a
+          // buffer with nothing new takes it, one edited meanwhile keeps the
+          // edit and shows the conflict.
+          const result =
             external &&
             external.revision !== doc.revision &&
             external.content !== doc.content
-          ) {
-            setConflict(external);
+              ? refreshEditorDocument(target.workspaceId, external)
+              : 'unchanged';
+          if (result === 'conflict') {
+            setConflict(external!);
             setError(t('file changed on disk; your changes are kept'));
-          } else setConflict(null);
+          } else {
+            // A change seen during the save was shown as a conflict until
+            // now; the buffer took it or never differed from it.
+            setError('');
+            if (result === 'updated') {
+              setDocument(external!);
+              setValue(
+                retainedModel(
+                  target.workspaceId,
+                  target.path,
+                  external!.content,
+                  language,
+                ).getValue(),
+              );
+            }
+            setConflict(null);
+          }
           setMissing(false);
           setMoved(null);
         }

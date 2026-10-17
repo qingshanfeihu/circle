@@ -282,8 +282,17 @@ export function Sidebar({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [snapshot.activeSessionId]);
+  // The route follows a session once the runtime has selected it. A slow
+  // selection must not pull the person back from a page or a session they
+  // opened meanwhile. The address changes as soon as they navigate, before
+  // the router renders the new page, so compare the address itself.
+  const sessionChoice = useRef(0);
   const goSession = async (id: string) => {
+    const choice = ++sessionChoice.current;
+    const address = window.location.href;
     await runtime.selectSession(id);
+    if (choice !== sessionChoice.current || window.location.href !== address)
+      return;
     navigate(`/session/${id}`);
     onNavigate?.();
   };

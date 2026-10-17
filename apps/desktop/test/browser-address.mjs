@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
 import { waitBrowserState } from './helpers/browser-state.mjs';
+import { patience } from './helpers/patience.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -52,7 +53,7 @@ try {
     timeout: 30000,
   });
   page = await app.firstWindow();
-  page.setDefaultTimeout(10000);
+  page.setDefaultTimeout(patience(10000));
   page.on('pageerror', (error) => errors.push(String(error)));
   await page
     .getByRole('heading', { name: 'Fix the reconnect race', exact: true })

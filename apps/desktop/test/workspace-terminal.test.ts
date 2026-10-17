@@ -632,7 +632,9 @@ test(
         file: process.execPath,
         args: ['-e', "console.log('READY');setInterval(()=>{},1000)"],
       },
-      readiness: { pattern: 'READY', port, timeoutMs: 150 },
+      // Long enough for Node to start and print READY on a slow runner; the
+      // port never opens.
+      readiness: { pattern: 'READY', port, timeoutMs: 2000 },
     });
     await wait(
       async () => (await manager.list(owner))[0]?.readiness?.state === 'failed',
@@ -643,7 +645,7 @@ test(
     assert.equal(failed.serviceState, 'failed');
     assert.equal(failed.readiness?.matchedPattern, true);
     assert.equal(failed.readiness?.portOpen, false);
-    assert.match(failed.readiness!.error!, /150ms/);
+    assert.match(failed.readiness!.error!, /2000ms/);
     await manager.close(owner, service.id);
   },
 );

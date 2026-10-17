@@ -60,6 +60,7 @@ import {
   assertBundledJourneyNode,
   journeyNodeCommand,
 } from './helpers/native-journey-platform.mjs';
+import { patience } from './helpers/patience.mjs';
 const exec = promisify(execFile);
 const desktopRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -262,7 +263,7 @@ try {
     chromiumSandbox: true,
   });
   page = await app.firstWindow();
-  page.setDefaultTimeout(15000);
+  page.setDefaultTimeout(patience(15000));
   page.on('pageerror', (error) => errors.push(String(error)));
   await page.bringToFront();
   if (process.env.CIRCLE_NATIVE_PERF_CPU_PROFILE === '1') {

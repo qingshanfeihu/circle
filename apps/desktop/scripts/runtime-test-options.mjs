@@ -12,15 +12,33 @@ import { basename, join } from 'node:path';
 // Test-file processes each own independent runtime/service pools. Bound their
 // aggregate host load without changing product agent or task concurrency.
 export const RUNTIME_TEST_FILE_WORKERS = 2;
-export function runtimeTestArguments(tsxPath, tests, { ci = false } = {}) {
+export function runtimeTestArguments(
+  tsxPath,
+  tests,
+  { ci = false, rerunState } = {},
+) {
   return [
     tsxPath,
     '--test',
     `--test-concurrency=${RUNTIME_TEST_FILE_WORKERS}`,
-    ...(ci ? ['--test-reporter=tap'] : []),
+    ...(ci
+      ? ['--test-reporter=tap', `--test-timeout=${RUNTIME_TEST_CI_TIMEOUT_MS}`]
+      : []),
+    ...(rerunState ? [`--test-rerun-failures=${rerunState}`] : []),
     ...tests,
   ];
 }
+
+// On CI a test that never settles fails with its name after this long,
+// instead of holding the job until the job's own limit; the stage then runs
+// it once more like any failed test.
+export const RUNTIME_TEST_CI_TIMEOUT_MS = 240_000;
+
+// On CI a stage that fails runs once more, and only its failed tests run
+// again (Node's --test-rerun-failures keeps which tests already passed). A
+// test must fail twice to fail the stage; one that passes the second time is
+// named in the log and the receipt, so flakiness stays visible.
+export const RUNTIME_TEST_CI_ATTEMPTS = 2;
 
 export const WINDOWS_NATIVE_TEST_PRIORITY = Object.freeze([
   'pty-exit-cleanup.test.ts',
@@ -98,17 +116,38 @@ export function runRuntimeTestGroups({
     console.log(
       `# runtime stage ${index + 1}/${groups.length}: ${group.name} (${group.files.length} files)`,
     );
-    const result = spawnSync(
-      executable,
-      runtimeTestArguments(tsxPath, group.files, { ci }),
-      { stdio, env },
-    );
+    const rerunState = ci ? path.replace(/\.json$/, '.rerun.json') : undefined;
+    const attempts = [];
+    let result;
+    for (
+      let attempt = 1;
+      attempt <= (ci ? RUNTIME_TEST_CI_ATTEMPTS : 1);
+      attempt++
+    ) {
+      if (attempt > 1)
+        console.log(
+          `# runtime stage ${index + 1}/${groups.length}: ${group.name} failed; running only its failed tests again (attempt ${attempt})`,
+        );
+      result = spawnSync(
+        executable,
+        runtimeTestArguments(tsxPath, group.files, { ci, rerunState }),
+        { stdio, env },
+      );
+      attempts.push({ exitCode: result.status, signal: result.signal });
+      if ((result.status ?? 1) === 0) break;
+    }
     const code = result.status ?? 1;
+    if (code === 0 && attempts.length > 1)
+      console.log(
+        `# runtime stage ${index + 1}/${groups.length}: ${group.name} passed only when its failed tests ran again; see ${rerunState}`,
+      );
     Object.assign(receipt, {
       status: code === 0 ? 'passed' : 'failed',
       completedAt: new Date().toISOString(),
       exitCode: result.status,
       signal: result.signal,
+      attempts,
+      ...(attempts.length > 1 && code === 0 ? { flaky: true } : {}),
       ...(result.error
         ? { errorCode: result.error.code ?? 'SPAWN_FAILED' }
         : {}),

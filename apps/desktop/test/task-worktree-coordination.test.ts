@@ -27,6 +27,7 @@ import {
   createAgentTaskExecutor,
 } from '../src/workspace/task-executor.ts';
 import type { TaskRecord } from '../src/workspace/task-store.ts';
+import { patience } from './helpers/patience.mjs';
 
 const exec = promisify(execFile);
 const gate = () => {
@@ -51,7 +52,7 @@ async function exists(path: string) {
   }
 }
 async function until(check: () => Promise<boolean>, reason: string) {
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + patience(10000);
   while (!(await check())) {
     if (Date.now() > deadline) throw Error(reason);
     await delay(10);

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { writeFile, readFile, realpath, mkdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { patience } from './patience.mjs';
 const exec = promisify(execFile);
 const marker = '.circle-native-git-journey.json';
 // filter.has is evaluated relative to each row; do not repeat its panel ancestor.
@@ -125,7 +126,7 @@ export async function runNativeGitJourney({
       { sessionId, service, method, params },
     );
   const until = async (predicate, label) => {
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + patience(15000);
     while (Date.now() < deadline) {
       if (await predicate()) return;
       await page.waitForTimeout(50);
@@ -270,6 +271,13 @@ export async function runNativeGitJourney({
     await snapshot('git-native-first-staged');
     // Exercise the original hunk controls while unrelated selected work is staged.
     const hunkPath = path.join(root, names.hunks);
+    // git apply replaces the file, so a read can fall between its removal and
+    // the new copy; that is not the result yet.
+    const readHunks = () =>
+      readFile(hunkPath, 'utf8').catch((error) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
     const stagedText = hunkBaseline.replace('stable line 2\n', 'KEEP_STAGED\n');
     await writeFile(
       hunkPath,
@@ -307,7 +315,7 @@ export async function runNativeGitJourney({
       .getByRole('button', { name: 'discard this hunk', exact: true })
       .click();
     await until(
-      async () => (await readFile(hunkPath, 'utf8')) === stagedText,
+      async () => (await readHunks()) === stagedText,
       'GUI hunk discard restores only working hunk',
     );
     assert.equal(await git('diff', '--cached', '--binary'), preservedIndex);
@@ -335,7 +343,7 @@ export async function runNativeGitJourney({
       .getByRole('button', { name: 'discard this hunk', exact: true })
       .click();
     await until(
-      async () => (await readFile(hunkPath, 'utf8')) === hunkBaseline,
+      async () => (await readHunks()) === hunkBaseline,
       'GUI hunk cleanup',
     );
     assert.equal(await git('diff', '--cached', '--binary'), firstOnlyIndex);

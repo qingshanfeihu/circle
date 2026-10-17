@@ -78,6 +78,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setViewport } from './helpers/viewport.mjs';
+import { patience } from './helpers/patience.mjs';
 const require = createRequire(import.meta.url);
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const packaged = !!process.env.CIRCLE_DESKTOP_EXECUTABLE;
@@ -265,10 +266,23 @@ let phase = 'launch';
 let sessionId;
 let receipt;
 const until = async (predicate, label) => {
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + patience(20000);
   while (!(await predicate().catch(() => false))) {
     assert(Date.now() < deadline, label);
     await new Promise((done) => setTimeout(done, 40));
+  }
+};
+// Chooses a settings option. The settings page can re-render the whole row
+// while the runtime publishes state, so a click can keep landing on a button
+// that was just replaced: aim each try briefly and check the result, which is
+// the button pressed, not the click.
+const choose = async (button, label) => {
+  const deadline = Date.now() + patience(15000);
+  while (
+    (await button.getAttribute('aria-pressed').catch(() => null)) !== 'true'
+  ) {
+    assert(Date.now() < deadline, label);
+    await button.click({ timeout: 2000 }).catch(() => {});
   }
 };
 const dependencies = {
@@ -546,7 +560,7 @@ try {
     ),
   );
   page = await app.firstWindow();
-  page.setDefaultTimeout(15000);
+  page.setDefaultTimeout(patience(15000));
   page.on('pageerror', (e) =>
     errors.push({ phase, error: String(e), stack: e.stack }),
   );
@@ -1603,7 +1617,7 @@ try {
           env,
         });
         page = await app.firstWindow();
-        page.setDefaultTimeout(15000);
+        page.setDefaultTimeout(patience(15000));
         page.on('pageerror', (error) =>
           errors.push({ phase, error: String(error), stack: error.stack }),
         );
@@ -1754,23 +1768,33 @@ try {
         )
           .getByRole('button', { name: /^(settings|设置)$/, exact: true })
           .click();
-        await page
-          .getByRole('button', {
+        await choose(
+          page.getByRole('button', {
             name: locale === 'en' ? 'English' : '简体中文',
             exact: true,
-          })
-          .click();
-        await page
-          .getByRole('button', {
+          }),
+          'language chosen',
+        );
+        await choose(
+          page.getByRole('button', {
             name: theme === 'dark' ? /^(dark|深色)$/ : /^(light|浅色)$/,
             exact: true,
-          })
-          .click();
+          }),
+          'theme chosen',
+        );
         await (
           await visibleNavigation()
         )
           .locator(`.session-link[href="#/session/${sessionId}"][tabindex="0"]`)
           .click();
+        // The session opens once the runtime has selected it; carry on only
+        // when its page is on screen.
+        await page.waitForFunction(
+          (id) =>
+            location.hash === `#/session/${id}` &&
+            !!document.querySelector('.composer textarea'),
+          sessionId,
+        );
         currentLocale = locale;
       };
       await runNativePanelAcceptance({
@@ -1869,12 +1893,16 @@ try {
           .getByRole('button', { name: /^(settings|设置)$/ })
           .last()
           .click();
-        await page.getByRole('button', { name: language, exact: true }).click();
-        await page
-          .getByRole('button', {
+        await choose(
+          page.getByRole('button', { name: language, exact: true }),
+          'language chosen',
+        );
+        await choose(
+          page.getByRole('button', {
             name: theme === 'dark' ? /^(dark|深色)$/ : /^(light|浅色)$/,
-          })
-          .click();
+          }),
+          'theme chosen',
+        );
         await page
           .locator(`.sidebar .session-link[href="#/session/${sessionId}"]`)
           .first()
@@ -1917,6 +1945,16 @@ try {
     }
   }
   phase = 'final verification';
+  // The evidence folder may not reach CI's artifacts, so the log says why too.
+  for (const failed of checks.filter((c) => c.status !== 'passed'))
+    console.error(
+      `native journey ${failed.status}: ${failed.name}\n  ${String(
+        failed.error ?? failed.reason ?? '',
+      )
+        .split('\n')
+        .slice(0, 12)
+        .join('\n  ')}`,
+    );
   assert.equal(
     checks.filter((c) => c.status !== 'passed').length,
     0,

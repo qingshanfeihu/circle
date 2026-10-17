@@ -24,6 +24,7 @@ import type {
   ModelResponse,
 } from '../../../src/types.js';
 import { cleanup, scratch } from '../../../tests/helpers.js';
+import { patience } from './helpers/patience.mjs';
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8xkAAAAASUVORK5CYII=';
 const long = Array.from(
@@ -42,7 +43,7 @@ const waitForAbort = async (request: ModelRequest): Promise<ModelResponse> =>
     if (request.signal.aborted) abort();
   });
 async function until(check: () => boolean) {
-  const end = Date.now() + 8000;
+  const end = Date.now() + patience(8000);
   while (!check()) {
     if (Date.now() > end) throw new Error('recovery fixture timed out');
     await delay(5);

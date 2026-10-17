@@ -220,7 +220,7 @@ try {
     timeout: 45000,
   });
   const page = await application.firstWindow();
-  page.setDefaultTimeout(20000);
+  page.setDefaultTimeout(patience(20000));
   await application.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
     window.show();
@@ -292,6 +292,7 @@ import {defaultSettings} from './src/settings.ts';
 import {CheckpointStore} from './src/checkpoint_store.ts';
 import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
+import { patience } from './helpers/patience.mjs';
 const folder=process.env.CIRCLE_CLIPBOARD_TEST_ROOT;
 const workspace=join(folder,'tui-workspace'),home=join(folder,'tui-home');
 mkdirSync(workspace);mkdirSync(home);

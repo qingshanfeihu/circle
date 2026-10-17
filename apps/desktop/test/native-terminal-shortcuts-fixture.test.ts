@@ -6,13 +6,14 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TerminalManager } from '../src/workspace/terminal.ts';
 import { execFileSync } from 'node:child_process';
+import { patience } from './helpers/patience.mjs';
 
 const helperURL = new URL(
   './helpers/native-terminal-shortcuts-journey.mjs',
   import.meta.url,
 ).href;
 async function until(check: () => Promise<boolean>, label: string) {
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + patience(8000);
   while (!(await check())) {
     if (Date.now() > deadline) throw Error('shortcut fixture: ' + label);
     await delay(10);
@@ -21,7 +22,7 @@ async function until(check: () => Promise<boolean>, label: string) {
 
 test(
   'native shortcut fixture keeps exact stdin and handles the real TTY interrupt before the same shell continues',
-  { timeout: 15000 },
+  { timeout: patience(15000) },
   async (t) => {
     const helper = await import(helperURL);
     const root = await mkdtemp(join(tmpdir(), 'circle-shortcut-fixture-'));

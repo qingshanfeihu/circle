@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
 import { captureFailure } from './helpers/diagnostics.mjs';
 import { answerTitle, isTitleRequest } from './helpers/title-requests.mjs';
+import { patience } from './helpers/patience.mjs';
 
 // A local model gateway reads the real preceding screenshot result. It never calls a model.
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -178,7 +179,7 @@ try {
   });
   app.context().on('page', (page) => page.on('dialog', () => {}));
   page = await app.firstWindow();
-  page.setDefaultTimeout(20000);
+  page.setDefaultTimeout(patience(20000));
   page.on('pageerror', (error) => errors.push(error.message));
   await app.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];

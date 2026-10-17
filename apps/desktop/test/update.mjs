@@ -17,6 +17,7 @@ import { existsSync, createReadStream, openSync } from 'node:fs';
 import { join, relative, basename, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { patience } from './helpers/patience.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const appPath = process.env.CIRCLE_DESKTOP_APP_PATH;
@@ -221,7 +222,7 @@ try {
         .flatMap((context) => context.pages())
         .find((page) => page.url().startsWith('circle://'));
       if (found) {
-        found.setDefaultTimeout(20000);
+        found.setDefaultTimeout(patience(20000));
         return { browser, page: found };
       }
       if (Date.now() > end) throw Error('the application has no window');

@@ -304,6 +304,12 @@ test('actual scripted desktop worker runs nested npm with strict system PATH thr
       'host process environment must remain unchanged',
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    // Windows keeps the folder busy for a moment after the worker exits.
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 250,
+    });
   }
 });

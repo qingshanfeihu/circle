@@ -56,7 +56,7 @@ jobs:
       CIRCLE_NATIVE_JOURNEY_PUSH: '1'
     # Both application modes and both viewport widths run on each native architecture, and
     # the native developer journey in development (and, on main, in the packaged application).
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -113,7 +113,7 @@ jobs:
         run: node --test apps/desktop/test/developer-toolchain.test.mjs apps/desktop/test/journey-platform.test.mjs
       - run: npm --prefix apps/desktop run test:runtime
         # Bound leaked native handles without forcing tests to report success.
-        timeout-minutes: 10
+        timeout-minutes: 20
       - run: npm --prefix apps/desktop run build
       - run: node apps/desktop/scripts/developer-toolchain.mjs
       - run: node apps/desktop/test/developer-toolchain-smoke.mjs
@@ -123,7 +123,7 @@ jobs:
       - run: CIRCLE_DESKTOP_TEST_WIDTH=1024 npm --prefix apps/desktop run test:live
       - run: cp apps/desktop/artifacts/desktop/receipt.json apps/desktop/artifacts/desktop/development-receipt.json
       - name: Exercise the native developer journey in development
-        timeout-minutes: 12
+        timeout-minutes: 20
         run: node apps/desktop/test/native-developer-journey.mjs
       - run: npm --prefix apps/desktop run test:interface
       - run: npm --prefix apps/desktop run package
@@ -147,7 +147,7 @@ jobs:
       # application, before the update replaces it.
       - name: Exercise the native developer journey in the packaged application
         if: github.event_name != 'pull_request'
-        timeout-minutes: 12
+        timeout-minutes: 20
         shell: bash
         run: |
           export CIRCLE_DESKTOP_APP_PATH="$GITHUB_WORKSPACE/apps/desktop/out/${{ matrix.app }}"

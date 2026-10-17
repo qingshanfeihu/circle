@@ -284,7 +284,7 @@ for (const { brokenCapture, closeFailure } of [
     import { writeFileSync } from 'node:fs';
     const endpoint = { async fill() { throw Error('synthetic original fill failure'); }, async isVisible() { return true; }, or() { return { first() { return { async waitFor() {} }; } }; } };
     const page = {
-      on() {}, setDefaultTimeout(value) { if (value !== 20000) throw Error('original timeout changed'); },
+      on() {}, setDefaultTimeout(value) { if (value !== (process.env.CI ? 60000 : 20000)) throw Error('original timeout changed'); },
       getByRole(role, options) { if (role === 'textbox' && options.name === 'base url') return endpoint; if (role === 'button' && options.name === 'connect a model') return { first() { return this; } }; throw Error('unexpected operation before original fill'); },
       url() { return 'circle://workbench/index.html'; },
       async pageErrors() { return [Error('synthetic early bootstrap failure')]; },

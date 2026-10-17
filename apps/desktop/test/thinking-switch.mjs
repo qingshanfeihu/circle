@@ -20,6 +20,7 @@ import {
   checkpointRows,
 } from '../../../tests/thinking-fixture.ts';
 import { waitDesktopReady } from './helpers/desktop-readiness.mjs';
+import { patience } from './helpers/patience.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -137,7 +138,7 @@ try {
     timeout: 45000,
   });
   const page = await app.firstWindow();
-  page.setDefaultTimeout(15000);
+  page.setDefaultTimeout(patience(15000));
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.waitForFunction(() => Boolean(window.circleDesktop));

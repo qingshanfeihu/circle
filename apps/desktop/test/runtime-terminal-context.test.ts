@@ -23,6 +23,7 @@ import {
   saveSettings,
   trustFolder,
 } from '../../../src/settings.ts';
+import { patience } from './helpers/patience.mjs';
 
 test('authorized terminal capture stays in the original draft until explicit send reaches the next ScriptedModel request', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'circle-terminal-context-'));
@@ -106,7 +107,7 @@ test('authorized terminal capture stays in the original draft until explicit sen
     command: { file: process.execPath, args: [script] },
   });
   let page!: TerminalReplay;
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + patience(8000);
   do {
     page = await service<TerminalReplay>('replay', {
       id: terminal.id,
@@ -212,7 +213,7 @@ test('authorized terminal capture stays in the original draft until explicit sen
   const sent = runtime.getSnapshot().sessions.find((s) => s.id === sessionId)!
     .attachments[0];
   await runtime.send();
-  const modelDeadline = Date.now() + 8000;
+  const modelDeadline = Date.now() + patience(8000);
   while (Number(model.requests.length) !== 1) {
     if (Date.now() > modelDeadline)
       throw Error('explicit send did not reach ScriptedModel');

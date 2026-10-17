@@ -24,7 +24,8 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1200, height: 800 },
   });
-  page.setDefaultTimeout(3000);
+  // Every wait here is for a condition; a loaded machine needs more than 3 s.
+  page.setDefaultTimeout(10_000);
   const errors = [];
   await page.addInitScript(() => {
     window.__terminalErrors = [];
@@ -92,10 +93,16 @@ try {
           await find.press('Enter');
         } else if (scenario.startsWith('session')) {
           await page.evaluate(() => window.__terminalFixture.switchSession());
-          await page
-            .getByRole('tabpanel', { name: 'fixture terminal' })
-            .last()
-            .waitFor();
+          // Both sessions name their terminal alike: wait for session B's own,
+          // and for the render that shows it to settle, so the search below
+          // targets it rather than being discarded with A's.
+          await page.locator('#terminal-B-terminal:not([hidden])').waitFor();
+          await page.evaluate(
+            () =>
+              new Promise((done) =>
+                requestAnimationFrame(() => setTimeout(done, 0)),
+              ),
+          );
           await find.fill('NO_SUCH_MATCH');
           await find.press('Enter');
         } else if (scenario.startsWith('unmount'))

@@ -23,6 +23,7 @@ import type {
   TerminalReplay,
 } from '../src/workspace/terminal.ts';
 import type { WorkspaceServiceEvent } from '../src/workspace-protocol.ts';
+import { patience } from './helpers/patience.mjs';
 const interactiveShell =
   process.platform === 'win32' ? { args: ['/d', '/q'] } : { shell: '/bin/sh' };
 
@@ -729,7 +730,7 @@ test('diagnostic bodies remain replayable after clearing and restart, with byte-
 
 test(
   'DAP raw output larger than one MiB survives journal paging and close without cumulative events',
-  { timeout: 15000 },
+  { timeout: patience(15000) },
   async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'circle-debug-output-'));
     const data = await mkdtemp(
@@ -754,7 +755,7 @@ test(
     const expected = '中文😀\n'.repeat(150000);
     try {
       await service.call('A', 'debug', 'launch', { program: 'fixture.cjs' });
-      const deadline = Date.now() + 5000;
+      const deadline = Date.now() + patience(5000);
       while (
         !events.some(
           (event) =>

@@ -8,10 +8,17 @@ import type { RuntimePort } from './model/types';
 import { circlePlugins } from './plugins/builtins';
 import { applyTheme } from './theme';
 import { loadLanguage, locale, subscribeLanguage } from './i18n';
+// How far start-up got, for a window that stays blank: each step names
+// what it waits for.
+const boot = (step: string) => {
+  document.documentElement.dataset.boot = step;
+};
 async function start() {
+  boot('host');
   const host = desktopHost();
   let runtime: RuntimePort;
   const info = host ? await host.info() : undefined;
+  boot('runtime');
   if (host && info) {
     document.documentElement.dataset.desktop = info.platform;
     document.documentElement.dataset.host = 'desktop';
@@ -19,6 +26,7 @@ async function start() {
       ? new PreviewRuntime(localStorage)
       : new LiveRuntime(host, await host.runtimeState(), localStorage);
     if (runtime.mode === 'live') {
+      boot('subscribe');
       // Subscribe before reading again so updates during bootstrap cannot be missed.
       await host.runtimeCommand({
         id: crypto.randomUUID(),
@@ -35,6 +43,7 @@ async function start() {
   // Menus, system dialogs and notifications follow the window's language.
   void host?.setLanguage(locale());
   subscribeLanguage(() => void host?.setLanguage(locale()));
+  boot('render');
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <CircleWorkbench runtime={runtime} plugins={circlePlugins} />

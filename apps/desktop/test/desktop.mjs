@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import { patience } from './helpers/patience.mjs';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const appPath = resolve(process.env.CIRCLE_DESKTOP_APP_PATH ?? root);
 const require = createRequire(import.meta.url);
@@ -301,6 +302,9 @@ async function chromeControls() {
   checks.push("the page's right-click menu is Chrome's and does what it says");
 
   // Shortcuts pressed in the page
+  // The page's device pixel ratio includes its zoom, so it shows when the
+  // page itself, not only the browser, has a new zoom.
+  const unzoomedRatio = await inPage('window.devicePixelRatio');
   await key('=', [command]);
   await until(async () => (await state()).zoom === 110, 'zoom in to 110%');
   await page.getByRole('button', { name: 'zoom 110%', exact: true }).waitFor();
@@ -320,6 +324,15 @@ async function chromeControls() {
   // a click at a field's CSS centre still lands on it at 125%
   await key('=', [command]);
   await until(async () => (await state()).zoom === 125, 'zoom in to 125%');
+  // The browser reports the zoom before the page renders with it, and a click
+  // sent in between is placed with the old zoom: wait for the page.
+  await until(
+    async () =>
+      Math.abs(
+        (await inPage('window.devicePixelRatio')) - unzoomedRatio * 1.25,
+      ) < 0.01,
+    'the page renders at 125%',
+  );
   const target = await inPage(
     `(() => { document.activeElement?.blur(); const r = document.querySelector('#field').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
   );
@@ -450,7 +463,10 @@ async function chromeControls() {
     );
   }
   const last = (await state()).tab;
-  await page.getByRole('button', { name: 'close tab', exact: true }).click();
+  const closeTab = page.getByRole('button', { name: 'close tab', exact: true });
+  // The strip can still show the tabs closed above for a frame or two.
+  await until(async () => (await closeTab.count()) === 1, 'one tab shown');
+  await closeTab.click();
   const fresh = await until(async () => {
     const value = await state();
     return value.tabs.length === 1 && value.tab !== last ? value : undefined;
@@ -555,7 +571,7 @@ try {
   page = await app.firstWindow();
   // Starting the application, from its first window to one that renders, has one budget
   const renderDeadline = Date.now() + 30000;
-  page.setDefaultTimeout(10000);
+  page.setDefaultTimeout(patience(10000));
   observePage(page, errors);
   await page
     .getByRole('heading', { name: 'Fix the reconnect race', exact: true })
@@ -563,7 +579,7 @@ try {
   // DOM readiness does not prove the initially hidden native window was shown.
   // This harness owns the window; disclose any intervention instead of treating
   // it as evidence that production's ready-to-show lifecycle worked.
-  const startupDeadline = Date.now() + 10000;
+  const startupDeadline = Date.now() + patience(10000);
   const initialWindow = (
     await waitDesktopReady(nativeState, () => true, {
       label: 'initial native window',
@@ -645,7 +661,7 @@ try {
   checks.push(
     'native application origin, isolated data and restricted renderer',
   );
-  const panelDeadline = Date.now() + 10000;
+  const panelDeadline = Date.now() + patience(10000);
   browserPanelReadiness = await waitDesktopReady(
     panelState,
     ({ native, renderer }) =>

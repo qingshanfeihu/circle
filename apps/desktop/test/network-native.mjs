@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { answerTitle, isTitleRequest } from './helpers/title-requests.mjs';
 import { tlsCertificates } from '../../../tests/tls-certificates.mjs';
+import { patience } from './helpers/patience.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const require = createRequire(import.meta.url);
 const temp = await mkdtemp(join(tmpdir(), 'circle-network-native-'));
@@ -181,7 +182,7 @@ try {
     cwd: root,
   });
   const page = await app.firstWindow();
-  page.setDefaultTimeout(15000);
+  page.setDefaultTimeout(patience(15000));
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error)));
   const state = () =>
@@ -242,7 +243,7 @@ try {
       );
       throw error;
     }
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + patience(10000);
     while ((await state()).sessions[0].state !== 'idle') {
       assert(Date.now() < deadline);
       await new Promise((done) => setTimeout(done, 20));

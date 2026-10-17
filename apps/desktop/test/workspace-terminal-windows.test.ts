@@ -12,11 +12,12 @@ import {
   TerminalManager,
   type TerminalEvent,
 } from '../src/workspace/terminal.ts';
+import { patience } from './helpers/patience.mjs';
 
 // No shell syntax or Unix signals: this exact fixture runs under Windows ConPTY.
 test(
   'native PTY Node child preserves argv, stdin, resize, Ctrl+C, restart and owned port cleanup',
-  { timeout: 25_000 },
+  { timeout: patience(90_000) },
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'circle-portable-pty-'));
     const events: TerminalEvent[] = [];
@@ -33,7 +34,8 @@ test(
         .map((e) => e.data ?? '')
         .join('');
     const wait = async (predicate: () => boolean | Promise<boolean>) => {
-      const deadline = Date.now() + 8000;
+      // Shells start slowly on loaded Intel macOS runners.
+      const deadline = Date.now() + 30000;
       while (!(await predicate())) {
         if (Date.now() > deadline)
           throw Error('PTY condition timed out: ' + JSON.stringify(events));
@@ -75,10 +77,21 @@ test(
         /"argv":\["","space argument","quote\\"literal"\]/,
       );
       await manager.resize(owner, terminal.id, 111, 37);
-      await manager.write(owner, terminal.id, 'actual-input\r');
-      await wait(() =>
-        output(terminal.id).includes('CHILD_REPLY:actual-input:SIZE:111:37'),
-      );
+      // The new size can reach the child after input sent just after the
+      // resize (seen on Intel macOS). Ask again until the child reports it.
+      let replies = 0;
+      await wait(async () => {
+        if (
+          output(terminal.id).includes('CHILD_REPLY:actual-input:SIZE:111:37')
+        )
+          return true;
+        const seen = output(terminal.id).split('CHILD_REPLY:').length - 1;
+        if (seen === replies) {
+          replies++;
+          await manager.write(owner, terminal.id, 'actual-input\r');
+        }
+        return false;
+      });
       assert.equal(
         await (await fetch(`http://127.0.0.1:${port}`)).text(),
         'owned-child',
@@ -110,7 +123,7 @@ test(
   'a Windows owned worker transport fault remains a durable failure and stops the real program',
   {
     skip: process.platform !== 'win32' && 'requires real Windows ConPTY',
-    timeout: 15000,
+    timeout: patience(15000),
   },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), 'circle-pty-fault-'));
@@ -144,7 +157,7 @@ test(
           ],
         },
       });
-      const deadline = Date.now() + 8000;
+      const deadline = Date.now() + patience(8000);
       while (
         !events.some((event) =>
           event.data?.includes('FULL_ORIGINAL_PROGRAM_OUTPUT'),

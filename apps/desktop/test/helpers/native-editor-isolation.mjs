@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { patience } from './patience.mjs';
 
 const files = {
   'isolation-a.ts': 'export const DOCUMENT_A_ONLY = "alpha";\n',
@@ -26,7 +27,7 @@ export async function runNativeEditorIsolation({ page, workspace, output }) {
   const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
   const disk = (name) => readFile(join(workspace, name), 'utf8');
   const until = async (condition, label) => {
-    const end = Date.now() + 15000;
+    const end = Date.now() + patience(15000);
     while (Date.now() < end) {
       if (await condition()) return;
       await page.waitForTimeout(25);

@@ -124,7 +124,13 @@ export async function runNativeGitHubSettingsJourney({
     await toggle.click();
     await until(async () => {
       const item = extension(await state());
-      return item?.enabled === true && item.view?.provider === 'github';
+      // Its tools and command are published just after the enabled state.
+      return (
+        item?.enabled === true &&
+        item.view?.provider === 'github' &&
+        item.tools?.includes('github_connection') &&
+        item.commands?.includes('github')
+      );
     }, 'original extension UI enables the actual native GitHub provider');
     await until(
       () => toggle.isChecked(),

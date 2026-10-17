@@ -114,6 +114,8 @@ try {
     );
   });
   await page.clock.setFixedTime(new Date('2026-10-16T00:00:00Z'));
+  // The page opens 1400 px wide.
+  let previousWidth = 1400;
   for (const language of ['en', 'zh-CN'])
     for (const theme of ['dark', 'light'])
       for (const width of [1400, 760, 290])
@@ -135,6 +137,27 @@ try {
             { language, theme },
           );
           await page.evaluate(() => document.fonts.ready);
+          // At most 1050 px wide the app closes the side panel (useNarrow in
+          // App.tsx). The close is a render after the narrow layout's, and a
+          // slow runner reports the new width to the page late, so the panel
+          // can read as open here and close a moment later. Wait for this
+          // width's layout and, after crossing into narrow, for that close,
+          // before reading or opening the panel.
+          const narrow = width <= 1050;
+          await page.waitForFunction(
+            (narrow) =>
+              document
+                .querySelector(
+                  '#workbench-columns > #inspector .inspector-column',
+                )
+                ?.classList.contains('inspector-overlay') === narrow,
+            narrow,
+          );
+          if (narrow && previousWidth > 1050)
+            await page
+              .locator("#workbench-columns[data-inspector-mode='closed']")
+              .waitFor({ state: 'attached' });
+          previousWidth = width;
           const browserPanel = page.getByRole('button', {
             name: language === 'en' ? 'browser panel' : '浏览器面板',
             exact: true,

@@ -36,6 +36,7 @@ import {
   type TaskRecord,
 } from '../src/workspace/collaboration.js';
 import { cleanup, scratch } from '../../../tests/helpers.js';
+import { patience } from './helpers/patience.mjs';
 const exec = promisify(execFile);
 async function git(path: string, ...args: string[]): Promise<string> {
   return (
@@ -69,7 +70,7 @@ const task = (id: string) => ({
 async function until(condition: () => Promise<boolean>): Promise<void> {
   // Tasks create real Git worktrees and runtimes one after another; a Windows
   // runner needs seconds for each, so wait by time rather than by poll count.
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + patience(20_000);
   while (Date.now() < deadline) {
     if (await condition()) return;
     await delay(10);

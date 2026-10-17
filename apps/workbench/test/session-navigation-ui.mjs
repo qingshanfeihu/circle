@@ -125,6 +125,49 @@ try {
   );
   assert.deepEqual(errors, []);
   await page.screenshot({ path: `${output}/latest-selection-wins.png` });
+  // A page opened while a session is still being selected keeps the screen:
+  // the selection completes in the runtime but does not pull the route back.
+  const frames = () =>
+    page.evaluate(
+      () =>
+        new Promise((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(done)),
+        ),
+    );
+  const sidebarRow = (id) =>
+    page.locator(`.sidebar a[href="#/session/${id}"]`).first();
+  for (const [how, select] of [
+    ['sidebar', () => sidebarRow('navigation-alternate').click()],
+    ['search', () => choose('navigation alternate')],
+  ]) {
+    await select();
+    await pending('navigation-alternate');
+    await page
+      .locator('.sidebar')
+      .getByRole('button', { name: 'settings', exact: true })
+      .click();
+    await page.waitForFunction(() => location.hash === '#/page/settings');
+    await publish('navigation-alternate');
+    await resolve('navigation-alternate');
+    await page.waitForFunction(
+      () =>
+        window.navigationFixture.runtime.getSnapshot().activeSessionId ===
+        'navigation-alternate',
+    );
+    await frames();
+    assert.equal(
+      await page.evaluate(() => location.hash),
+      '#/page/settings',
+      `a ${how} selection that completes after settings opened leaves settings shown`,
+    );
+    // Back to the third session, as a person would, for the next case.
+    await sidebarRow('navigation-third').click();
+    await pending('navigation-third');
+    await publish('navigation-third');
+    await resolve('navigation-third');
+    await aligned('navigation-third', 'navigation third', 2);
+  }
+  assert.deepEqual(errors, []);
   const receipt = await page.evaluate(() => ({
     hash: location.hash,
     activeSessionId:

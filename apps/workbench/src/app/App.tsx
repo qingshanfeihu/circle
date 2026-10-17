@@ -353,6 +353,9 @@ export function App() {
   const sessionSelection = useRef({ revision: 0, pending: Promise.resolve() });
   const selectSessionAndNavigate = (id: string) => {
     const revision = ++sessionSelection.current.revision;
+    // A page opened meanwhile, such as settings, also supersedes it. The
+    // address changes before the router renders that page.
+    const address = window.location.href;
     // A session switch can load trusted configuration asynchronously. Preserve user
     // selection order and let only the latest request choose the visible route.
     const pending = sessionSelection.current.pending
@@ -367,6 +370,7 @@ export function App() {
         }
         if (
           revision !== sessionSelection.current.revision ||
+          window.location.href !== address ||
           runtime.getSnapshot().activeSessionId !== id
         )
           return;

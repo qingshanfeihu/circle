@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
-    "test": "tsx --test tests/*.test.ts apps/desktop/test/upgrade-notice.test.ts apps/workbench/test/update-actions.test.ts",
+    "test": "tsx scripts/test.ts",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"*.json\"",
     "check": "npm run typecheck && npm test && npm run build",

@@ -10,10 +10,11 @@ import { createConnection } from 'node:net';
 import { TerminalManager } from '../src/workspace/terminal.ts';
 import { createTerminalCommandLauncher } from '../src/workspace/command-terminal.ts';
 import { renderTerminalOutput } from './helpers/terminal-vt.mjs';
+import { patience } from './helpers/patience.mjs';
 
 const win = { skip: process.platform !== 'win32', timeout: 20000 };
 async function until(fn: () => Promise<boolean>, label: string) {
-  const end = Date.now() + 7000;
+  const end = Date.now() + patience(7000);
   while (!(await fn())) {
     if (Date.now() > end)
       throw Error('Windows native fixture timed out: ' + label);

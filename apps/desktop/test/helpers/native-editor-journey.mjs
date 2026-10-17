@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, readFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
+import { patience } from './patience.mjs';
+import { saveWithShortcut } from './native-editor-save.mjs';
 const main = 'editor-main.ts',
   library = 'editor-lib.ts';
 const source =
@@ -52,7 +54,7 @@ export async function runNativeEditorJourney({
       { sessionId, service, method, params },
     );
   const until = async (predicate, label) => {
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + patience(15000);
     while (Date.now() < deadline) {
       if (await predicate()) return;
       await page.waitForTimeout(50);
@@ -115,8 +117,9 @@ export async function runNativeEditorJourney({
   checks.push('real native document read');
   await open(main);
   await append('x');
-  await page.keyboard.press(`${modifier}+s`);
-  await until(
+  await saveWithShortcut(
+    page,
+    modifier,
     async () => (await disk(main)).endsWith('x'),
     'CmdS actual disk effect',
   );
@@ -133,8 +136,9 @@ export async function runNativeEditorJourney({
         ),
     'Undo reaches Monaco before CmdS',
   );
-  await page.keyboard.press(`${modifier}+s`);
-  await until(
+  await saveWithShortcut(
+    page,
+    modifier,
     async () => (await disk(main)) === source,
     'Undo then CmdS actual disk effect',
   );
@@ -197,13 +201,38 @@ export async function runNativeEditorJourney({
   const rename = page.locator('input.rename-input');
   await rename.fill('total');
   await rename.press('Enter');
-  await page.getByRole('button', { name: 'save all', exact: true }).click();
+  // The language server applies the rename after Enter; on a loaded runner a
+  // save straight away saved the buffers before it arrived.
   await until(
-    async () =>
-      /export const total/.test(await disk(library)) &&
-      /import \{ total \}/.test(await disk(main)),
-    'semantic multi-file rename disk effect',
+    () =>
+      page
+        .locator('.native-code-editor .view-lines')
+        .first()
+        .evaluate((node) =>
+          node.textContent
+            .replaceAll('\u00a0', ' ')
+            .includes('export const total'),
+        ),
+    'semantic rename reaches the open buffer',
   );
+  const saveAll = page.getByRole('button', { name: 'save all', exact: true });
+  const renamedOnDisk = async () =>
+    /export const total/.test(await disk(library)) &&
+    /import \{ total \}/.test(await disk(main));
+  const renameDeadline = Date.now() + patience(15000);
+  // Click again only while nothing is saving and the edit is still unsaved.
+  while (!(await renamedOnDisk())) {
+    assert(
+      Date.now() < renameDeadline,
+      'semantic multi-file rename disk effect',
+    );
+    if (
+      (await saveAll.isEnabled()) &&
+      (await page.getByText('unsaved changes', { exact: true }).isVisible())
+    )
+      await saveAll.click();
+    await page.waitForTimeout(patience(1000));
+  }
   assert.match(await disk(main), /const label = "amount"/);
   checks.push(
     'native semantic definition and multi-file rename preserves string literals',
@@ -232,12 +261,37 @@ export async function runNativeEditorJourney({
     'the actual erroneous buffer stays off disk',
   );
   await page.locator('.native-code-editor .squiggly-error').first().waitFor();
-  await page.keyboard.press('F8');
   const problem = page.locator('.marker-widget .message[role="alert"]');
-  await until(
-    async () => (await problem.textContent())?.includes('not assignable'),
-    'F8 exposes the real language problem for the manually edited buffer',
-  );
+  // F8 goes to the next problem in the file and only from a focused editor; a
+  // loaded runner can drop the key or start from another problem. Press until
+  // this one shows.
+  const problemDeadline = Date.now() + patience(15000);
+  for (;;) {
+    if (
+      !(await page
+        .locator('.native-code-editor')
+        .first()
+        .evaluate((node) => node.contains(document.activeElement)))
+    )
+      await lines.click();
+    await page.keyboard.press('F8');
+    const shown = Date.now() + patience(1500);
+    let found = false;
+    while (!found && Date.now() < shown) {
+      found = !!(
+        await problem
+          .first()
+          .textContent({ timeout: 200 })
+          .catch(() => null)
+      )?.includes('not assignable');
+      if (!found) await page.waitForTimeout(50);
+    }
+    if (found) break;
+    assert(
+      Date.now() < problemDeadline,
+      'F8 exposes the real language problem for the manually edited buffer',
+    );
+  }
   const problemLocation = await problem.getAttribute('aria-label');
   assert(
     problemLocation.includes(`${errorLine}:7`),

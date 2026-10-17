@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { patience } from './helpers/patience.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const require = createRequire(import.meta.url);
@@ -241,7 +242,7 @@ const launch = () =>
 try {
   app = await launch();
   const page = await app.firstWindow();
-  page.setDefaultTimeout(12000);
+  page.setDefaultTimeout(patience(12000));
   page.on('pageerror', (error) => errors.push(String(error)));
   await page.getByRole('textbox', { name: 'message', exact: true }).waitFor();
   const info = await page.evaluate(() => window.circleDesktop.info());
@@ -264,7 +265,7 @@ try {
       { name, payload },
     );
   const until = async (check, description) => {
-    const deadline = Date.now() + 12000;
+    const deadline = Date.now() + patience(12000);
     while (!(await check())) {
       assert(Date.now() < deadline, description);
       await new Promise((done) => setTimeout(done, 20));
@@ -646,7 +647,7 @@ try {
   await app.close();
   app = await launch();
   const reopened = await app.firstWindow();
-  reopened.setDefaultTimeout(12000);
+  reopened.setDefaultTimeout(patience(12000));
   reopened.on('pageerror', (error) => errors.push(String(error)));
   await reopened
     .locator('.transcript-notice')

@@ -17,13 +17,14 @@ import {
 import { emptyUsage, type Message } from '../../../src/types.js';
 import type { RuntimeCommand } from '../src/runtime-protocol.js';
 import type { TaskRecord } from '../src/workspace/task-store.js';
+import { patience } from './helpers/patience.mjs';
 const assistant = (content: string): Message => ({
   id: randomUUID(),
   role: 'assistant',
   content,
 });
 async function until(check: () => boolean | Promise<boolean>) {
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + patience(8000);
   while (!(await check())) {
     if (Date.now() > deadline) throw Error('task title fixture did not settle');
     await delay(5);
